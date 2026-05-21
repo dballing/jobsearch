@@ -118,6 +118,14 @@
         html += `<p><strong>${escHtml(line)}</strong></p>`;
         afterHeader = true;
         prevWasBlank = false;
+      } else if (prevWasBlank && isTitleCase(line) && line.split(/\s+/).length >= 3) {
+        // Title Case line (≥3 words) immediately after a blank, not isolated —
+        // treat as inline section header without waiting for flushProse isolation.
+        if (inList) { html += '</ul>'; inList = false; }
+        flushProse(false);
+        html += `<p><strong>${escHtml(line)}</strong></p>`;
+        afterHeader = true;
+        prevWasBlank = false;
       } else {
         if (inList) { html += '</ul>'; inList = false; }
         if (!prose.length) proseStartedAfterBlank = prevWasBlank;
