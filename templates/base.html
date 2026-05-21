@@ -56,14 +56,37 @@
     let inList = false;
     let afterHeader = false;
     let prose = [];
+    let prevWasBlank = true;        // treat start-of-text as blank
+    let proseStartedAfterBlank = false;
 
-    function flushProse() {
+    // Detect standalone section headers: Title Case, short, no digits, no sentence punctuation.
+    function isTitleCase(line) {
+      if (line.length > 60 || /[.!]$/.test(line) || /\d/.test(line)) return false;
+      return line.split(/\s+/).every(w => /^[A-Z\-–—&\/\(]/.test(w) || /^\W+$/.test(w));
+    }
+
+    function flushProse(atBlank) {
       if (!prose.length) return;
+      const isolated = proseStartedAfterBlank && atBlank;
+
       if (prose.length === 1) {
         const l = prose[0];
-        html += (l.endsWith(':') || l.length <= 60)
-          ? `<p><strong>${escHtml(l)}</strong></p>`
-          : `<p>${escHtml(l)}</p>`;
+        if (isolated && isTitleCase(l)) {
+          // Standalone Title Case line between blank lines → implicit section header
+          html += `<p><strong>${escHtml(l)}</strong></p>`;
+          afterHeader = true;
+        } else if (afterHeader && l.length > 200) {
+          // Long prose paragraph inside a header section → render as prose, exit list mode
+          html += `<p>${escHtml(l)}</p>`;
+          afterHeader = false;
+        } else if (afterHeader) {
+          html += `<ul><li>${escHtml(l)}</li></ul>`;
+        } else {
+          const bold = (l.endsWith(':') || l.length <= 60) && !/[.!?]$/.test(l);
+          html += bold ? `<p><strong>${escHtml(l)}</strong></p>` : `<p>${escHtml(l)}</p>`;
+        }
+      } else if (afterHeader) {
+        html += '<ul>' + prose.map(l => `<li>${escHtml(l)}</li>`).join('') + '</ul>';
       } else {
         const avg = prose.reduce((s, l) => s + l.length, 0) / prose.length;
         html += avg <= 80
@@ -71,39 +94,40 @@
           : `<p>${escHtml(prose.join(' '))}</p>`;
       }
       prose = [];
+      proseStartedAfterBlank = false;
     }
 
     for (const rawLine of raw.split('\n')) {
       const line = rawLine.trim();
       if (!line) {
         if (inList) { html += '</ul>'; inList = false; }
-        flushProse();
-        afterHeader = false;
+        flushProse(true);
+        prevWasBlank = true;
         continue;
       }
       const m = line.match(BULLET);
       if (m) {
-        flushProse();
+        flushProse(false);
         if (!inList) { html += '<ul>'; inList = true; }
         html += `<li>${escHtml(m[1])}</li>`;
         afterHeader = false;
+        prevWasBlank = false;
       } else if (line.endsWith(':')) {
         if (inList) { html += '</ul>'; inList = false; }
-        flushProse();
+        flushProse(false);
         html += `<p><strong>${escHtml(line)}</strong></p>`;
         afterHeader = true;
-      } else if (afterHeader && line.length <= 120) {
-        if (!inList) { html += '<ul>'; inList = true; }
-        html += `<li>${escHtml(line)}</li>`;
+        prevWasBlank = false;
       } else {
         if (inList) { html += '</ul>'; inList = false; }
-        afterHeader = false;
+        if (!prose.length) proseStartedAfterBlank = prevWasBlank;
         prose.push(line);
+        prevWasBlank = false;
       }
     }
 
     if (inList) html += '</ul>';
-    flushProse();
+    flushProse(true);
 
     return html || '<em class="text-muted">No description available.</em>';
   }
