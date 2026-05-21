@@ -91,7 +91,7 @@ label   = "nc"
 display = "NC"
 ```
 
-Add as many `[[tasks]]` sections as you have searches. The `label` is an arbitrary short string stored in the database — keep it consistent across ingestion runs. The optional `display` value is the human-readable name shown in the filter bar; if omitted, the `label` is shown uppercased. You might use geographic tags (`dc`, `nc`), title tags (`pm`, `eng`), or any other dimension that helps you organize results.
+Add as many `[[tasks]]` sections as you have searches. Each task requires a `label` — an arbitrary short string stored in the database that identifies which task a job came from (keep it consistent across ingestion runs). The `display` key is optional; if provided, it is shown as the button label in the UI filter bar. If omitted, the `label` is shown uppercased. You might use geographic tags (`dc`, `nc`), title tags (`pm`, `eng`), or any other dimension that helps you organize results.
 
 `config.toml` is gitignored so your API token is never committed.
 

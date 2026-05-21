@@ -4,10 +4,10 @@ db_path   = "jobs.db"
 
 [[tasks]]
 name    = "my-dc-va-search"
-label   = "dc"
-display = "DC/DMV"    # optional: pretty name shown in the UI filter bar
+label   = "dc"           # required: short key stored in the database
+display = "DC/DMV"       # optional: pretty name shown in the UI filter bar (defaults to label uppercased)
 
 [[tasks]]
 name    = "my-nc-search"
-label   = "nc"
-display = "NC"
+label   = "nc"           # required
+display = "NC"           # optional
