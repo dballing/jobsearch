@@ -1,0 +1,223 @@
+{% extends "base.html" %}
+
+{% block title %}Jobs ({{ total }}){% endblock %}
+
+{% block content %}
+
+{% macro status_select(job_id, current_status) %}
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        data-prev="{{ current_status }}"
+        onchange="updateStatus('{{ job_id }}', this)">
+  {% for s in statuses %}
+  <option value="{{ s }}" {% if s == current_status %}selected{% endif %}>{{ s }}</option>
+  {% endfor %}
+</select>
+{% endmacro %}
+
+{# ── Filter / view bar ── #}
+<div class="d-flex flex-wrap align-items-center gap-3 mb-3">
+
+  <div class="d-flex align-items-center gap-2">
+    <span class="text-muted small">Region:</span>
+    <div class="btn-group btn-group-sm" role="group">
+      <a href="{{ url_for('index', sort=sort, dir=direction, view=view, status_filter=status_filter) }}"
+         class="btn btn-{{ 'primary' if not region else 'outline-primary' }}">All</a>
+      {% for r in regions %}
+      <a href="{{ url_for('index', sort=sort, dir=direction, view=view, status_filter=status_filter, region=r.value, page=1) }}"
+         class="btn btn-{{ 'primary' if region == r.value else 'outline-primary' }}">{{ r.label }}</a>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="d-flex align-items-center gap-2">
+    <span class="text-muted small">Status:</span>
+    <div class="btn-group btn-group-sm" role="group">
+      {% for key, (label, _) in status_filters.items() %}
+      <a href="{{ url_for('index', sort=sort, dir=direction, view=view, region=region or None, status_filter=key, page=1) }}"
+         class="btn btn-{{ 'success' if status_filter == key else 'outline-success' }}">{{ label }}</a>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="d-flex align-items-center gap-2">
+    <span class="text-muted small">View:</span>
+    <div class="btn-group btn-group-sm" role="group">
+      <a href="{{ url_for('index', sort=sort, dir=direction, region=region or None, status_filter=status_filter, view='grouped', page=1) }}"
+         class="btn btn-{{ 'secondary' if view == 'grouped' else 'outline-secondary' }}">Grouped</a>
+      <a href="{{ url_for('index', sort=sort, dir=direction, region=region or None, status_filter=status_filter, view='flat', page=1) }}"
+         class="btn btn-{{ 'secondary' if view == 'flat' else 'outline-secondary' }}">Flat</a>
+    </div>
+  </div>
+
+  <span class="text-muted small ms-auto">
+    {{ total }} {{ 'posting' if view == 'flat' else 'job' }}{{ 's' if total != 1 }}
+    &mdash; page {{ page }} of {{ total_pages }}
+  </span>
+
+</div>
+
+{# ── Table ── #}
+<div class="table-responsive">
+  <table class="table table-striped table-hover table-sm align-middle">
+    <thead class="table-dark">
+      <tr>
+        {% macro sort_th(col, label) %}
+          <th>
+            <a href="{{ col_urls[col] }}" class="text-white text-decoration-none text-nowrap">
+              {{ label }}
+              {% if sort == col %}{{ '↑' if direction == 'asc' else '↓' }}
+              {% else %}<span class="text-white opacity-25">⇅</span>{% endif %}
+            </a>
+          </th>
+        {% endmacro %}
+
+        {{ sort_th('title',      'Title') }}
+        {{ sort_th('company',    'Company') }}
+        {% if view == 'flat' %}{{ sort_th('location', 'Location') }}
+        {% else %}<th>Location</th>{% endif %}
+        {{ sort_th('salary_min', 'Salary') }}
+        <th>Region</th>
+        {{ sort_th('status',     'Status') }}
+        {{ sort_th('posted_date','Posted') }}
+        {{ sort_th('first_seen', 'First Seen') }}
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in jobs %}
+
+        {% if view == 'grouped' and job.multi %}
+          {# ── Multi-location grouped header row ── #}
+          <tr class="table-group-header">
+            <td class="job-title fw-medium">{{ job.title or '(no title)' }}</td>
+            <td>{{ job.company or '—' }}</td>
+            <td>
+              {% set outer_index = loop.index %}
+              <button class="btn btn-sm btn-link p-0 me-1 expand-toggle"
+                      onclick="toggleGroup({{ loop.index }}, this)"
+                      title="Show locations">
+                <i class="bi bi-chevron-right"></i>
+              </button>
+              <span class="text-muted small">{{ job.location_count }} locations</span>
+            </td>
+            <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>
+          </tr>
+          {# ── Per-location sub-rows ── #}
+          {% set outer_index = loop.index %}
+          {% for sub in job.sub_rows %}
+          <tr class="group-child group-child-{{ outer_index }} d-none table-secondary">
+            <td></td>
+            <td></td>
+            <td class="ps-3 small">
+              {% if sub.linkedin_url %}
+                <a href="{{ sub.linkedin_url }}" target="_blank" rel="noopener">{{ sub.location or '—' }}</a>
+              {% else %}
+                {{ sub.location or '—' }}
+              {% endif %}
+            </td>
+            <td class="text-nowrap small">{{ sub.salary_display or '—' }}</td>
+            <td>
+              {% for r in sub.regions %}
+                <span class="badge bg-secondary">{{ r }}</span>
+              {% endfor %}
+            </td>
+            <td>{{ status_select(sub.job_id, sub.status) }}</td>
+            <td class="text-nowrap small">{{ (sub.posted_date or '')[:10] }}</td>
+            <td class="text-nowrap small">{{ (sub.first_seen or '')[:10] }}</td>
+          </tr>
+          {% endfor %}
+
+        {% else %}
+          {# ── Single-location row (grouped or flat) ── #}
+          <tr>
+            <td class="job-title">
+              {% set url = job.get('linkedin_url') %}
+              {% if url %}<a href="{{ url }}" target="_blank" rel="noopener">{{ job.title or '(no title)' }}</a>
+              {% else %}{{ job.title or '(no title)' }}{% endif %}
+            </td>
+            <td>{{ job.company or '—' }}</td>
+            <td>{{ job.location_primary if view == 'grouped' else (job.location or '—') }}</td>
+            <td class="text-nowrap">{{ job.salary_display or '—' }}</td>
+            <td>
+              {% for r in job.regions %}
+                <span class="badge bg-secondary">{{ r }}</span>
+              {% endfor %}
+            </td>
+            <td>{{ status_select(job.job_id, job.status) }}</td>
+            <td class="text-nowrap">{{ (job.posted_date or '')[:10] }}</td>
+            <td class="text-nowrap">{{ (job.first_seen or '')[:10] }}</td>
+          </tr>
+        {% endif %}
+
+      {% else %}
+        <tr><td colspan="8" class="text-center text-muted py-4">No jobs found.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{# ── Pagination ── #}
+{% if total_pages > 1 %}
+<nav>
+  <ul class="pagination justify-content-center">
+    <li class="page-item {% if page <= 1 %}disabled{% endif %}">
+      <a class="page-link" href="{{ url_for('index', page=page-1, sort=sort, dir=direction, region=region or None, view=view, status_filter=status_filter) }}">Previous</a>
+    </li>
+    {% for p in range([1, page-2]|max, [total_pages+1, page+3]|min) %}
+    <li class="page-item {% if p == page %}active{% endif %}">
+      <a class="page-link" href="{{ url_for('index', page=p, sort=sort, dir=direction, region=region or None, view=view, status_filter=status_filter) }}">{{ p }}</a>
+    </li>
+    {% endfor %}
+    <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
+      <a class="page-link" href="{{ url_for('index', page=page+1, sort=sort, dir=direction, region=region or None, view=view, status_filter=status_filter) }}">Next</a>
+    </li>
+  </ul>
+</nav>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const STATUS_COLORS = {{ status_colors | tojson }};
+
+function applySelectColor(sel) {
+  // Mirror the Bootstrap badge color as a left border accent
+  const colorMap = {
+    primary: '#0d6efd', secondary: '#6c757d', info: '#0dcaf0',
+    warning: '#ffc107', success: '#198754', danger: '#dc3545', dark: '#212529',
+  };
+  const bsClass = STATUS_COLORS[sel.value] || 'secondary';
+  sel.style.borderLeftColor = colorMap[bsClass] || '#6c757d';
+  sel.style.borderLeftWidth = '4px';
+}
+
+document.querySelectorAll('.status-select').forEach(applySelectColor);
+
+async function updateStatus(jobId, sel) {
+  const prev = sel.dataset.prev;
+  try {
+    const resp = await fetch('/job/' + jobId + '/status', {
+      method: 'POST',
+      body: new URLSearchParams({status: sel.value}),
+    });
+    if (!resp.ok) throw new Error();
+    sel.dataset.prev = sel.value;
+    applySelectColor(sel);
+  } catch {
+    alert('Failed to update status.');
+    sel.value = prev;
+  }
+}
+
+function toggleGroup(groupKey, btn) {
+  const children = document.querySelectorAll('.group-child-' + groupKey);
+  const icon = btn.querySelector('i');
+  const expanding = icon.classList.contains('bi-chevron-right');
+  children.forEach(r => r.classList.toggle('d-none', !expanding));
+  icon.classList.toggle('bi-chevron-right', !expanding);
+  icon.classList.toggle('bi-chevron-down', expanding);
+  btn.title = expanding ? 'Collapse' : 'Show locations';
+}
+</script>
+{% endblock %}
