@@ -8,7 +8,20 @@
 <select class="form-select form-select-sm status-select"
         style="width:auto"
         data-prev="{{ current_status }}"
+        data-job-id="{{ job_id }}"
         onchange="updateStatus('{{ job_id }}', this)">
+  {% for s in statuses %}
+  <option value="{{ s }}" {% if s == current_status %}selected{% endif %}>{{ s }}</option>
+  {% endfor %}
+</select>
+{% endmacro %}
+
+{% macro group_status_select(sub_job_ids, current_status) %}
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        data-prev="{{ current_status }}"
+        data-group-ids='{{ sub_job_ids | tojson }}'
+        onchange="updateGroupStatus(this)">
   {% for s in statuses %}
   <option value="{{ s }}" {% if s == current_status %}selected{% endif %}>{{ s }}</option>
   {% endfor %}
@@ -89,7 +102,12 @@
         {% if view == 'grouped' and job.multi %}
           {# ── Multi-location grouped header row ── #}
           <tr class="table-group-header">
-            <td class="job-title fw-medium">{{ job.title or '(no title)' }}</td>
+            <td class="job-title fw-medium">
+              {{ job.title or '(no title)' }}
+              {% if job.preview_job_id %}
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('{{ job.preview_job_id }}')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              {% endif %}
+            </td>
             <td>{{ job.company or '—' }}</td>
             <td>
               {% set outer_index = loop.index %}
@@ -100,7 +118,17 @@
               </button>
               <span class="text-muted small">{{ job.location_count }} locations</span>
             </td>
-            <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>
+            <td>—</td>
+            <td>—</td>
+            <td>
+              {% if job.group_status is not none %}
+                {{ group_status_select(job.sub_job_ids, job.group_status) }}
+              {% else %}
+                <span class="text-muted small fst-italic">mixed</span>
+              {% endif %}
+            </td>
+            <td>—</td>
+            <td>—</td>
           </tr>
           {# ── Per-location sub-rows ── #}
           {% set outer_index = loop.index %}
@@ -113,6 +141,9 @@
                 <a href="{{ sub.linkedin_url }}" target="_blank" rel="noopener">{{ sub.location or '—' }}</a>
               {% else %}
                 {{ sub.location or '—' }}
+              {% endif %}
+              {% if sub.job_id %}
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('{{ sub.job_id }}')" title="Preview description"><i class="bi bi-card-text"></i></button>
               {% endif %}
             </td>
             <td class="text-nowrap small">{{ sub.salary_display or '—' }}</td>
@@ -134,6 +165,9 @@
               {% set url = job.get('linkedin_url') %}
               {% if url %}<a href="{{ url }}" target="_blank" rel="noopener">{{ job.title or '(no title)' }}</a>
               {% else %}{{ job.title or '(no title)' }}{% endif %}
+              {% if job.job_id %}
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('{{ job.job_id }}')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              {% endif %}
             </td>
             <td>{{ job.company or '—' }}</td>
             <td>{{ job.location_primary if view == 'grouped' else (job.location or '—') }}</td>
@@ -193,6 +227,28 @@ function applySelectColor(sel) {
 }
 
 document.querySelectorAll('.status-select').forEach(applySelectColor);
+
+async function updateGroupStatus(sel) {
+  const prev   = sel.dataset.prev;
+  const jobIds = JSON.parse(sel.dataset.groupIds);
+  const status = sel.value;
+  const body   = new URLSearchParams({status});
+  jobIds.forEach(id => body.append('job_ids', id));
+  try {
+    const resp = await fetch('/jobs/status', {method: 'POST', body});
+    if (!resp.ok) throw new Error();
+    sel.dataset.prev = status;
+    applySelectColor(sel);
+    // Mirror the new status on each visible sub-row select
+    jobIds.forEach(id => {
+      const sub = document.querySelector(`.status-select[data-job-id="${id}"]`);
+      if (sub) { sub.value = status; sub.dataset.prev = status; applySelectColor(sub); }
+    });
+  } catch {
+    alert('Failed to update status.');
+    sel.value = prev;
+  }
+}
 
 async function updateStatus(jobId, sel) {
   const prev = sel.dataset.prev;

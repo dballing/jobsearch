@@ -7,6 +7,7 @@ import json
 import sqlite3
 import sys
 import tomllib
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -83,6 +84,22 @@ def _scalar(val: object) -> object:
     return val[0] if isinstance(val, list) else val
 
 
+AUTO_CLOSE_STATUSES = {"new", "reviewed"}
+
+
+def is_expired(item: dict) -> bool:
+    val = _scalar(item.get("date_validthrough"))
+    if not val:
+        return False
+    try:
+        dt = datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt < datetime.now(timezone.utc)
+    except (ValueError, TypeError):
+        return False
+
+
 def extract_fields(item: dict) -> dict:
     # Field names from fantastic-jobs/advanced-linkedin-job-search-api (verified against real output).
     # `id` is Apify-internal; `linkedin_id` is the actual LinkedIn job ID used as our PK.
@@ -118,21 +135,24 @@ def ingest(conn: sqlite3.Connection, items: list[dict], region: str) -> tuple[in
 
         raw = json.dumps(item, ensure_ascii=False)
 
-        row = conn.execute("SELECT regions FROM jobs WHERE job_id = ?", (fields["job_id"],)).fetchone()
+        row = conn.execute("SELECT regions, status FROM jobs WHERE job_id = ?", (fields["job_id"],)).fetchone()
+
+        expired = is_expired(item)
 
         if row is None:
+            initial_status = "closed" if expired else "new"
             conn.execute(
                 """
                 INSERT INTO jobs
                     (job_id, title, company, location, posted_date,
                      linkedin_url, apply_url, easy_apply, salary_min, salary_max, salary_currency,
-                     regions, job_description, raw)
+                     regions, status, job_description, raw)
                 VALUES
                     (:job_id, :title, :company, :location, :posted_date,
                      :linkedin_url, :apply_url, :easy_apply, :salary_min, :salary_max, :salary_currency,
-                     :regions, :job_description, :raw)
+                     :regions, :status, :job_description, :raw)
                 """,
-                {**fields, "regions": json.dumps([region]), "raw": raw},
+                {**fields, "regions": json.dumps([region]), "status": initial_status, "raw": raw},
             )
             inserted += 1
         else:
@@ -142,6 +162,11 @@ def ingest(conn: sqlite3.Connection, items: list[dict], region: str) -> tuple[in
                 conn.execute(
                     "UPDATE jobs SET regions = ? WHERE job_id = ?",
                     (json.dumps(existing_regions), fields["job_id"]),
+                )
+            if expired and row["status"] in AUTO_CLOSE_STATUSES:
+                conn.execute(
+                    "UPDATE jobs SET status = 'closed' WHERE job_id = ?",
+                    (fields["job_id"],),
                 )
             skipped += 1
 

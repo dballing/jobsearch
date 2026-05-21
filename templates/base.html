@@ -11,6 +11,11 @@
     .table td { vertical-align: middle; }
     .job-title { font-weight: 500; }
     .salary { white-space: nowrap; }
+    #jobPreview { width: min(46rem, 95vw); }
+    .job-description-text { font-size: 0.875rem; line-height: 1.6; }
+    .job-description-text p  { margin-bottom: 0.4rem; }
+    .job-description-text ul { margin-bottom: 0.5rem; padding-left: 1.4rem; }
+    .job-description-text li { margin-bottom: 0.15rem; }
   </style>
 </head>
 <body>
@@ -22,7 +27,112 @@
   <div class="container-fluid px-4">
     {% block content %}{% endblock %}
   </div>
+  <div class="offcanvas offcanvas-end" tabindex="-1" id="jobPreview" aria-labelledby="jobPreviewLabel">
+    <div class="offcanvas-header border-bottom">
+      <h6 class="offcanvas-title fw-semibold" id="jobPreviewLabel">Loading…</h6>
+      <button type="button" class="btn-close" data-bs-dismiss="offcanvas"></button>
+    </div>
+    <div class="offcanvas-body d-flex flex-column p-0">
+      <div id="jobPreviewMeta" class="px-3 py-2 bg-light border-bottom small text-muted"></div>
+      <div id="jobPreviewBody" class="flex-grow-1 overflow-auto px-3 py-3"></div>
+      <div class="px-3 py-2 border-top">
+        <a id="jobPreviewLink" href="#" target="_blank" rel="noopener"
+           class="btn btn-sm btn-outline-primary d-none">View on LinkedIn</a>
+      </div>
+    </div>
+  </div>
+
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function renderDescription(raw) {
+    if (!raw) return '<em class="text-muted">No description available.</em>';
+    const BULLET = /^[•\-\*·–—]\s+(.*)/;
+    const blocks = raw.split(/\n[ \t]*\n/);
+    let html = '';
+
+    for (const block of blocks) {
+      const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
+      if (!lines.length) continue;
+
+      const bulletMatches = lines.map(l => l.match(BULLET));
+      const bulletCount   = bulletMatches.filter(Boolean).length;
+
+      if (bulletCount > 0) {
+        // Mixed or pure bullet block — render line by line
+        let inList = false;
+        for (let i = 0; i < lines.length; i++) {
+          const m = bulletMatches[i];
+          if (m) {
+            if (!inList) { html += '<ul>'; inList = true; }
+            html += `<li>${escHtml(m[1])}</li>`;
+          } else {
+            if (inList) { html += '</ul>'; inList = false; }
+            html += `<p><strong>${escHtml(lines[i])}</strong></p>`;
+          }
+        }
+        if (inList) html += '</ul>';
+        continue;
+      }
+
+      if (lines.length === 1) {
+        const line = lines[0];
+        // Short or ends with colon → treat as section header
+        if (line.endsWith(':') || line.length <= 60) {
+          html += `<p><strong>${escHtml(line)}</strong></p>`;
+        } else {
+          html += `<p>${escHtml(line)}</p>`;
+        }
+        continue;
+      }
+
+      // Multiple lines, no bullets
+      // Short average length → implicit list (requirements, qualifications, etc.)
+      const avgLen = lines.reduce((s, l) => s + l.length, 0) / lines.length;
+      if (avgLen <= 80) {
+        html += '<ul>' + lines.map(l => `<li>${escHtml(l)}</li>`).join('') + '</ul>';
+      } else {
+        html += `<p>${escHtml(lines.join(' '))}</p>`;
+      }
+    }
+
+    return html || '<em class="text-muted">No description available.</em>';
+  }
+
+  function showPreview(jobId) {
+    const panel   = document.getElementById('jobPreview');
+    const titleEl = document.getElementById('jobPreviewLabel');
+    const metaEl  = document.getElementById('jobPreviewMeta');
+    const bodyEl  = document.getElementById('jobPreviewBody');
+    const linkEl  = document.getElementById('jobPreviewLink');
+
+    titleEl.textContent = 'Loading…';
+    metaEl.textContent  = '';
+    bodyEl.innerHTML    = '<div class="text-center py-5"><div class="spinner-border text-secondary" role="status"></div></div>';
+    linkEl.classList.add('d-none');
+    bootstrap.Offcanvas.getOrCreateInstance(panel).show();
+
+    fetch('/job/' + jobId)
+      .then(r => { if (!r.ok) throw new Error(); return r.json(); })
+      .then(job => {
+        titleEl.textContent = job.title || '(no title)';
+        metaEl.textContent  = [job.company, job.location, job.salary_display || null]
+                                .filter(Boolean).join(' · ');
+        bodyEl.innerHTML = '<div class="job-description-text">' + renderDescription(job.job_description) + '</div>';
+        if (job.linkedin_url) {
+          linkEl.href = job.linkedin_url;
+          linkEl.classList.remove('d-none');
+        }
+      })
+      .catch(() => {
+        titleEl.textContent = 'Error';
+        bodyEl.innerHTML    = '<div class="alert alert-danger m-3">Failed to load job details.</div>';
+      });
+  }
+  </script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

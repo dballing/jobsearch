@@ -23,7 +23,7 @@ DEFAULT_STATUS_FILTER = "active"
 
 STATUSES = [
     "new", "reviewed", "applied", "interviewing",
-    "offered", "rejected", "withdrawn", "skipped",
+    "offered", "rejected", "withdrawn", "skipped", "closed",
 ]
 
 STATUS_COLORS = {
@@ -35,6 +35,7 @@ STATUS_COLORS = {
     "rejected":     "danger",
     "withdrawn":    "secondary",
     "skipped":      "dark",
+    "closed":       "dark",
 }
 
 REGION_LABELS = {
@@ -43,7 +44,7 @@ REGION_LABELS = {
 }
 
 STATUS_FILTERS = {
-    "active":  ("Active",  "status NOT IN ('skipped', 'rejected', 'withdrawn')"),
+    "active":  ("Active",  "status NOT IN ('skipped', 'rejected', 'withdrawn', 'closed')"),
     "applied": ("Applied", "status IN ('applied', 'interviewing', 'offered')"),
     "all":     ("All",     None),
 }
@@ -133,12 +134,18 @@ def fetch_sub_rows(db: sqlite3.Connection, title: str, company: str,
 def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
     h     = dict(header)
     multi = h["location_count"] > 1
+    sub_statuses = [s.get("status", "new") for s in sub_rows]
+    unique_statuses = set(sub_statuses)
+
     job   = {
-        "title":          h["title"],
-        "company":        h["company"],
-        "location_count": h["location_count"],
-        "multi":          multi,
-        "sub_rows":       sub_rows,
+        "title":           h["title"],
+        "company":         h["company"],
+        "location_count":  h["location_count"],
+        "multi":           multi,
+        "sub_rows":        sub_rows,
+        "preview_job_id":  sub_rows[0]["job_id"] if sub_rows else None,
+        "group_status":    next(iter(unique_statuses)) if len(unique_statuses) == 1 else None,
+        "sub_job_ids":     [s["job_id"] for s in sub_rows if s.get("job_id")],
     }
     if not multi and sub_rows:
         s = sub_rows[0]
@@ -238,6 +245,40 @@ def index():
         regions=regions,
         col_urls=col_urls,
     )
+
+
+@app.route("/job/<job_id>")
+def get_job(job_id: str):
+    db = get_db()
+    row = db.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    if not row:
+        return "Not found", 404
+    job = dict(row)
+    return {
+        "job_id":          job["job_id"],
+        "title":           job["title"],
+        "company":         job["company"],
+        "location":        job["location"],
+        "linkedin_url":    job["linkedin_url"],
+        "apply_url":       job["apply_url"],
+        "easy_apply":      job["easy_apply"],
+        "salary_display":  format_salary(job),
+        "posted_date":     (job["posted_date"] or "")[:10],
+        "job_description": job["job_description"],
+    }
+
+
+@app.route("/jobs/status", methods=["POST"])
+def update_jobs_status():
+    new_status = request.form.get("status", "")
+    job_ids    = request.form.getlist("job_ids")
+    if new_status not in STATUSES or not job_ids:
+        return "Invalid request", 400
+    db = get_db()
+    db.executemany("UPDATE jobs SET status = ? WHERE job_id = ?",
+                   [(new_status, jid) for jid in job_ids])
+    db.commit()
+    return "", 204
 
 
 @app.route("/job/<job_id>/status", methods=["POST"])
