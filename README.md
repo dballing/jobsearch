@@ -33,20 +33,21 @@ In the Apify Console, go to **Settings → Integrations → API tokens**. Copy y
 
 Navigate to the **[fantastic-jobs/advanced-linkedin-job-search-api](https://apify.com/fantastic-jobs/advanced-linkedin-job-search-api)** Actor in the Apify Store and click **Try for free** to open it.
 
-### 4. Create a Task for each geographic search
+### 4. Create a Task for each search
 
 Rather than running the Actor directly, create a **Task** for each search so you can save your parameters and schedule runs.
 
 1. In the Actor page, click **Create new Task**.
 2. Give the task a descriptive name, e.g. `derek-job-search-dc-dmv`.
-3. Configure your search parameters:
-   - **Keywords**: your job title(s), e.g. `"program manager" OR "project manager"`
-   - **Location**: the geographic area, e.g. `Washington, DC`
-   - **Date posted**: `Past week` or `Past 24 hours` (depending on how often you schedule runs)
-   - **Job type**: filter to `Full-time` if desired
-   - Any other filters (experience level, remote/on-site, etc.)
+3. Configure your search parameters. Common fields include:
+   - **Keywords** — job title(s) or skills
+   - **Location** — geographic area, or leave blank for remote-only searches
+   - **Date posted** — how far back to look; see note below
+   - **Job type**, **Experience level**, **Remote/on-site**, etc.
 4. Save the task.
-5. Repeat for each additional search (geographic area, job title, company type, etc.).
+5. Repeat for each additional search.
+
+> **Note on date range:** The Actor supports four windows: **1h**, **24h**, **7d**, and **6m** (all active jobs). The first three return full job descriptions; the 6-month window does not — you'll get titles and companies but empty descriptions.
 
 > **Note:** The task name you give in the Apify Console is what you'll use in `config.toml`. The format expected is the short name only (e.g., `derek-job-search-dc-dmv`), not the full `username~taskname` form — the ingestion script constructs that automatically.
 
