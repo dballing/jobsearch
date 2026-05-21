@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+# requires Python 3.11+
+"""Ingest Apify LinkedIn job search results into a local SQLite database."""
+
+import argparse
+import json
+import sqlite3
+import sys
+import tomllib
+from pathlib import Path
+
+import requests
+
+APIFY_BASE = "https://api.apify.com/v2"
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS jobs (
+    job_id          TEXT PRIMARY KEY,
+    title           TEXT,
+    company         TEXT,
+    location        TEXT,
+    posted_date     TEXT,
+    linkedin_url    TEXT,
+    apply_url       TEXT,
+    easy_apply      INTEGER,
+    salary_min      INTEGER,
+    salary_max      INTEGER,
+    salary_currency TEXT,
+    regions         TEXT NOT NULL DEFAULT '[]',
+    status          TEXT NOT NULL DEFAULT 'new',
+    notes           TEXT,
+    job_description TEXT,
+    first_seen      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    raw             TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_status     ON jobs(status);
+CREATE INDEX IF NOT EXISTS idx_jobs_company    ON jobs(company);
+CREATE INDEX IF NOT EXISTS idx_jobs_first_seen ON jobs(first_seen);
+"""
+
+
+def open_db(path: str) -> sqlite3.Connection:
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(SCHEMA)
+    return conn
+
+
+def fetch_dataset_items(username: str, task_name: str, api_token: str) -> list[dict]:
+    task_id = f"{username}~{task_name}"
+    headers = {"Authorization": f"Bearer {api_token}"}
+
+    run_url = f"{APIFY_BASE}/actor-tasks/{task_id}/runs/last"
+    resp = requests.get(run_url, headers=headers, params={"status": "SUCCEEDED"}, timeout=30)
+    resp.raise_for_status()
+    dataset_id = resp.json()["data"]["defaultDatasetId"]
+
+    items: list[dict] = []
+    offset = 0
+    limit = 1000
+    while True:
+        resp = requests.get(
+            f"{APIFY_BASE}/datasets/{dataset_id}/items",
+            headers=headers,
+            params={"offset": offset, "limit": limit},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        batch = resp.json()
+        if not batch:
+            break
+        items.extend(batch)
+        if len(batch) < limit:
+            break
+        offset += limit
+
+    return items
+
+
+def _scalar(val: object) -> object:
+    """Return the first element if val is a list, otherwise val as-is."""
+    return val[0] if isinstance(val, list) else val
+
+
+def extract_fields(item: dict) -> dict:
+    # Field names from fantastic-jobs/advanced-linkedin-job-search-api (verified against real output).
+    # `id` is Apify-internal; `linkedin_id` is the actual LinkedIn job ID used as our PK.
+    # `directapply` = LinkedIn Easy Apply (apply without leaving LinkedIn).
+    # Salary fields are AI-extracted by the actor and may be absent.
+    # _scalar() guards against fields that are arrays in JSON for multi-value records.
+    salary_min = _scalar(item.get("ai_salary_minvalue"))
+    salary_max = _scalar(item.get("ai_salary_maxvalue"))
+    return {
+        "job_id": str(_scalar(item.get("linkedin_id")) or "").strip(),
+        "title": _scalar(item.get("title")),
+        "company": _scalar(item.get("organization")),
+        "location": _scalar(item.get("locations_derived")),
+        "posted_date": _scalar(item.get("date_posted")),
+        "linkedin_url": f"https://www.linkedin.com/jobs/view/{_scalar(item.get('linkedin_id'))}",
+        "apply_url": _scalar(item.get("external_apply_url")) or None,
+        "easy_apply": 1 if str(_scalar(item.get("directapply", "")) or "").lower() == "true" else 0,
+        "salary_min": int(salary_min) if salary_min not in (None, "", "null") else None,
+        "salary_max": int(salary_max) if salary_max not in (None, "", "null") else None,
+        "salary_currency": _scalar(item.get("ai_salary_currency")) or None,
+        "job_description": _scalar(item.get("description_text")),
+    }
+
+
+def ingest(conn: sqlite3.Connection, items: list[dict], region: str) -> tuple[int, int]:
+    inserted = skipped = 0
+
+    for item in items:
+        fields = extract_fields(item)
+        if not fields["job_id"]:
+            print(f"  WARNING: item missing job_id, skipping: {list(item.keys())}", file=sys.stderr)
+            continue
+
+        raw = json.dumps(item, ensure_ascii=False)
+
+        row = conn.execute("SELECT regions FROM jobs WHERE job_id = ?", (fields["job_id"],)).fetchone()
+
+        if row is None:
+            conn.execute(
+                """
+                INSERT INTO jobs
+                    (job_id, title, company, location, posted_date,
+                     linkedin_url, apply_url, easy_apply, salary_min, salary_max, salary_currency,
+                     regions, job_description, raw)
+                VALUES
+                    (:job_id, :title, :company, :location, :posted_date,
+                     :linkedin_url, :apply_url, :easy_apply, :salary_min, :salary_max, :salary_currency,
+                     :regions, :job_description, :raw)
+                """,
+                {**fields, "regions": json.dumps([region]), "raw": raw},
+            )
+            inserted += 1
+        else:
+            existing_regions: list[str] = json.loads(row["regions"])
+            if region not in existing_regions:
+                existing_regions.append(region)
+                conn.execute(
+                    "UPDATE jobs SET regions = ? WHERE job_id = ?",
+                    (json.dumps(existing_regions), fields["job_id"]),
+                )
+            skipped += 1
+
+    conn.commit()
+    return inserted, skipped
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Ingest Apify LinkedIn job results into SQLite.")
+    parser.add_argument("--config", default="config.toml", help="Path to TOML config file (default: config.toml)")
+    args = parser.parse_args()
+
+    config_path = Path(args.config)
+    if not config_path.exists():
+        sys.exit(f"Config file not found: {config_path}")
+
+    with open(config_path, "rb") as f:
+        config = tomllib.load(f)
+
+    api_token: str = config["api_token"]
+    username: str = config["username"]
+    db_path: str = config.get("db_path", "jobs.db")
+    tasks: list[dict] = config["tasks"]
+
+    conn = open_db(db_path)
+    total_inserted = total_skipped = 0
+
+    for task in tasks:
+        task_name: str = task["name"]
+        region: str = task["region"]
+        print(f"Fetching '{task_name}' (region: {region}) ...")
+        try:
+            items = fetch_dataset_items(username, task_name, api_token)
+            print(f"  {len(items)} items retrieved from Apify")
+            ins, skp = ingest(conn, items, region)
+            print(f"  {ins} inserted, {skp} already existed")
+            total_inserted += ins
+            total_skipped += skp
+        except requests.HTTPError as exc:
+            print(f"  ERROR fetching '{task_name}': {exc}", file=sys.stderr)
+
+    conn.close()
+    print(f"\nDone. {total_inserted} new jobs inserted, {total_skipped} duplicates skipped.")
+
+
+if __name__ == "__main__":
+    main()

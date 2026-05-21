@@ -1,0 +1,11 @@
+api_token = "apify_api_xxxxxxxxxxxxxxxxxxxx"
+username  = "your-apify-username"
+db_path   = "jobs.db"
+
+[[tasks]]
+name   = "my-dc-va-search"
+region = "dc"
+
+[[tasks]]
+name   = "my-nc-search"
+region = "nc"
