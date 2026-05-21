@@ -7,7 +7,7 @@ A personal tool for ingesting nightly LinkedIn job search results (via Apify) in
 ## How it works
 
 1. You configure one or more Apify Actor tasks using the **[fantastic-jobs/advanced-linkedin-job-search-api](https://apify.com/fantastic-jobs/advanced-linkedin-job-search-api)** Actor. Each task represents a geographic search (e.g., DC/DMV, North Carolina).
-2. A cron job runs `ingest.sh` on a schedule, fetching the latest results from each task and inserting new jobs into a local SQLite database. Duplicate postings (same LinkedIn job ID) are detected and updated rather than re-inserted. Jobs that appear in multiple geographic searches accumulate region tags.
+2. A cron job runs `ingest.sh` on a schedule, fetching the latest results from each task and inserting new jobs into a local SQLite database. Duplicate postings (same LinkedIn job ID) are detected and updated rather than re-inserted. Jobs that appear in multiple task runs accumulate labels from each.
 3. You run the Flask app locally to browse, filter, sort, and track your application status for each job.
 
 ---
@@ -46,7 +46,7 @@ Rather than running the Actor directly, create a **Task** for each search so you
    - **Job type**: filter to `Full-time` if desired
    - Any other filters (experience level, remote/on-site, etc.)
 4. Save the task.
-5. Repeat for each additional geographic region.
+5. Repeat for each additional search (geographic area, job title, company type, etc.).
 
 > **Note:** The task name you give in the Apify Console is what you'll use in `config.toml`. The format expected is the short name only (e.g., `derek-job-search-dc-dmv`), not the full `username~taskname` form — the ingestion script constructs that automatically.
 
@@ -81,15 +81,17 @@ username  = "your-apify-username"              # your Apify username
 db_path   = "jobs.db"                          # path to SQLite database
 
 [[tasks]]
-name   = "derek-job-search-dc-dmv"   # Apify task name
-region = "dc"                         # short region label used for filtering
+name    = "derek-job-search-dc-dmv"   # Apify task name
+label   = "dc"                         # short internal key stored in the database
+display = "DC/DMV"                     # optional: pretty name shown in the UI filter bar
 
 [[tasks]]
-name   = "derek-job-search-north-carolina"
-region = "nc"
+name    = "derek-job-search-north-carolina"
+label   = "nc"
+display = "NC"
 ```
 
-Add as many `[[tasks]]` sections as you have geographic searches. The `region` value is an arbitrary short string used for filtering in the UI — keep it consistent across ingestion runs.
+Add as many `[[tasks]]` sections as you have searches. The `label` is an arbitrary short string stored in the database — keep it consistent across ingestion runs. The optional `display` value is the human-readable name shown in the filter bar; if omitted, the `label` is shown uppercased. You might use geographic tags (`dc`, `nc`), title tags (`pm`, `eng`), or any other dimension that helps you organize results.
 
 `config.toml` is gitignored so your API token is never committed.
 
@@ -102,7 +104,7 @@ Add as many `[[tasks]]` sections as you have geographic searches. The `region` v
 This creates the virtual environment (if needed), installs dependencies, and fetches the latest results from each Apify task. You should see output like:
 
 ```
-Fetching 'derek-job-search-dc-dmv' (region: dc) ...
+Fetching 'derek-job-search-dc-dmv' (label: dc) ...
   312 items retrieved from Apify
   291 inserted, 21 already existed
 
@@ -135,7 +137,7 @@ Use the absolute path to `ingest.sh`. The script changes into its own directory 
 
 ### Filtering
 
-- **Region**: filter to jobs from a specific geographic search (or show all).
+- **Label**: filter to jobs from a specific task (or show all).
 - **Status**: 
   - *Active* — jobs not yet skipped, rejected, withdrawn, or closed (default)
   - *Applied* — jobs currently in progress (applied, interviewing, offered)
@@ -180,7 +182,7 @@ When a job already exists in the database and is seen again in a subsequent run:
 
 - All mutable fields (title, company, location, salary, description) are refreshed with the latest data from Apify.
 - The `first_seen` timestamp is preserved.
-- If the job appears in a new region, that region is added to its region list.
+- If the job appears under a new label (from a different task), that label is added to its label list.
 - If the posting has expired (`date_validthrough` in the past) and the status is `new` or `reviewed`, the status is automatically set to `closed`.
 - If the job description changed and the status was `skipped`, the status is reset to `new`.
 

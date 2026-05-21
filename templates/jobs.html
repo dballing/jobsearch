@@ -32,13 +32,13 @@
 <div class="d-flex flex-wrap align-items-center gap-3 mb-3">
 
   <div class="d-flex align-items-center gap-2">
-    <span class="text-muted small">Region:</span>
+    <span class="text-muted small">Label:</span>
     <div class="btn-group btn-group-sm" role="group">
       <a href="{{ url_for('index', sort=sort, dir=direction, view=view, status_filter=status_filter) }}"
-         class="btn btn-{{ 'primary' if not region else 'outline-primary' }}">All</a>
-      {% for r in regions %}
-      <a href="{{ url_for('index', sort=sort, dir=direction, view=view, status_filter=status_filter, region=r.value, page=1) }}"
-         class="btn btn-{{ 'primary' if region == r.value else 'outline-primary' }}">{{ r.label }}</a>
+         class="btn btn-{{ 'primary' if not label else 'outline-primary' }}">All</a>
+      {% for r in labels %}
+      <a href="{{ url_for('index', sort=sort, dir=direction, view=view, status_filter=status_filter, label=r.value, page=1) }}"
+         class="btn btn-{{ 'primary' if label == r.value else 'outline-primary' }}">{{ r.label }}</a>
       {% endfor %}
     </div>
   </div>
@@ -46,9 +46,9 @@
   <div class="d-flex align-items-center gap-2">
     <span class="text-muted small">Status:</span>
     <div class="btn-group btn-group-sm" role="group">
-      {% for key, (label, _) in status_filters.items() %}
-      <a href="{{ url_for('index', sort=sort, dir=direction, view=view, region=region or None, status_filter=key, page=1) }}"
-         class="btn btn-{{ 'success' if status_filter == key else 'outline-success' }}">{{ label }}</a>
+      {% for key, (sf_label, _) in status_filters.items() %}
+      <a href="{{ url_for('index', sort=sort, dir=direction, view=view, label=label or None, status_filter=key, page=1) }}"
+         class="btn btn-{{ 'success' if status_filter == key else 'outline-success' }}">{{ sf_label }}</a>
       {% endfor %}
     </div>
   </div>
@@ -56,9 +56,9 @@
   <div class="d-flex align-items-center gap-2">
     <span class="text-muted small">View:</span>
     <div class="btn-group btn-group-sm" role="group">
-      <a href="{{ url_for('index', sort=sort, dir=direction, region=region or None, status_filter=status_filter, view='grouped', page=1) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, label=label or None, status_filter=status_filter, view='grouped', page=1) }}"
          class="btn btn-{{ 'secondary' if view == 'grouped' else 'outline-secondary' }}">Grouped</a>
-      <a href="{{ url_for('index', sort=sort, dir=direction, region=region or None, status_filter=status_filter, view='flat', page=1) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, label=label or None, status_filter=status_filter, view='flat', page=1) }}"
          class="btn btn-{{ 'secondary' if view == 'flat' else 'outline-secondary' }}">Flat</a>
     </div>
   </div>
@@ -90,7 +90,7 @@
         {% if view == 'flat' %}{{ sort_th('location', 'Location') }}
         {% else %}<th>Location</th>{% endif %}
         {{ sort_th('salary_min', 'Salary') }}
-        <th>Region</th>
+        <th>Label</th>
         {{ sort_th('status',     'Status') }}
         {{ sort_th('posted_date','Posted') }}
         {{ sort_th('first_seen', 'First Seen') }}
@@ -148,7 +148,7 @@
             </td>
             <td class="text-nowrap small">{{ sub.salary_display or '—' }}</td>
             <td>
-              {% for r in sub.regions %}
+              {% for r in sub.labels %}
                 <span class="badge bg-secondary">{{ r }}</span>
               {% endfor %}
             </td>
@@ -173,7 +173,7 @@
             <td>{{ job.location_primary if view == 'grouped' else (job.location or '—') }}</td>
             <td class="text-nowrap">{{ job.salary_display or '—' }}</td>
             <td>
-              {% for r in job.regions %}
+              {% for r in job.labels %}
                 <span class="badge bg-secondary">{{ r }}</span>
               {% endfor %}
             </td>
@@ -195,15 +195,15 @@
 <nav>
   <ul class="pagination justify-content-center">
     <li class="page-item {% if page <= 1 %}disabled{% endif %}">
-      <a class="page-link" href="{{ url_for('index', page=page-1, sort=sort, dir=direction, region=region or None, view=view, status_filter=status_filter) }}">Previous</a>
+      <a class="page-link" href="{{ url_for('index', page=page-1, sort=sort, dir=direction, label=label or None, view=view, status_filter=status_filter) }}">Previous</a>
     </li>
     {% for p in range([1, page-2]|max, [total_pages+1, page+3]|min) %}
     <li class="page-item {% if p == page %}active{% endif %}">
-      <a class="page-link" href="{{ url_for('index', page=p, sort=sort, dir=direction, region=region or None, view=view, status_filter=status_filter) }}">{{ p }}</a>
+      <a class="page-link" href="{{ url_for('index', page=p, sort=sort, dir=direction, label=label or None, view=view, status_filter=status_filter) }}">{{ p }}</a>
     </li>
     {% endfor %}
     <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
-      <a class="page-link" href="{{ url_for('index', page=page+1, sort=sort, dir=direction, region=region or None, view=view, status_filter=status_filter) }}">Next</a>
+      <a class="page-link" href="{{ url_for('index', page=page+1, sort=sort, dir=direction, label=label or None, view=view, status_filter=status_filter) }}">Next</a>
     </li>
   </ul>
 </nav>

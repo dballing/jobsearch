@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     salary_min      INTEGER,
     salary_max      INTEGER,
     salary_currency TEXT,
-    regions         TEXT NOT NULL DEFAULT '[]',
+    labels          TEXT NOT NULL DEFAULT '[]',
     status          TEXT NOT NULL DEFAULT 'new',
     notes           TEXT,
     job_description TEXT,
@@ -45,6 +45,11 @@ def open_db(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    # Migrate: rename regions → labels if the old column still exists.
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
+    if "regions" in cols and "labels" not in cols:
+        conn.execute("ALTER TABLE jobs RENAME COLUMN regions TO labels")
+        conn.commit()
     return conn
 
 
@@ -124,7 +129,7 @@ def extract_fields(item: dict) -> dict:
     }
 
 
-def ingest(conn: sqlite3.Connection, items: list[dict], region: str) -> tuple[int, int]:
+def ingest(conn: sqlite3.Connection, items: list[dict], label: str) -> tuple[int, int]:
     inserted = skipped = 0
 
     for item in items:
@@ -136,7 +141,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], region: str) -> tuple[in
         raw = json.dumps(item, ensure_ascii=False)
 
         row = conn.execute(
-            "SELECT regions, status, job_description FROM jobs WHERE job_id = ?",
+            "SELECT labels, status, job_description FROM jobs WHERE job_id = ?",
             (fields["job_id"],),
         ).fetchone()
 
@@ -149,19 +154,19 @@ def ingest(conn: sqlite3.Connection, items: list[dict], region: str) -> tuple[in
                 INSERT INTO jobs
                     (job_id, title, company, location, posted_date,
                      linkedin_url, apply_url, easy_apply, salary_min, salary_max, salary_currency,
-                     regions, status, job_description, raw)
+                     labels, status, job_description, raw)
                 VALUES
                     (:job_id, :title, :company, :location, :posted_date,
                      :linkedin_url, :apply_url, :easy_apply, :salary_min, :salary_max, :salary_currency,
-                     :regions, :status, :job_description, :raw)
+                     :labels, :status, :job_description, :raw)
                 """,
-                {**fields, "regions": json.dumps([region]), "status": initial_status, "raw": raw},
+                {**fields, "labels": json.dumps([label]), "status": initial_status, "raw": raw},
             )
             inserted += 1
         else:
             current_status = row["status"]
-            existing_regions: list[str] = json.loads(row["regions"])
-            new_regions = existing_regions if region in existing_regions else existing_regions + [region]
+            existing_labels: list[str] = json.loads(row["labels"])
+            new_labels = existing_labels if label in existing_labels else existing_labels + [label]
 
             desc_changed = fields["job_description"] != row["job_description"]
             if expired and current_status in AUTO_CLOSE_STATUSES:
@@ -181,10 +186,10 @@ def ingest(conn: sqlite3.Connection, items: list[dict], region: str) -> tuple[in
                     salary_min = :salary_min, salary_max = :salary_max,
                     salary_currency = :salary_currency,
                     job_description = :job_description,
-                    regions = :regions, status = :status, raw = :raw
+                    labels = :labels, status = :status, raw = :raw
                 WHERE job_id = :job_id
                 """,
-                {**fields, "regions": json.dumps(new_regions), "status": new_status, "raw": raw},
+                {**fields, "labels": json.dumps(new_labels), "status": new_status, "raw": raw},
             )
             skipped += 1
 
@@ -214,12 +219,12 @@ def main() -> None:
 
     for task in tasks:
         task_name: str = task["name"]
-        region: str = task["region"]
-        print(f"Fetching '{task_name}' (region: {region}) ...")
+        label: str = task["label"]
+        print(f"Fetching '{task_name}' (label: {label}) ...")
         try:
             items = fetch_dataset_items(username, task_name, api_token)
             print(f"  {len(items)} items retrieved from Apify")
-            ins, skp = ingest(conn, items, region)
+            ins, skp = ingest(conn, items, label)
             print(f"  {ins} inserted, {skp} already existed")
             total_inserted += ins
             total_skipped += skp

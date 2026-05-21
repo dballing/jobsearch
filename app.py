@@ -7,10 +7,24 @@ import sqlite3
 import tomllib
 from pathlib import Path
 
-from flask import Flask, g, redirect, render_template, request, url_for
+from flask import Flask, g, render_template, request, url_for
 
 app = Flask(__name__)
 PER_PAGE = 25
+
+# Load config once at startup.
+_config_path = Path("config.toml")
+with open(_config_path, "rb") as _f:
+    _cfg = tomllib.load(_f)
+
+DB_PATH: str = _cfg.get("db_path", "jobs.db")
+
+# Build label → display-name mapping from [[tasks]] entries.
+# Each task may carry an optional `display` key; fall back to the raw label uppercased.
+LABEL_NAMES: dict[str, str] = {
+    t["label"]: t.get("display", t["label"].upper())
+    for t in _cfg.get("tasks", [])
+}
 
 SORTABLE_COLS = {
     "title", "company", "location", "salary_min",
@@ -36,11 +50,6 @@ STATUS_COLORS = {
     "withdrawn":    "secondary",
     "skipped":      "dark",
     "closed":       "dark",
-}
-
-REGION_LABELS = {
-    "dc": "DC/DMV",
-    "nc": "NC",
 }
 
 STATUS_FILTERS = {
@@ -70,11 +79,13 @@ FLAT_SELECT   = "SELECT * FROM jobs {where} {order} LIMIT ? OFFSET ?"
 
 def get_db() -> sqlite3.Connection:
     if "db" not in g:
-        config_path = Path("config.toml")
-        with open(config_path, "rb") as f:
-            config = tomllib.load(f)
-        g.db = sqlite3.connect(config.get("db_path", "jobs.db"))
+        g.db = sqlite3.connect(DB_PATH)
         g.db.row_factory = sqlite3.Row
+        # Migrate: rename regions → labels if the old column still exists.
+        cols = [row[1] for row in g.db.execute("PRAGMA table_info(jobs)").fetchall()]
+        if "regions" in cols and "labels" not in cols:
+            g.db.execute("ALTER TABLE jobs RENAME COLUMN regions TO labels")
+            g.db.commit()
     return g.db
 
 
@@ -85,12 +96,12 @@ def close_db(e=None) -> None:
         db.close()
 
 
-def build_where(region: str, status_filter: str) -> tuple[str, list]:
+def build_where(label: str, status_filter: str) -> tuple[str, list]:
     conditions: list[str] = []
     params: list = []
-    if region:
-        conditions.append("regions LIKE ?")
-        params.append(f'%"{region}"%')
+    if label:
+        conditions.append("labels LIKE ?")
+        params.append(f'%"{label}"%')
     sql_condition = STATUS_FILTERS.get(status_filter, (None, None))[1]
     if sql_condition:
         conditions.append(sql_condition)
@@ -109,14 +120,14 @@ def format_salary(row: dict) -> str:
     return ""
 
 
-def decode_regions(raw: str | None) -> list[str]:
-    return [REGION_LABELS.get(r, r.upper()) for r in json.loads(raw or "[]")]
+def decode_labels(raw: str | None) -> list[str]:
+    return [LABEL_NAMES.get(r, r.upper()) for r in json.loads(raw or "[]")]
 
 
 def process_job_row(row: sqlite3.Row | dict) -> dict:
     j = dict(row)
-    j["regions"]        = decode_regions(j.get("regions"))
-    j["status_color"]   = STATUS_COLORS.get(j.get("status", "new"), "secondary")
+    j["labels"]        = decode_labels(j.get("labels"))
+    j["status_color"]  = STATUS_COLORS.get(j.get("status", "new"), "secondary")
     j["salary_display"] = format_salary(j)
     return j
 
@@ -154,7 +165,7 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
             "linkedin_url":     s.get("linkedin_url"),
             "location_primary": s.get("location") or "—",
             "salary_display":   s["salary_display"],
-            "regions":          s["regions"],
+            "labels":           s["labels"],
             "status":           s.get("status", "new"),
             "status_color":     s["status_color"],
             "posted_date":      s.get("posted_date", ""),
@@ -163,21 +174,21 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
     return job
 
 
-def available_regions(db: sqlite3.Connection) -> list[dict]:
+def available_labels(db: sqlite3.Connection) -> list[dict]:
     rows = db.execute(
-        "SELECT DISTINCT je.value FROM jobs, json_each(jobs.regions) je ORDER BY je.value"
+        "SELECT DISTINCT je.value FROM jobs, json_each(jobs.labels) je ORDER BY je.value"
     ).fetchall()
     return [
-        {"value": r["value"], "label": REGION_LABELS.get(r["value"], r["value"].upper())}
+        {"value": r["value"], "label": LABEL_NAMES.get(r["value"], r["value"].upper())}
         for r in rows
     ]
 
 
 def sort_url(col: str, current_sort: str, current_dir: str,
-             region: str, view: str, status_filter: str) -> str:
+             label: str, view: str, status_filter: str) -> str:
     new_dir = "asc" if (current_sort != col or current_dir == "desc") else "desc"
     return url_for("index", sort=col, dir=new_dir,
-                   region=region or None, view=view,
+                   label=label or None, view=view,
                    status_filter=status_filter, page=1)
 
 
@@ -185,7 +196,7 @@ def sort_url(col: str, current_sort: str, current_dir: str,
 def index():
     db = get_db()
 
-    region        = request.args.get("region", "")
+    label         = request.args.get("label", "")
     sort          = request.args.get("sort", DEFAULT_SORT)
     direction     = request.args.get("dir", DEFAULT_DIR)
     view          = request.args.get("view", DEFAULT_VIEW)
@@ -203,7 +214,7 @@ def index():
     if view == "grouped" and sort == "location":
         sort = DEFAULT_SORT
 
-    where, params = build_where(region, status_filter)
+    where, params = build_where(label, status_filter)
     _TEXT_COLS = {"title", "company", "location", "status"}
     sort_expr = f"{sort} COLLATE NOCASE" if sort in _TEXT_COLS else sort
     order  = f"ORDER BY {sort_expr} {direction.upper()} NULLS LAST"
@@ -224,9 +235,9 @@ def index():
         jobs  = [process_job_row(r) for r in rows]
 
     total_pages = max(1, math.ceil(total / PER_PAGE))
-    regions     = available_regions(db)
+    labels      = available_labels(db)
     col_urls    = {
-        col: sort_url(col, sort, direction, region, view, status_filter)
+        col: sort_url(col, sort, direction, label, view, status_filter)
         for col in SORTABLE_COLS
     }
 
@@ -236,7 +247,7 @@ def index():
         page=page,
         total_pages=total_pages,
         total=total,
-        region=region,
+        label=label,
         sort=sort,
         direction=direction,
         view=view,
@@ -244,7 +255,7 @@ def index():
         status_filters=STATUS_FILTERS,
         statuses=STATUSES,
         status_colors=STATUS_COLORS,
-        regions=regions,
+        labels=labels,
         col_urls=col_urls,
     )
 

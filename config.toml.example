@@ -3,9 +3,11 @@ username  = "your-apify-username"
 db_path   = "jobs.db"
 
 [[tasks]]
-name   = "my-dc-va-search"
-region = "dc"
+name    = "my-dc-va-search"
+label   = "dc"
+display = "DC/DMV"    # optional: pretty name shown in the UI filter bar
 
 [[tasks]]
-name   = "my-nc-search"
-region = "nc"
+name    = "my-nc-search"
+label   = "nc"
+display = "NC"
