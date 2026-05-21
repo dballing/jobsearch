@@ -50,54 +50,60 @@
 
   function renderDescription(raw) {
     if (!raw) return '<em class="text-muted">No description available.</em>';
-    const BULLET = /^[•\-\*·–—]\s+(.*)/;
-    const blocks = raw.split(/\n[ \t]*\n/);
+    const BULLET = /^[•\-\*·–—]\s*(.*)/;
+
     let html = '';
+    let inList = false;
+    let afterHeader = false;
+    let prose = [];
 
-    for (const block of blocks) {
-      const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
-      if (!lines.length) continue;
-
-      const bulletMatches = lines.map(l => l.match(BULLET));
-      const bulletCount   = bulletMatches.filter(Boolean).length;
-
-      if (bulletCount > 0) {
-        // Mixed or pure bullet block — render line by line
-        let inList = false;
-        for (let i = 0; i < lines.length; i++) {
-          const m = bulletMatches[i];
-          if (m) {
-            if (!inList) { html += '<ul>'; inList = true; }
-            html += `<li>${escHtml(m[1])}</li>`;
-          } else {
-            if (inList) { html += '</ul>'; inList = false; }
-            html += `<p><strong>${escHtml(lines[i])}</strong></p>`;
-          }
-        }
-        if (inList) html += '</ul>';
-        continue;
-      }
-
-      if (lines.length === 1) {
-        const line = lines[0];
-        // Short or ends with colon → treat as section header
-        if (line.endsWith(':') || line.length <= 60) {
-          html += `<p><strong>${escHtml(line)}</strong></p>`;
-        } else {
-          html += `<p>${escHtml(line)}</p>`;
-        }
-        continue;
-      }
-
-      // Multiple lines, no bullets
-      // Short average length → implicit list (requirements, qualifications, etc.)
-      const avgLen = lines.reduce((s, l) => s + l.length, 0) / lines.length;
-      if (avgLen <= 80) {
-        html += '<ul>' + lines.map(l => `<li>${escHtml(l)}</li>`).join('') + '</ul>';
+    function flushProse() {
+      if (!prose.length) return;
+      if (prose.length === 1) {
+        const l = prose[0];
+        html += (l.endsWith(':') || l.length <= 60)
+          ? `<p><strong>${escHtml(l)}</strong></p>`
+          : `<p>${escHtml(l)}</p>`;
       } else {
-        html += `<p>${escHtml(lines.join(' '))}</p>`;
+        const avg = prose.reduce((s, l) => s + l.length, 0) / prose.length;
+        html += avg <= 80
+          ? '<ul>' + prose.map(l => `<li>${escHtml(l)}</li>`).join('') + '</ul>'
+          : `<p>${escHtml(prose.join(' '))}</p>`;
+      }
+      prose = [];
+    }
+
+    for (const rawLine of raw.split('\n')) {
+      const line = rawLine.trim();
+      if (!line) {
+        if (inList) { html += '</ul>'; inList = false; }
+        flushProse();
+        afterHeader = false;
+        continue;
+      }
+      const m = line.match(BULLET);
+      if (m) {
+        flushProse();
+        if (!inList) { html += '<ul>'; inList = true; }
+        html += `<li>${escHtml(m[1])}</li>`;
+        afterHeader = false;
+      } else if (line.endsWith(':')) {
+        if (inList) { html += '</ul>'; inList = false; }
+        flushProse();
+        html += `<p><strong>${escHtml(line)}</strong></p>`;
+        afterHeader = true;
+      } else if (afterHeader && line.length <= 120) {
+        if (!inList) { html += '<ul>'; inList = true; }
+        html += `<li>${escHtml(line)}</li>`;
+      } else {
+        if (inList) { html += '</ul>'; inList = false; }
+        afterHeader = false;
+        prose.push(line);
       }
     }
+
+    if (inList) html += '</ul>';
+    flushProse();
 
     return html || '<em class="text-muted">No description available.</em>';
   }

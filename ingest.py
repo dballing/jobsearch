@@ -135,7 +135,10 @@ def ingest(conn: sqlite3.Connection, items: list[dict], region: str) -> tuple[in
 
         raw = json.dumps(item, ensure_ascii=False)
 
-        row = conn.execute("SELECT regions, status FROM jobs WHERE job_id = ?", (fields["job_id"],)).fetchone()
+        row = conn.execute(
+            "SELECT regions, status, job_description FROM jobs WHERE job_id = ?",
+            (fields["job_id"],),
+        ).fetchone()
 
         expired = is_expired(item)
 
@@ -156,18 +159,33 @@ def ingest(conn: sqlite3.Connection, items: list[dict], region: str) -> tuple[in
             )
             inserted += 1
         else:
+            current_status = row["status"]
             existing_regions: list[str] = json.loads(row["regions"])
-            if region not in existing_regions:
-                existing_regions.append(region)
-                conn.execute(
-                    "UPDATE jobs SET regions = ? WHERE job_id = ?",
-                    (json.dumps(existing_regions), fields["job_id"]),
-                )
-            if expired and row["status"] in AUTO_CLOSE_STATUSES:
-                conn.execute(
-                    "UPDATE jobs SET status = 'closed' WHERE job_id = ?",
-                    (fields["job_id"],),
-                )
+            new_regions = existing_regions if region in existing_regions else existing_regions + [region]
+
+            desc_changed = fields["job_description"] != row["job_description"]
+            if expired and current_status in AUTO_CLOSE_STATUSES:
+                new_status = "closed"
+            elif desc_changed and current_status == "skipped":
+                new_status = "new"
+                print(f"  NOTE: description changed for job {fields['job_id']} ({fields['title']}), resetting from skipped → new")
+            else:
+                new_status = current_status
+
+            conn.execute(
+                """
+                UPDATE jobs SET
+                    title = :title, company = :company, location = :location,
+                    posted_date = :posted_date, linkedin_url = :linkedin_url,
+                    apply_url = :apply_url, easy_apply = :easy_apply,
+                    salary_min = :salary_min, salary_max = :salary_max,
+                    salary_currency = :salary_currency,
+                    job_description = :job_description,
+                    regions = :regions, status = :status, raw = :raw
+                WHERE job_id = :job_id
+                """,
+                {**fields, "regions": json.dumps(new_regions), "status": new_status, "raw": raw},
+            )
             skipped += 1
 
     conn.commit()

@@ -204,7 +204,9 @@ def index():
         sort = DEFAULT_SORT
 
     where, params = build_where(region, status_filter)
-    order  = f"ORDER BY {sort} {direction.upper()} NULLS LAST"
+    _TEXT_COLS = {"title", "company", "location", "status"}
+    sort_expr = f"{sort} COLLATE NOCASE" if sort in _TEXT_COLS else sort
+    order  = f"ORDER BY {sort_expr} {direction.upper()} NULLS LAST"
     offset = (page - 1) * PER_PAGE
 
     if view == "grouped":
