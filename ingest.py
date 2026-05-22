@@ -129,8 +129,8 @@ def extract_fields(item: dict) -> dict:
     }
 
 
-def ingest(conn: sqlite3.Connection, items: list[dict], label: str) -> tuple[int, int]:
-    inserted = skipped = 0
+def ingest(conn: sqlite3.Connection, items: list[dict], label: str) -> tuple[int, int, int]:
+    inserted = updated = unchanged = 0
 
     for item in items:
         fields = extract_fields(item)
@@ -141,7 +141,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str) -> tuple[int
         raw = json.dumps(item, ensure_ascii=False)
 
         row = conn.execute(
-            "SELECT labels, status, job_description FROM jobs WHERE job_id = ?",
+            "SELECT * FROM jobs WHERE job_id = ?",
             (fields["job_id"],),
         ).fetchone()
 
@@ -177,6 +177,17 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str) -> tuple[int
             else:
                 new_status = current_status
 
+            something_changed = (
+                new_labels != existing_labels
+                or new_status != current_status
+                or fields["title"] != row["title"]
+                or fields["company"] != row["company"]
+                or fields["location"] != row["location"]
+                or fields["salary_min"] != row["salary_min"]
+                or fields["salary_max"] != row["salary_max"]
+                or fields["job_description"] != row["job_description"]
+            )
+
             conn.execute(
                 """
                 UPDATE jobs SET
@@ -191,10 +202,13 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str) -> tuple[int
                 """,
                 {**fields, "labels": json.dumps(new_labels), "status": new_status, "raw": raw},
             )
-            skipped += 1
+            if something_changed:
+                updated += 1
+            else:
+                unchanged += 1
 
     conn.commit()
-    return inserted, skipped
+    return inserted, updated, unchanged
 
 
 def main() -> None:
@@ -215,7 +229,7 @@ def main() -> None:
     tasks: list[dict] = config["tasks"]
 
     conn = open_db(db_path)
-    total_inserted = total_skipped = 0
+    total_inserted = total_updated = total_unchanged = 0
 
     for task in tasks:
         task_name: str = task["name"]
@@ -224,15 +238,16 @@ def main() -> None:
         try:
             items = fetch_dataset_items(username, task_name, api_token)
             print(f"  {len(items)} items retrieved from Apify")
-            ins, skp = ingest(conn, items, label)
-            print(f"  {ins} inserted, {skp} already existed")
+            ins, upd, unch = ingest(conn, items, label)
+            print(f"  {ins} inserted, {upd} updated, {unch} already existed")
             total_inserted += ins
-            total_skipped += skp
+            total_updated += upd
+            total_unchanged += unch
         except requests.HTTPError as exc:
             print(f"  ERROR fetching '{task_name}': {exc}", file=sys.stderr)
 
     conn.close()
-    print(f"\nDone. {total_inserted} new jobs inserted, {total_skipped} duplicates skipped.")
+    print(f"\nDone. {total_inserted} inserted, {total_updated} updated, {total_unchanged} unchanged.")
 
 
 if __name__ == "__main__":
