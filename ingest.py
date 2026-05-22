@@ -230,6 +230,8 @@ def main() -> None:
 
     conn = open_db(db_path)
     total_inserted = total_updated = total_unchanged = 0
+    start_time = datetime.now(timezone.utc)
+    print(f"Starting ingestion at {start_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
     for task in tasks:
         task_name: str = task["name"]
@@ -247,7 +249,8 @@ def main() -> None:
             print(f"  ERROR fetching '{task_name}': {exc}", file=sys.stderr)
 
     conn.close()
-    print(f"\nDone. {total_inserted} inserted, {total_updated} updated, {total_unchanged} unchanged.")
+    elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+    print(f"\nDone in {elapsed:.1f}s. {total_inserted} inserted, {total_updated} updated, {total_unchanged} unchanged.")
 
 
 if __name__ == "__main__":
