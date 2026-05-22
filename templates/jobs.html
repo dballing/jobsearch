@@ -31,13 +31,25 @@
 {# ── Filter / view bar ── #}
 <div class="d-flex flex-wrap align-items-center gap-3 mb-3">
 
+  <form class="d-flex align-items-center gap-2" method="get" action="/">
+    <input type="hidden" name="sort"          value="{{ sort }}">
+    <input type="hidden" name="dir"           value="{{ direction }}">
+    <input type="hidden" name="view"          value="{{ view }}">
+    <input type="hidden" name="status_filter" value="{{ status_filter }}">
+    {% if label %}<input type="hidden" name="label" value="{{ label }}">{% endif %}
+    <input type="search" class="form-control form-control-sm" name="q"
+           placeholder="Search title / company…" value="{{ q }}" style="width:220px">
+    <button type="submit" class="btn btn-sm btn-outline-secondary">Search</button>
+    {% if q %}<a href="{{ url_for('index', sort=sort, dir=direction, view=view, label=label or None, status_filter=status_filter) }}" class="btn btn-sm btn-outline-danger" title="Clear search">✕</a>{% endif %}
+  </form>
+
   <div class="d-flex align-items-center gap-2">
     <span class="text-muted small">Label:</span>
     <div class="btn-group btn-group-sm" role="group">
-      <a href="{{ url_for('index', sort=sort, dir=direction, view=view, status_filter=status_filter) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, view=view, status_filter=status_filter, q=q or None) }}"
          class="btn btn-{{ 'primary' if not label else 'outline-primary' }}">All</a>
       {% for r in labels %}
-      <a href="{{ url_for('index', sort=sort, dir=direction, view=view, status_filter=status_filter, label=r.value, page=1) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, view=view, status_filter=status_filter, label=r.value, q=q or None, page=1) }}"
          class="btn btn-{{ 'primary' if label == r.value else 'outline-primary' }}">{{ r.label }}</a>
       {% endfor %}
     </div>
@@ -47,7 +59,7 @@
     <span class="text-muted small">Status:</span>
     <div class="btn-group btn-group-sm" role="group">
       {% for key, (sf_label, _) in status_filters.items() %}
-      <a href="{{ url_for('index', sort=sort, dir=direction, view=view, label=label or None, status_filter=key, page=1) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, view=view, label=label or None, status_filter=key, q=q or None, page=1) }}"
          class="btn btn-{{ 'success' if status_filter == key else 'outline-success' }}">{{ sf_label }}</a>
       {% endfor %}
     </div>
@@ -56,9 +68,9 @@
   <div class="d-flex align-items-center gap-2">
     <span class="text-muted small">View:</span>
     <div class="btn-group btn-group-sm" role="group">
-      <a href="{{ url_for('index', sort=sort, dir=direction, label=label or None, status_filter=status_filter, view='grouped', page=1) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, label=label or None, status_filter=status_filter, view='grouped', q=q or None, page=1) }}"
          class="btn btn-{{ 'secondary' if view == 'grouped' else 'outline-secondary' }}">Grouped</a>
-      <a href="{{ url_for('index', sort=sort, dir=direction, label=label or None, status_filter=status_filter, view='flat', page=1) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, label=label or None, status_filter=status_filter, view='flat', q=q or None, page=1) }}"
          class="btn btn-{{ 'secondary' if view == 'flat' else 'outline-secondary' }}">Flat</a>
     </div>
   </div>
@@ -195,15 +207,15 @@
 <nav>
   <ul class="pagination justify-content-center">
     <li class="page-item {% if page <= 1 %}disabled{% endif %}">
-      <a class="page-link" href="{{ url_for('index', page=page-1, sort=sort, dir=direction, label=label or None, view=view, status_filter=status_filter) }}">Previous</a>
+      <a class="page-link" href="{{ url_for('index', page=page-1, sort=sort, dir=direction, label=label or None, view=view, status_filter=status_filter, q=q or None) }}">Previous</a>
     </li>
     {% for p in range([1, page-2]|max, [total_pages+1, page+3]|min) %}
     <li class="page-item {% if p == page %}active{% endif %}">
-      <a class="page-link" href="{{ url_for('index', page=p, sort=sort, dir=direction, label=label or None, view=view, status_filter=status_filter) }}">{{ p }}</a>
+      <a class="page-link" href="{{ url_for('index', page=p, sort=sort, dir=direction, label=label or None, view=view, status_filter=status_filter, q=q or None) }}">{{ p }}</a>
     </li>
     {% endfor %}
     <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
-      <a class="page-link" href="{{ url_for('index', page=page+1, sort=sort, dir=direction, label=label or None, view=view, status_filter=status_filter) }}">Next</a>
+      <a class="page-link" href="{{ url_for('index', page=page+1, sort=sort, dir=direction, label=label or None, view=view, status_filter=status_filter, q=q or None) }}">Next</a>
     </li>
   </ul>
 </nav>

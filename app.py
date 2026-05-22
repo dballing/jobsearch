@@ -97,7 +97,7 @@ def close_db(e=None) -> None:
         db.close()
 
 
-def build_where(label: str, status_filter: str) -> tuple[str, list]:
+def build_where(label: str, status_filter: str, q: str = "") -> tuple[str, list]:
     conditions: list[str] = []
     params: list = []
     if label:
@@ -106,6 +106,9 @@ def build_where(label: str, status_filter: str) -> tuple[str, list]:
     sql_condition = STATUS_FILTERS.get(status_filter, (None, None))[1]
     if sql_condition:
         conditions.append(sql_condition)
+    if q:
+        conditions.append("(title LIKE ? OR company LIKE ?)")
+        params.extend([f"%{q}%", f"%{q}%"])
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     return where, params
 
@@ -186,11 +189,11 @@ def available_labels(db: sqlite3.Connection) -> list[dict]:
 
 
 def sort_url(col: str, current_sort: str, current_dir: str,
-             label: str, view: str, status_filter: str) -> str:
+             label: str, view: str, status_filter: str, q: str = "") -> str:
     new_dir = "asc" if (current_sort != col or current_dir == "desc") else "desc"
     return url_for("index", sort=col, dir=new_dir,
                    label=label or None, view=view,
-                   status_filter=status_filter, page=1)
+                   status_filter=status_filter, q=q or None, page=1)
 
 
 @app.route("/")
@@ -198,6 +201,7 @@ def index():
     db = get_db()
 
     label         = request.args.get("label", "")
+    q             = request.args.get("q", "").strip()
     sort          = request.args.get("sort", DEFAULT_SORT)
     direction     = request.args.get("dir", DEFAULT_DIR)
     view          = request.args.get("view", DEFAULT_VIEW)
@@ -215,7 +219,7 @@ def index():
     if view == "grouped" and sort == "location":
         sort = DEFAULT_SORT
 
-    where, params = build_where(label, status_filter)
+    where, params = build_where(label, status_filter, q)
     _TEXT_COLS = {"title", "company", "location", "status"}
     sort_expr = f"{sort} COLLATE NOCASE" if sort in _TEXT_COLS else sort
     order  = f"ORDER BY {sort_expr} {direction.upper()} NULLS LAST"
@@ -238,7 +242,7 @@ def index():
     total_pages = max(1, math.ceil(total / PER_PAGE))
     labels      = available_labels(db)
     col_urls    = {
-        col: sort_url(col, sort, direction, label, view, status_filter)
+        col: sort_url(col, sort, direction, label, view, status_filter, q)
         for col in SORTABLE_COLS
     }
 
@@ -249,6 +253,7 @@ def index():
         total_pages=total_pages,
         total=total,
         label=label,
+        q=q,
         sort=sort,
         direction=direction,
         view=view,
