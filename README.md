@@ -107,9 +107,9 @@ This creates the virtual environment (if needed), installs dependencies, and fet
 ```
 Fetching 'derek-job-search-dc-dmv' (label: dc) ...
   312 items retrieved from Apify
-  291 inserted, 21 already existed
+  291 inserted, 14 updated, 7 already existed
 
-Done. 291 new jobs inserted, 21 duplicates skipped.
+Done. 291 inserted, 14 updated, 7 unchanged.
 ```
 
 ### 4. Start the web UI
