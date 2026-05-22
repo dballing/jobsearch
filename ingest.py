@@ -38,6 +38,12 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_status     ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_company    ON jobs(company);
 CREATE INDEX IF NOT EXISTS idx_jobs_first_seen ON jobs(first_seen);
+
+CREATE TABLE IF NOT EXISTS ingest_state (
+    task_name   TEXT PRIMARY KEY,
+    last_run_id TEXT NOT NULL,
+    last_run_at TEXT NOT NULL
+);
 """
 
 
@@ -53,15 +59,37 @@ def open_db(path: str) -> sqlite3.Connection:
     return conn
 
 
-def fetch_dataset_items(username: str, task_name: str, api_token: str) -> list[dict]:
+def fetch_task_runs(username: str, task_name: str, api_token: str) -> list[dict]:
+    """Return all SUCCEEDED runs for a task, sorted oldest-first."""
     task_id = f"{username}~{task_name}"
     headers = {"Authorization": f"Bearer {api_token}"}
 
-    run_url = f"{APIFY_BASE}/actor-tasks/{task_id}/runs/last"
-    resp = requests.get(run_url, headers=headers, params={"status": "SUCCEEDED"}, timeout=30)
-    resp.raise_for_status()
-    dataset_id = resp.json()["data"]["defaultDatasetId"]
+    runs: list[dict] = []
+    offset = 0
+    limit = 100
+    while True:
+        resp = requests.get(
+            f"{APIFY_BASE}/actor-tasks/{task_id}/runs",
+            headers=headers,
+            params={"status": "SUCCEEDED", "limit": limit, "offset": offset},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        batch = resp.json()["data"]["items"]
+        if not batch:
+            break
+        runs.extend(batch)
+        if len(batch) < limit:
+            break
+        offset += limit
 
+    runs.sort(key=lambda r: r["startedAt"])
+    return runs
+
+
+def fetch_dataset_items(dataset_id: str, api_token: str) -> list[dict]:
+    """Fetch all items from a dataset by ID."""
+    headers = {"Authorization": f"Bearer {api_token}"}
     items: list[dict] = []
     offset = 0
     limit = 1000
@@ -80,8 +108,42 @@ def fetch_dataset_items(username: str, task_name: str, api_token: str) -> list[d
         if len(batch) < limit:
             break
         offset += limit
-
     return items
+
+
+def runs_to_process(
+    conn: sqlite3.Connection,
+    task_name: str,
+    all_runs: list[dict],
+) -> list[dict]:
+    """Return the subset of runs not yet ingested, in chronological order.
+
+    On first ever run (no state) we process only the latest run and record
+    it as the baseline, so we don't retroactively pull months of history.
+    """
+    state = conn.execute(
+        "SELECT last_run_id FROM ingest_state WHERE task_name = ?",
+        (task_name,),
+    ).fetchone()
+
+    if state is None:
+        # No prior state — bootstrap from the most recent run only.
+        return all_runs[-1:] if all_runs else []
+
+    last_run_id = state["last_run_id"]
+    seen = False
+    pending = []
+    for run in all_runs:
+        if seen:
+            pending.append(run)
+        if run["id"] == last_run_id:
+            seen = True
+
+    if not seen:
+        # Last known run has aged off (unlikely) — fall back to latest only.
+        return all_runs[-1:] if all_runs else []
+
+    return pending
 
 
 def _scalar(val: object) -> object:
@@ -211,6 +273,20 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str) -> tuple[int
     return inserted, updated, unchanged
 
 
+def record_state(conn: sqlite3.Connection, task_name: str, run: dict) -> None:
+    conn.execute(
+        """
+        INSERT INTO ingest_state (task_name, last_run_id, last_run_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(task_name) DO UPDATE SET
+            last_run_id = excluded.last_run_id,
+            last_run_at = excluded.last_run_at
+        """,
+        (task_name, run["id"], run["startedAt"]),
+    )
+    conn.commit()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Ingest Apify LinkedIn job results into SQLite.")
     parser.add_argument("--config", default="config.toml", help="Path to TOML config file (default: config.toml)")
@@ -236,15 +312,37 @@ def main() -> None:
     for task in tasks:
         task_name: str = task["name"]
         label: str = task["label"]
-        print(f"Fetching '{task_name}' (label: {label}) ...")
+        print(f"Fetching runs for '{task_name}' (label: {label}) ...")
         try:
-            items = fetch_dataset_items(username, task_name, api_token)
-            print(f"  {len(items)} items retrieved from Apify")
-            ins, upd, unch = ingest(conn, items, label)
-            print(f"  {ins} inserted, {upd} updated, {unch} already existed")
-            total_inserted += ins
-            total_updated += upd
-            total_unchanged += unch
+            all_runs = fetch_task_runs(username, task_name, api_token)
+            pending = runs_to_process(conn, task_name, all_runs)
+
+            if not pending:
+                print(f"  No new runs since last ingestion.")
+                continue
+
+            if len(pending) > 1:
+                print(f"  Catching up: {len(pending)} runs to process.")
+
+            task_inserted = task_updated = task_unchanged = 0
+            for run in pending:
+                run_time = run["startedAt"][:16].replace("T", " ")
+                items = fetch_dataset_items(run["defaultDatasetId"], api_token)
+                print(f"  Run {run_time}: {len(items)} items retrieved")
+                ins, upd, unch = ingest(conn, items, label)
+                print(f"    {ins} inserted, {upd} updated, {unch} already existed")
+                task_inserted += ins
+                task_updated += upd
+                task_unchanged += unch
+                record_state(conn, task_name, run)
+
+            if len(pending) > 1:
+                print(f"  Task total: {task_inserted} inserted, {task_updated} updated, {task_unchanged} already existed")
+
+            total_inserted += task_inserted
+            total_updated += task_updated
+            total_unchanged += task_unchanged
+
         except requests.HTTPError as exc:
             print(f"  ERROR fetching '{task_name}': {exc}", file=sys.stderr)
 

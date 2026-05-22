@@ -106,9 +106,9 @@ This creates the virtual environment (if needed), installs dependencies, and fet
 
 ```
 Starting ingestion at 2026-05-22 14:00:00 UTC
-Fetching 'derek-job-search-dc-dmv' (label: dc) ...
-  312 items retrieved from Apify
-  291 inserted, 14 updated, 7 already existed
+Fetching runs for 'derek-job-search-dc-dmv' (label: dc) ...
+  Run 2026-05-22 14:00: 312 items retrieved
+    291 inserted, 14 updated, 7 already existed
 Done in 4.2s. 291 inserted, 14 updated, 7 unchanged.
 
 ```
