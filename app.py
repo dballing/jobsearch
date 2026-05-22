@@ -53,6 +53,7 @@ STATUS_COLORS = {
 }
 
 STATUS_FILTERS = {
+    "new":     ("New",     "status = 'new'"),
     "active":  ("Active",  "status NOT IN ('skipped', 'rejected', 'withdrawn', 'closed')"),
     "applied": ("Applied", "status IN ('applied', 'interviewing', 'offered')"),
     "all":     ("All",     None),
