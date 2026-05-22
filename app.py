@@ -190,8 +190,16 @@ def available_labels(db: sqlite3.Connection) -> list[dict]:
 
 def sort_url(col: str, current_sort: str, current_dir: str,
              label: str, view: str, status_filter: str, q: str = "") -> str:
-    new_dir = "asc" if (current_sort != col or current_dir == "desc") else "desc"
-    return url_for("index", sort=col, dir=new_dir,
+    if current_sort != col:
+        # Not currently sorted by this column — start ascending.
+        new_sort, new_dir = col, "asc"
+    elif current_dir == "asc":
+        # First click already done — go descending.
+        new_sort, new_dir = col, "desc"
+    else:
+        # Second click already done — clear back to default.
+        new_sort, new_dir = DEFAULT_SORT, DEFAULT_DIR
+    return url_for("index", sort=new_sort, dir=new_dir,
                    label=label or None, view=view,
                    status_filter=status_filter, q=q or None, page=1)
 
