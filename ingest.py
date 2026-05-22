@@ -250,7 +250,7 @@ def main() -> None:
 
     conn.close()
     elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
-    print(f"\nDone in {elapsed:.1f}s. {total_inserted} inserted, {total_updated} updated, {total_unchanged} unchanged.")
+    print(f"Done in {elapsed:.1f}s. {total_inserted} inserted, {total_updated} updated, {total_unchanged} unchanged.\n")
 
 
 if __name__ == "__main__":
