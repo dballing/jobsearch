@@ -106,8 +106,9 @@ def inject_last_ingested() -> dict:
         ts = row["ts"] if row and row["ts"] else None
         last_ingested = ts[:16].replace("T", " ") + " UTC" if ts else None
     except sqlite3.OperationalError:
+        ts = None
         last_ingested = None
-    return {"last_ingested": last_ingested}
+    return {"last_ingested": last_ingested, "last_ingested_iso": ts}
 
 
 def build_where(label: str, status_filter: str, q: str = "") -> tuple[str, list]:
