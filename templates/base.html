@@ -22,8 +22,44 @@
   <nav class="navbar navbar-dark bg-dark mb-4">
     <div class="container-fluid">
       <a class="navbar-brand" href="/">LinkedIn Job Search</a>
+      <div class="d-flex align-items-center gap-3">
+        {% if last_ingested %}
+        <span class="text-white-50 small">Last ingested: {{ last_ingested }}</span>
+        {% endif %}
+        <button class="btn btn-sm btn-outline-secondary" onclick="showStats()" title="Stats">
+          <i class="bi bi-bar-chart"></i>
+        </button>
+        <a href="https://github.com/dballing/linkedinsearch" target="_blank" rel="noopener"
+           class="btn btn-sm btn-outline-secondary" title="GitHub">
+          <i class="bi bi-github"></i>
+        </a>
+        <a href="https://github.com/dballing/linkedinsearch/issues/new" target="_blank" rel="noopener"
+           class="btn btn-sm btn-outline-secondary" title="Report an issue">
+          <i class="bi bi-bug"></i>
+        </a>
+      </div>
     </div>
   </nav>
+
+  <div class="modal fade" id="statsModal" tabindex="-1" aria-labelledby="statsModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h6 class="modal-title fw-semibold" id="statsModalLabel">Database Stats</h6>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body" id="statsModalBody">
+          <div class="text-center py-4"><div class="spinner-border text-secondary" role="status"></div></div>
+        </div>
+        <div class="modal-footer flex-column align-items-stretch border-top pt-3" id="statsChartSection" style="display:none!important">
+          <div id="statsChartWarning" class="alert alert-warning py-2 small mb-2" style="display:none">
+            ⚠️ Fewer than 7 days of ingestion history available — chart may not be representative yet.
+          </div>
+          <canvas id="statsChart" height="120"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
   <div class="container-fluid px-4">
     {% block content %}{% endblock %}
   </div>
@@ -43,6 +79,7 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
   <script>
   function escHtml(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -168,6 +205,82 @@
       .catch(() => {
         titleEl.textContent = 'Error';
         bodyEl.innerHTML    = '<div class="alert alert-danger m-3">Failed to load job details.</div>';
+      });
+  }
+  </script>
+  <script>
+  let _statsChart = null;
+
+  function showStats() {
+    const body         = document.getElementById('statsModalBody');
+    const chartSection = document.getElementById('statsChartSection');
+    const chartWarning = document.getElementById('statsChartWarning');
+    body.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-secondary" role="status"></div></div>';
+    chartSection.style.display = 'none';
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('statsModal')).show();
+
+    Promise.all([fetch('/stats'), fetch('/stats/history')])
+      .then(rs => { if (!rs[0].ok || !rs[1].ok) throw new Error(); return Promise.all(rs.map(r => r.json())); })
+      .then(([s, h]) => {
+        const statusOrder = [
+          'new','reviewed','applied','interviewing','offered','rejected','withdrawn','skipped','closed'
+        ];
+        const statusRows = statusOrder
+          .filter(st => s.by_status[st])
+          .map(st => `<tr><td class="text-capitalize">${escHtml(st)}</td><td class="text-end">${s.by_status[st]}</td></tr>`)
+          .join('');
+        const labelRows = s.by_label.length
+          ? s.by_label.map(l => `<tr><td>${escHtml(l.display)}</td><td class="text-end">${l.count}</td></tr>`).join('')
+          : '<tr><td colspan="2" class="text-muted">—</td></tr>';
+
+        body.innerHTML = `
+          <div class="row g-3 mb-3 text-center">
+            <div class="col">
+              <div class="fs-3 fw-bold">${s.total}</div>
+              <div class="text-muted small">Total jobs</div>
+            </div>
+            <div class="col">
+              <div class="fs-3 fw-bold">${s.new_last_7_days}</div>
+              <div class="text-muted small">Added last 7 days</div>
+            </div>
+          </div>
+          <div class="row g-3">
+            <div class="col">
+              <div class="small fw-semibold text-muted mb-1">By status</div>
+              <table class="table table-sm table-borderless mb-0">${statusRows}</table>
+            </div>
+            ${s.by_label.length ? `
+            <div class="col">
+              <div class="small fw-semibold text-muted mb-1">By label</div>
+              <table class="table table-sm table-borderless mb-0">${labelRows}</table>
+            </div>` : ''}
+          </div>`;
+
+        // Chart
+        if (h.days.length > 0) {
+          chartSection.style.removeProperty('display');
+          chartWarning.style.display = h.days.length < 7 ? '' : 'none';
+          if (_statsChart) _statsChart.destroy();
+          _statsChart = new Chart(document.getElementById('statsChart'), {
+            type: 'bar',
+            data: {
+              labels: h.days,
+              datasets: [
+                { label: 'Inserted',  data: h.inserted,  backgroundColor: '#198754' },
+                { label: 'Updated',   data: h.updated,   backgroundColor: '#0d6efd' },
+                { label: 'Unchanged', data: h.unchanged, backgroundColor: '#dee2e6' },
+              ],
+            },
+            options: {
+              responsive: true,
+              plugins: { legend: { position: 'bottom' } },
+              scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } },
+            },
+          });
+        }
+      })
+      .catch(() => {
+        body.innerHTML = '<div class="alert alert-danger m-3">Failed to load stats.</div>';
       });
   }
   </script>

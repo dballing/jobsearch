@@ -97,6 +97,19 @@ def close_db(e=None) -> None:
         db.close()
 
 
+@app.context_processor
+def inject_last_ingested() -> dict:
+    try:
+        row = get_db().execute(
+            "SELECT MAX(last_run_at) AS ts FROM ingest_state"
+        ).fetchone()
+        ts = row["ts"] if row and row["ts"] else None
+        last_ingested = ts[:16].replace("T", " ") + " UTC" if ts else None
+    except sqlite3.OperationalError:
+        last_ingested = None
+    return {"last_ingested": last_ingested}
+
+
 def build_where(label: str, status_filter: str, q: str = "") -> tuple[str, list]:
     conditions: list[str] = []
     params: list = []
@@ -272,6 +285,57 @@ def index():
         labels=labels,
         col_urls=col_urls,
     )
+
+
+@app.route("/stats")
+def stats():
+    db = get_db()
+    total = db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+    by_status = {
+        r["status"]: r["cnt"]
+        for r in db.execute(
+            "SELECT status, COUNT(*) AS cnt FROM jobs GROUP BY status ORDER BY cnt DESC"
+        ).fetchall()
+    }
+    new_7d = db.execute(
+        "SELECT COUNT(*) FROM jobs WHERE first_seen >= datetime('now', '-7 days')"
+    ).fetchone()[0]
+    label_rows = db.execute(
+        """SELECT je.value AS lbl, COUNT(*) AS cnt
+           FROM jobs, json_each(jobs.labels) je
+           GROUP BY je.value ORDER BY cnt DESC"""
+    ).fetchall()
+    by_label = [
+        {"label": r["lbl"], "display": LABEL_NAMES.get(r["lbl"], r["lbl"].upper()), "count": r["cnt"]}
+        for r in label_rows
+    ]
+    return {"total": total, "by_status": by_status, "new_last_7_days": new_7d, "by_label": by_label}
+
+
+@app.route("/stats/history")
+def stats_history():
+    db = get_db()
+    try:
+        rows = db.execute(
+            """
+            SELECT DATE(run_at) AS day,
+                   SUM(inserted)  AS inserted,
+                   SUM(updated)   AS updated,
+                   SUM(unchanged) AS unchanged
+            FROM ingest_history
+            WHERE run_at >= datetime('now', '-7 days')
+            GROUP BY DATE(run_at)
+            ORDER BY day
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+    return {
+        "days":      [r["day"]       for r in rows],
+        "inserted":  [r["inserted"]  for r in rows],
+        "updated":   [r["updated"]   for r in rows],
+        "unchanged": [r["unchanged"] for r in rows],
+    }
 
 
 @app.route("/job/<job_id>")

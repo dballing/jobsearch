@@ -44,6 +44,17 @@ CREATE TABLE IF NOT EXISTS ingest_state (
     last_run_id TEXT NOT NULL,
     last_run_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS ingest_history (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_name   TEXT    NOT NULL,
+    run_id      TEXT    NOT NULL,
+    run_at      TEXT    NOT NULL,
+    inserted    INTEGER NOT NULL DEFAULT 0,
+    updated     INTEGER NOT NULL DEFAULT 0,
+    unchanged   INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(task_name, run_id)
+);
 """
 
 
@@ -273,7 +284,8 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str) -> tuple[int
     return inserted, updated, unchanged
 
 
-def record_state(conn: sqlite3.Connection, task_name: str, run: dict) -> None:
+def record_state(conn: sqlite3.Connection, task_name: str, run: dict,
+                 inserted: int, updated: int, unchanged: int) -> None:
     conn.execute(
         """
         INSERT INTO ingest_state (task_name, last_run_id, last_run_at)
@@ -283,6 +295,14 @@ def record_state(conn: sqlite3.Connection, task_name: str, run: dict) -> None:
             last_run_at = excluded.last_run_at
         """,
         (task_name, run["id"], run["startedAt"]),
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO ingest_history
+            (task_name, run_id, run_at, inserted, updated, unchanged)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (task_name, run["id"], run["startedAt"], inserted, updated, unchanged),
     )
     conn.commit()
 
@@ -334,7 +354,7 @@ def main() -> None:
                 task_inserted += ins
                 task_updated += upd
                 task_unchanged += unch
-                record_state(conn, task_name, run)
+                record_state(conn, task_name, run, ins, upd, unch)
 
             if len(pending) > 1:
                 print(f"  Task total: {task_inserted} inserted, {task_updated} updated, {task_unchanged} already existed")
