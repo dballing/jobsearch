@@ -23,9 +23,17 @@
     <div class="container-fluid">
       <a class="navbar-brand" href="/">LinkedIn Job Search</a>
       <div class="d-flex align-items-center gap-3">
-        {% if last_ingested %}
-        <span class="text-white-50 small" id="lastIngestedLabel"
-              {% if last_ingested_iso %}data-ts="{{ last_ingested_iso }}"{% endif %}>Last ingested: {{ last_ingested }}</span>
+        {% if last_data_at or last_synced_at %}
+        <div class="text-white-50 small" style="display:grid;grid-template-columns:max-content auto;column-gap:0.35rem;line-height:1.4">
+          {% if last_data_at %}
+          <span class="text-end">Data:</span>
+          <span id="lastDataLabel" data-ts="{{ last_data_iso }}">{{ last_data_at }}</span>
+          {% endif %}
+          {% if last_synced_at %}
+          <span class="text-end">Synced:</span>
+          <span id="lastSyncedLabel" data-ts="{{ last_synced_iso }}">{{ last_synced_at }}</span>
+          {% endif %}
+        </div>
         {% endif %}
         <button class="btn btn-sm btn-outline-secondary" onclick="showStats()" title="Stats">
           <i class="bi bi-bar-chart"></i>
@@ -83,14 +91,13 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
   <script>
   document.addEventListener('DOMContentLoaded', () => {
-    const el = document.getElementById('lastIngestedLabel');
-    if (el && el.dataset.ts) {
-      const d = new Date(el.dataset.ts);
-      el.textContent = 'Last ingested: ' + d.toLocaleString([], {
-        year: 'numeric', month: 'short', day: 'numeric',
-        hour: '2-digit', minute: '2-digit',
-      });
-    }
+    const fmtOpts = {year:'numeric', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'};
+    ['lastDataLabel', 'lastSyncedLabel'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el && el.dataset.ts) {
+        el.textContent = new Date(el.dataset.ts).toLocaleString([], fmtOpts);
+      }
+    });
   });
   </script>
   <script>

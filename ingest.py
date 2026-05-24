@@ -40,9 +40,10 @@ CREATE INDEX IF NOT EXISTS idx_jobs_company    ON jobs(company);
 CREATE INDEX IF NOT EXISTS idx_jobs_first_seen ON jobs(first_seen);
 
 CREATE TABLE IF NOT EXISTS ingest_state (
-    task_name   TEXT PRIMARY KEY,
-    last_run_id TEXT NOT NULL,
-    last_run_at TEXT NOT NULL
+    task_name      TEXT PRIMARY KEY,
+    last_run_id    TEXT NOT NULL,
+    last_run_at    TEXT NOT NULL,
+    last_synced_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS ingest_history (
@@ -66,6 +67,11 @@ def open_db(path: str) -> sqlite3.Connection:
     cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
     if "regions" in cols and "labels" not in cols:
         conn.execute("ALTER TABLE jobs RENAME COLUMN regions TO labels")
+        conn.commit()
+    # Migrate: add last_synced_at to ingest_state if not present.
+    state_cols = [row[1] for row in conn.execute("PRAGMA table_info(ingest_state)").fetchall()]
+    if state_cols and "last_synced_at" not in state_cols:
+        conn.execute("ALTER TABLE ingest_state ADD COLUMN last_synced_at TEXT")
         conn.commit()
     return conn
 
@@ -286,15 +292,17 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str) -> tuple[int
 
 def record_state(conn: sqlite3.Connection, task_name: str, run: dict,
                  inserted: int, updated: int, unchanged: int) -> None:
+    now = datetime.now(timezone.utc).isoformat()
     conn.execute(
         """
-        INSERT INTO ingest_state (task_name, last_run_id, last_run_at)
-        VALUES (?, ?, ?)
+        INSERT INTO ingest_state (task_name, last_run_id, last_run_at, last_synced_at)
+        VALUES (?, ?, ?, ?)
         ON CONFLICT(task_name) DO UPDATE SET
-            last_run_id = excluded.last_run_id,
-            last_run_at = excluded.last_run_at
+            last_run_id    = excluded.last_run_id,
+            last_run_at    = excluded.last_run_at,
+            last_synced_at = excluded.last_synced_at
         """,
-        (task_name, run["id"], run["startedAt"]),
+        (task_name, run["id"], run["startedAt"], now),
     )
     conn.execute(
         """

@@ -87,6 +87,11 @@ def get_db() -> sqlite3.Connection:
         if "regions" in cols and "labels" not in cols:
             g.db.execute("ALTER TABLE jobs RENAME COLUMN regions TO labels")
             g.db.commit()
+        # Migrate: add last_synced_at to ingest_state if not present.
+        state_cols = [row[1] for row in g.db.execute("PRAGMA table_info(ingest_state)").fetchall()]
+        if state_cols and "last_synced_at" not in state_cols:
+            g.db.execute("ALTER TABLE ingest_state ADD COLUMN last_synced_at TEXT")
+            g.db.commit()
     return g.db
 
 
@@ -98,17 +103,23 @@ def close_db(e=None) -> None:
 
 
 @app.context_processor
-def inject_last_ingested() -> dict:
+def inject_nav_timestamps() -> dict:
     try:
         row = get_db().execute(
-            "SELECT MAX(last_run_at) AS ts FROM ingest_state"
+            "SELECT MAX(last_run_at) AS data_at, MAX(last_synced_at) AS synced_at FROM ingest_state"
         ).fetchone()
-        ts = row["ts"] if row and row["ts"] else None
-        last_ingested = ts[:16].replace("T", " ") + " UTC" if ts else None
+        data_iso   = row["data_at"]   if row and row["data_at"]   else None
+        synced_iso = row["synced_at"] if row and row["synced_at"] else None
+        fmt = lambda ts: ts[:16].replace("T", " ") + " UTC" if ts else None
     except sqlite3.OperationalError:
-        ts = None
-        last_ingested = None
-    return {"last_ingested": last_ingested, "last_ingested_iso": ts}
+        data_iso = synced_iso = None
+        fmt = lambda ts: None
+    return {
+        "last_data_at":    fmt(data_iso),
+        "last_data_iso":   data_iso,
+        "last_synced_at":  fmt(synced_iso),
+        "last_synced_iso": synced_iso,
+    }
 
 
 def build_where(label: str, status_filter: str, q: str = "") -> tuple[str, list]:
