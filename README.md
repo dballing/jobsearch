@@ -73,7 +73,17 @@ git clone git@github.com:dballing/jobsearch.git
 cd jobsearch
 ```
 
-### 2. Create `config.toml`
+### 2. Set up the virtual environment
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+> `ingest.sh` and `run_app.sh` both create and activate the venv automatically if it doesn't exist, so this step is only strictly necessary if you want your editor or IDE to resolve packages before running either script.
+
+### 3. Create `config.toml`
 
 Copy the example and fill in your details:
 
@@ -118,7 +128,7 @@ Per-task optional keys:
 
 `config.toml` is gitignored so your API token is never committed.
 
-### 3. Run the first ingestion
+### 4. Run the first ingestion
 
 ```bash
 ./ingest.sh
@@ -138,7 +148,7 @@ Done in 5.1s. 373 inserted, 18 updated, 9 unchanged, 82 ATS duplicates skipped.
 
 ```
 
-### 4. Start the web UI
+### 5. Start the web UI
 
 ```bash
 ./run_app.sh
