@@ -2,20 +2,23 @@ api_token = "apify_api_xxxxxxxxxxxxxxxxxxxx"
 username  = "your-apify-username"
 db_path   = "jobs.db"
 
-[[tasks]]
-name    = "my-dc-va-search"
-label   = "dc"           # required: short key stored in the database
-display = "DC/DMV"       # optional: pretty name shown in the UI filter bar (defaults to label uppercased)
-# actor = "linkedin"     # optional: "linkedin" (default) or "careersite"
-# exclude_ats_duplicates = true  # optional: skip LinkedIn results already covered by a career-site task
+# Map label keys to display names shown in the UI filter bar.
+# If a label has no entry here it is shown uppercased.
+[labels]
+dc = "DC/DMV"
+nc = "NC"
 
 [[tasks]]
-name    = "my-nc-search"
-label   = "nc"           # required
-display = "NC"           # optional
+name  = "my-dc-va-search"
+label = "dc"             # required: short key stored in the database
+# actor = "linkedin"    # optional: "linkedin" (default) or "careersite"
+# exclude_ats_duplicates = true  # optional: skip results already covered by a career-site task
 
 [[tasks]]
-name    = "my-career-site-search"
-label   = "cs"           # required
-display = "Career Sites" # optional
-actor   = "careersite"   # use fantastic-jobs/career-site-job-listing-api
+name  = "my-dc-va-search-career-sites"
+label = "dc"             # same label — career-site results join the same filter group
+actor = "careersite"     # use fantastic-jobs/career-site-job-listing-api
+
+[[tasks]]
+name  = "my-nc-search"
+label = "nc"

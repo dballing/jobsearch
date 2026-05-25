@@ -19,12 +19,16 @@ with open(_config_path, "rb") as _f:
 
 DB_PATH: str = _cfg.get("db_path", "jobs.db")
 
-# Build label → display-name mapping from [[tasks]] entries.
-# Each task may carry an optional `display` key; fall back to the raw label uppercased.
-LABEL_NAMES: dict[str, str] = {
-    t["label"]: t.get("display", t["label"].upper())
-    for t in _cfg.get("tasks", [])
-}
+# Build label → display-name mapping.
+# Preferred source: top-level [labels] table in config.toml.
+# Backward-compat fallback: per-task `display` key (older config format).
+# Any label not covered by either defaults to the label uppercased at use-time.
+_label_names: dict[str, str] = dict(_cfg.get("labels", {}))
+for _t in _cfg.get("tasks", []):
+    _lbl = _t["label"]
+    if _lbl not in _label_names and "display" in _t:
+        _label_names[_lbl] = _t["display"]
+LABEL_NAMES: dict[str, str] = _label_names
 
 SORTABLE_COLS = {
     "title", "company", "location", "salary_min",

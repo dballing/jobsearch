@@ -88,27 +88,30 @@ api_token = "apify_api_xxxxxxxxxxxxxxxxxxxx"   # your Apify API token
 username  = "your-apify-username"              # your Apify username
 db_path   = "jobs.db"                          # path to SQLite database
 
-[[tasks]]
-name    = "derek-job-search-dc-dmv"   # Apify task name
-label   = "dc"                         # short internal key stored in the database
-display = "DC/DMV"                     # optional: pretty name shown in the UI filter bar
-# exclude_ats_duplicates = true        # optional: skip results also covered by a career-site task
+# Map label keys to display names shown in the UI filter bar.
+# If a label has no entry here it is shown uppercased.
+[labels]
+dc = "DC/DMV"
+nc = "NC"
 
 [[tasks]]
-name    = "derek-job-search-north-carolina"
-label   = "nc"
-display = "NC"
+name  = "derek-job-search-dc-dmv"   # Apify task name
+label = "dc"                         # short key stored in the database
 
 [[tasks]]
-name    = "derek-career-site-search"
-label   = "cs"
-display = "Career Sites"
-actor   = "careersite"                 # use fantastic-jobs/career-site-job-listing-api
+name  = "derek-job-search-dc-dmv-career-sites"
+label = "dc"                         # same label — joins the DC/DMV filter group
+actor = "careersite"                 # use fantastic-jobs/career-site-job-listing-api
+
+[[tasks]]
+name  = "derek-job-search-north-carolina"
+label = "nc"
 ```
 
-Add as many `[[tasks]]` sections as you have searches. Each task requires a `label` — an arbitrary short string stored in the database that identifies which task a job came from (keep it consistent across ingestion runs). Optional keys:
+Multiple tasks can share the same `label` — they contribute to the same filter group and their jobs accumulate that label. Labels represent the search dimension (geography, role type, etc.); use the Source filter in the UI to distinguish LinkedIn from career-site results within a label. The `[labels]` table maps each label key to a display name; any label without an entry is shown uppercased.
 
-- `display` — pretty name shown in the UI filter bar; defaults to the `label` uppercased.
+Per-task optional keys:
+
 - `actor` — `"linkedin"` (default) or `"careersite"`. Set to `"careersite"` for tasks that use `fantastic-jobs/career-site-job-listing-api`. Career-site jobs are stored with a `cs_` prefix on their IDs to avoid collision with LinkedIn job IDs.
 - `exclude_ats_duplicates` — `true` to skip LinkedIn results that the actor has flagged as duplicates of career-site postings (the `ats_duplicate` field). Useful when you're running both a LinkedIn task and a career-site task to avoid double-ingesting the same job. Skipped items are counted and reported in the ingestion log. In a steady state you'd expect the LinkedIn skip count to roughly equal the career-site insert count for the same run window.
 
