@@ -290,6 +290,16 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str) -> tuple[int
     return inserted, updated, unchanged
 
 
+def touch_synced(conn: sqlite3.Connection, task_name: str) -> None:
+    """Record that ingest ran for this task, even if no new data was found."""
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "UPDATE ingest_state SET last_synced_at = ? WHERE task_name = ?",
+        (now, task_name),
+    )
+    conn.commit()
+
+
 def record_state(conn: sqlite3.Connection, task_name: str, run: dict,
                  inserted: int, updated: int, unchanged: int) -> None:
     now = datetime.now(timezone.utc).isoformat()
@@ -347,6 +357,7 @@ def main() -> None:
 
             if not pending:
                 print(f"  No new runs since last ingestion.")
+                touch_synced(conn, task_name)
                 continue
 
             if len(pending) > 1:
