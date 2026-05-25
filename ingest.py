@@ -384,7 +384,7 @@ def main() -> None:
     tasks: list[dict] = config["tasks"]
 
     conn = open_db(db_path)
-    total_inserted = total_updated = total_unchanged = 0
+    total_inserted = total_updated = total_unchanged = total_skipped = 0
     start_time = datetime.now(timezone.utc)
     print(f"Starting ingestion at {start_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
@@ -427,13 +427,14 @@ def main() -> None:
             total_inserted += task_inserted
             total_updated += task_updated
             total_unchanged += task_unchanged
+            total_skipped += task_skipped
 
         except requests.HTTPError as exc:
             print(f"  ERROR fetching '{task_name}': {exc}", file=sys.stderr)
 
     conn.close()
     elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
-    print(f"Done in {elapsed:.1f}s. {total_inserted} inserted, {total_updated} updated, {total_unchanged} unchanged.\n")
+    print(f"Done in {elapsed:.1f}s. {total_inserted} inserted, {total_updated} updated, {total_unchanged} unchanged, {total_skipped} ATS duplicates skipped.\n")
 
 
 if __name__ == "__main__":
