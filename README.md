@@ -1,6 +1,6 @@
-# LinkedIn Job Search Tracker
+# Job Search Tracker
 
-A personal tool for ingesting nightly LinkedIn job search results (via Apify) into a local SQLite database, and reviewing them through a Flask web UI.
+A personal tool for ingesting job search results from multiple sources (via Apify) into a local SQLite database, and reviewing them through a Flask web UI.
 
 ---
 
@@ -10,8 +10,8 @@ A personal tool for ingesting nightly LinkedIn job search results (via Apify) in
    - **[fantastic-jobs/advanced-linkedin-job-search-api](https://apify.com/fantastic-jobs/advanced-linkedin-job-search-api)** — LinkedIn job postings (default)
    - **[fantastic-jobs/career-site-job-listing-api](https://apify.com/fantastic-jobs/career-site-job-listing-api)** — career-site postings from 54+ ATS platforms (Greenhouse, Lever, Workday, Ashby, etc.)
 
-   Each task represents a search (e.g., by geography, by title, by ATS platform).
-2. A cron job runs `ingest.sh` on a schedule, fetching the latest results from each task and inserting new jobs into a local SQLite database. Duplicate postings (same LinkedIn job ID) are detected and updated rather than re-inserted. Jobs that appear in multiple task runs accumulate labels from each.
+   Each task represents a search (e.g., by geography, by title, by ATS platform). Multiple tasks can share a label to group results in the UI.
+2. A cron job runs `ingest.sh` on a schedule, fetching the latest results from each task and inserting new jobs into a local SQLite database. Duplicate postings (same job ID) are detected and updated rather than re-inserted. Jobs that appear in multiple task runs accumulate labels from each.
 3. You run the Flask app locally to browse, filter, sort, and track your application status for each job.
 
 ---
@@ -45,8 +45,8 @@ Navigate to the Actor(s) you want to use in the Apify Store and click **Try for 
 Rather than running the Actor directly, create a **Task** for each search so you can save your parameters and schedule runs.
 
 1. In the Actor page, click **Create new Task**.
-2. Give the task a descriptive name, e.g. `derek-job-search-dc-dmv`.
-3. Configure your search parameters. Common fields include:
+2. Give the task a descriptive name, e.g. `my-job-search-dc-dmv`.
+3. Configure your search parameters. Some common fields:
    - **Keywords** — job title(s) or skills
    - **Location** — geographic area, or leave blank for remote-only searches
    - **Date posted** — how far back to look; see note below
@@ -54,9 +54,9 @@ Rather than running the Actor directly, create a **Task** for each search so you
 4. Save the task.
 5. Repeat for each additional search.
 
-> **Note on date range:** The Actor supports four windows: **1h**, **24h**, **7d**, and **6m** (all active jobs). The first three return full job descriptions; the 6-month window does not — you'll get titles and companies but empty descriptions.
+> **Note on date range:** Both actors support four windows: **1h**, **24h**, **7d**, and **6m** (all active jobs). The first three return full job descriptions; the 6-month window does not — you'll get titles and companies but empty descriptions.
 
-> **Note:** The task name you give in the Apify Console is what you'll use in `config.toml`. The format expected is the short name only (e.g., `derek-job-search-dc-dmv`), not the full `username~taskname` form — the ingestion script constructs that automatically.
+> **Note:** The task name you give in the Apify Console is what you'll use in `config.toml`. The format expected is the short name only (e.g., `my-job-search-dc-dmv`), not the full `username~taskname` form — the ingestion script constructs that automatically.
 
 ### 5. Schedule each task
 
@@ -95,16 +95,17 @@ dc = "DC/DMV"
 nc = "NC"
 
 [[tasks]]
-name  = "derek-job-search-dc-dmv"   # Apify task name
+name  = "my-job-search-dc-dmv"      # Apify task name
 label = "dc"                         # short key stored in the database
 
 [[tasks]]
-name  = "derek-job-search-dc-dmv-career-sites"
+name  = "my-job-search-dc-dmv-career-sites"
 label = "dc"                         # same label — joins the DC/DMV filter group
 actor = "careersite"                 # use fantastic-jobs/career-site-job-listing-api
+# exclude_ats_duplicates = true      # skip results already covered by the career-site task
 
 [[tasks]]
-name  = "derek-job-search-north-carolina"
+name  = "my-job-search-north-carolina"
 label = "nc"
 ```
 
@@ -113,9 +114,7 @@ Multiple tasks can share the same `label` — they contribute to the same filter
 Per-task optional keys:
 
 - `actor` — `"linkedin"` (default) or `"careersite"`. Set to `"careersite"` for tasks that use `fantastic-jobs/career-site-job-listing-api`. Career-site jobs are stored with a `cs_` prefix on their IDs to avoid collision with LinkedIn job IDs.
-- `exclude_ats_duplicates` — `true` to skip LinkedIn results that the actor has flagged as duplicates of career-site postings (the `ats_duplicate` field). Useful when you're running both a LinkedIn task and a career-site task to avoid double-ingesting the same job. Skipped items are counted and reported in the ingestion log. In a steady state you'd expect the LinkedIn skip count to roughly equal the career-site insert count for the same run window.
-
-You might use geographic tags (`dc`, `nc`), title tags (`pm`, `eng`), source tags (`cs`), or any other dimension that helps you organize results.
+- `exclude_ats_duplicates` — `true` to skip LinkedIn results that the actor has flagged as duplicates of career-site postings. Useful when running both a LinkedIn and a career-site task for the same geography to avoid double-ingesting the same job. Skipped items are counted and reported in the ingestion log; in a steady state you'd expect the LinkedIn skip count to roughly equal the career-site insert count for the same run window.
 
 `config.toml` is gitignored so your API token is never committed.
 
@@ -129,13 +128,13 @@ This creates the virtual environment (if needed), installs dependencies, and fet
 
 ```
 Starting ingestion at 2026-05-22 14:00:00 UTC
-Fetching runs for 'derek-job-search-dc-dmv' (label: dc, actor: linkedin) ...
+Fetching runs for 'my-job-search-dc-dmv' (label: dc, actor: linkedin) ...
   Run 2026-05-22 14:00: 312 items retrieved
     291 inserted, 14 updated, 7 already existed, 82 ATS duplicates skipped
-Fetching runs for 'derek-career-site-search' (label: cs, actor: careersite) ...
+Fetching runs for 'my-job-search-dc-dmv-career-sites' (label: dc, actor: careersite) ...
   Run 2026-05-22 14:00: 88 items retrieved
     82 inserted, 4 updated, 2 already existed
-Done in 5.1s. 373 inserted, 18 updated, 9 unchanged.
+Done in 5.1s. 373 inserted, 18 updated, 9 unchanged, 82 ATS duplicates skipped.
 
 ```
 
@@ -165,8 +164,10 @@ Use the absolute path to `ingest.sh`. The script changes into its own directory 
 
 ### Filtering
 
-- **Label**: filter to jobs from a specific task (or show all).
-- **Status**: 
+- **Label**: filter to a specific search dimension (geography, role type, etc.), or show all.
+- **Source**: filter to LinkedIn or career-site results only. Appears automatically when both sources are present in the database.
+- **Status**:
+  - *New* — jobs not yet reviewed
   - *Active* — jobs not yet skipped, rejected, withdrawn, or closed (default)
   - *Applied* — jobs currently in progress (applied, interviewing, offered)
   - *All* — everything in the database
@@ -176,7 +177,7 @@ Use the absolute path to `ingest.sh`. The script changes into its own directory 
 
 ### Sorting
 
-Click any column header to sort. Click again to reverse direction. Sorting is case-insensitive.
+Click any column header to sort. Click again to reverse. Click a third time to return to the default sort. Sorting is case-insensitive.
 
 ### Tracking status
 
@@ -200,7 +201,7 @@ In grouped view, if all locations for a job share the same status, a group-level
 
 ### Previewing job descriptions
 
-Click the card icon (&#9783;) next to any job title to open a preview panel with the job description, without leaving the page or opening a new tab.
+Click the card icon (&#9783;) next to any job title to open a side panel with the full job description. The **View Job** button at the bottom links to the original posting.
 
 ---
 
