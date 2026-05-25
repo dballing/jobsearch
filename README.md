@@ -69,8 +69,8 @@ In each task's page, click the **Schedules** tab and create a schedule. A cron e
 ### 1. Clone the repo
 
 ```bash
-git clone git@github.com:dballing/linkedinsearch.git
-cd linkedinsearch
+git clone git@github.com:dballing/jobsearch.git
+cd jobsearch
 ```
 
 ### 2. Create `config.toml`
@@ -153,7 +153,7 @@ Then open [http://127.0.0.1:5000](http://127.0.0.1:5000) in your browser.
 To keep the database current automatically, add a cron job that runs `ingest.sh`. Edit your crontab with `crontab -e`:
 
 ```
-0 1,5,9,13,17,21 * * * /path/to/linkedinsearch/ingest.sh >> /path/to/linkedinsearch/ingest.log 2>&1
+0 1,5,9,13,17,21 * * * /path/to/jobsearch/ingest.sh >> /path/to/jobsearch/ingest.log 2>&1
 ```
 
 Use the absolute path to `ingest.sh`. The script changes into its own directory before running, so relative paths in `config.toml` (e.g., `db_path = "jobs.db"`) work correctly.
@@ -220,7 +220,7 @@ When a job already exists in the database and is seen again in a subsequent run:
 ## Project structure
 
 ```
-linkedinsearch/
+jobsearch/
 ├── app.py              # Flask web application
 ├── ingest.py           # Apify ingestion script
 ├── ingest.sh           # venv wrapper for ingest.py
