@@ -146,8 +146,15 @@
               </button>
               <span class="text-muted small">{{ job.location_count }} postings of this title by this company</span>
             </td>
-            <td>—</td>
-            <td>—</td>
+            <td class="text-nowrap">
+              {% if job.group_salary == '(varied)' %}<span class="text-muted fst-italic small">(varied)</span>
+              {% else %}{{ job.group_salary or '—' }}{% endif %}
+            </td>
+            <td>
+              {% if job.group_labels == '(varied)' %}<span class="text-muted fst-italic small">(varied)</span>
+              {% elif job.group_labels %}{% for r in job.group_labels %}<span class="badge bg-secondary">{{ r }}</span> {% endfor %}
+              {% else %}—{% endif %}
+            </td>
             {% if sources|length > 1 %}
             <td>
               {% if job.group_source_display %}
@@ -164,8 +171,14 @@
                 <span class="text-muted small fst-italic">mixed</span>
               {% endif %}
             </td>
-            <td>—</td>
-            <td>—</td>
+            <td class="text-nowrap">
+              {% if job.group_posted == '(varied)' %}<span class="text-muted fst-italic small">(varied)</span>
+              {% else %}{{ job.group_posted or '—' }}{% endif %}
+            </td>
+            <td class="text-nowrap">
+              {% if job.group_first_seen == '(varied)' %}<span class="text-muted fst-italic small">(varied)</span>
+              {% else %}{{ job.group_first_seen or '—' }}{% endif %}
+            </td>
           </tr>
           {# ── Per-location sub-rows ── #}
           {% set outer_index = loop.index %}

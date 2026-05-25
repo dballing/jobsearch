@@ -184,6 +184,20 @@ def process_job_row(row: sqlite3.Row | dict) -> dict:
     return j
 
 
+def _group_field(sub_rows: list[dict], key: str, fmt=None) -> object:
+    """Return the uniform value across all sub-rows, or '(varied)' if they differ.
+
+    An optional fmt callable is applied to each raw value before comparison
+    (e.g. to truncate timestamps to date strings). Returns None if every value
+    is falsy (template renders it as '—').
+    """
+    vals = [(fmt(s.get(key)) if fmt else s.get(key)) for s in sub_rows]
+    if not vals:
+        return None
+    first = vals[0]
+    return first if all(v == first for v in vals) else "(varied)"
+
+
 def fetch_sub_rows(db: sqlite3.Connection, title: str, company: str,
                    where: str, params: list) -> list[dict]:
     and_clause = f"{where} AND " if where else "WHERE "
@@ -209,10 +223,16 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
         "multi":           multi,
         "sub_rows":        sub_rows,
         "preview_job_id":  sub_rows[0]["job_id"] if sub_rows else None,
-        "group_status":    next(iter(unique_statuses)) if len(unique_statuses) == 1 else None,
-        "group_source":    group_source,
+        "group_status":     next(iter(unique_statuses)) if len(unique_statuses) == 1 else None,
+        "group_source":     group_source,
         "group_source_display": SOURCE_NAMES.get(group_source, "") if group_source else None,
-        "sub_job_ids":     [s["job_id"] for s in sub_rows if s.get("job_id")],
+        "sub_job_ids":      [s["job_id"] for s in sub_rows if s.get("job_id")],
+        "group_salary":     _group_field(sub_rows, "salary_display"),
+        "group_labels":     _group_field(sub_rows, "labels"),
+        "group_posted":     _group_field(sub_rows, "posted_date",
+                                         fmt=lambda v: (v or "")[:10]),
+        "group_first_seen": _group_field(sub_rows, "first_seen",
+                                         fmt=lambda v: (v or "")[:10]),
     }
     if not multi and sub_rows:
         s = sub_rows[0]
