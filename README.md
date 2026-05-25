@@ -18,7 +18,7 @@ A personal tool for ingesting job search results from multiple sources (via Apif
 
 ## Prerequisites
 
-- Python 3.11+
+- Python 3.11 or later (3.11 introduced `tomllib`). Python 3.12+ recommended.
 - An [Apify](https://apify.com) account (free tier is sufficient for personal use)
 
 ---
@@ -81,7 +81,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-> `ingest.sh` and `run_app.sh` both create and activate the venv automatically if it doesn't exist, so this step is only strictly necessary if you want your editor or IDE to resolve packages before running either script.
+`ingest.sh` and `run_app.sh` require the `.venv` to exist and will exit with an error if it does not — run this step before scheduling cron or starting the app.
 
 ### 3. Create `config.toml`
 
@@ -134,7 +134,7 @@ Per-task optional keys:
 ./ingest.sh
 ```
 
-This creates the virtual environment (if needed), installs dependencies, and fetches the latest results from each Apify task. You should see output like:
+This fetches the latest results from each Apify task. You should see output like:
 
 ```
 Starting ingestion at 2026-05-22 14:00:00 UTC
