@@ -21,13 +21,14 @@ CREATE TABLE IF NOT EXISTS jobs (
     company         TEXT,
     location        TEXT,
     posted_date     TEXT,
-    linkedin_url    TEXT,
+    job_url         TEXT,
     apply_url       TEXT,
     easy_apply      INTEGER,
     salary_min      INTEGER,
     salary_max      INTEGER,
     salary_currency TEXT,
     labels          TEXT NOT NULL DEFAULT '[]',
+    source          TEXT NOT NULL DEFAULT 'linkedin',
     status          TEXT NOT NULL DEFAULT 'new',
     notes           TEXT,
     job_description TEXT,
@@ -67,6 +68,14 @@ def open_db(path: str) -> sqlite3.Connection:
     cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
     if "regions" in cols and "labels" not in cols:
         conn.execute("ALTER TABLE jobs RENAME COLUMN regions TO labels")
+        conn.commit()
+    # Migrate: rename linkedin_url → job_url if old column still exists.
+    if "linkedin_url" in cols and "job_url" not in cols:
+        conn.execute("ALTER TABLE jobs RENAME COLUMN linkedin_url TO job_url")
+        conn.commit()
+    # Migrate: add source column if not present (existing rows default to 'linkedin').
+    if "source" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN source TEXT NOT NULL DEFAULT 'linkedin'")
         conn.commit()
     # Migrate: add last_synced_at to ingest_state if not present.
     state_cols = [row[1] for row in conn.execute("PRAGMA table_info(ingest_state)").fetchall()]
@@ -184,7 +193,7 @@ def is_expired(item: dict) -> bool:
         return False
 
 
-def extract_fields(item: dict) -> dict:
+def extract_fields_linkedin(item: dict) -> dict:
     # Field names from fantastic-jobs/advanced-linkedin-job-search-api (verified against real output).
     # `id` is Apify-internal; `linkedin_id` is the actual LinkedIn job ID used as our PK.
     # `directapply` = LinkedIn Easy Apply (apply without leaving LinkedIn).
@@ -198,9 +207,10 @@ def extract_fields(item: dict) -> dict:
         "company": _scalar(item.get("organization")),
         "location": _scalar(item.get("locations_derived")),
         "posted_date": _scalar(item.get("date_posted")),
-        "linkedin_url": f"https://www.linkedin.com/jobs/view/{_scalar(item.get('linkedin_id'))}",
+        "job_url": f"https://www.linkedin.com/jobs/view/{_scalar(item.get('linkedin_id'))}",
         "apply_url": _scalar(item.get("external_apply_url")) or None,
         "easy_apply": 1 if str(_scalar(item.get("directapply", "")) or "").lower() == "true" else 0,
+        "source": "linkedin",
         "salary_min": int(salary_min) if salary_min not in (None, "", "null") else None,
         "salary_max": int(salary_max) if salary_max not in (None, "", "null") else None,
         "salary_currency": _scalar(item.get("ai_salary_currency")) or None,
@@ -208,11 +218,42 @@ def extract_fields(item: dict) -> dict:
     }
 
 
-def ingest(conn: sqlite3.Connection, items: list[dict], label: str) -> tuple[int, int, int]:
-    inserted = updated = unchanged = 0
+def extract_fields_careersite(item: dict) -> dict:
+    # Field names from fantastic-jobs/career-site-job-listing-api.
+    # `id` is the actor's internal job ID; we prefix it with "cs_" to avoid
+    # any collision with numeric LinkedIn IDs stored in the same table.
+    # `url` is both the canonical job page and the apply URL (career sites have no
+    # separate apply link). Easy Apply is not applicable.
+    salary_min = _scalar(item.get("ai_salary_minvalue"))
+    salary_max = _scalar(item.get("ai_salary_maxvalue"))
+    raw_id  = str(_scalar(item.get("id")) or "").strip()
+    job_url = _scalar(item.get("url")) or None
+    return {
+        "job_id": f"cs_{raw_id}" if raw_id else "",
+        "title": _scalar(item.get("title")),
+        "company": _scalar(item.get("organization")),
+        "location": _scalar(item.get("locations_derived")),
+        "posted_date": _scalar(item.get("date_posted")),
+        "job_url": job_url,
+        "apply_url": job_url,
+        "easy_apply": 0,
+        "source": "careersite",
+        "salary_min": int(salary_min) if salary_min not in (None, "", "null") else None,
+        "salary_max": int(salary_max) if salary_max not in (None, "", "null") else None,
+        "salary_currency": _scalar(item.get("ai_salary_currency")) or None,
+        "job_description": _scalar(item.get("description_text")),
+    }
+
+
+def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
+           actor_type: str = "linkedin", exclude_ats_dups: bool = False) -> tuple[int, int, int, int]:
+    inserted = updated = unchanged = skipped_ats = 0
 
     for item in items:
-        fields = extract_fields(item)
+        if exclude_ats_dups and item.get("ats_duplicate") is True:
+            skipped_ats += 1
+            continue
+        fields = extract_fields_careersite(item) if actor_type == "careersite" else extract_fields_linkedin(item)
         if not fields["job_id"]:
             print(f"  WARNING: item missing job_id, skipping: {list(item.keys())}", file=sys.stderr)
             continue
@@ -232,12 +273,12 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str) -> tuple[int
                 """
                 INSERT INTO jobs
                     (job_id, title, company, location, posted_date,
-                     linkedin_url, apply_url, easy_apply, salary_min, salary_max, salary_currency,
-                     labels, status, job_description, raw)
+                     job_url, apply_url, easy_apply, salary_min, salary_max, salary_currency,
+                     labels, source, status, job_description, raw)
                 VALUES
                     (:job_id, :title, :company, :location, :posted_date,
-                     :linkedin_url, :apply_url, :easy_apply, :salary_min, :salary_max, :salary_currency,
-                     :labels, :status, :job_description, :raw)
+                     :job_url, :apply_url, :easy_apply, :salary_min, :salary_max, :salary_currency,
+                     :labels, :source, :status, :job_description, :raw)
                 """,
                 {**fields, "labels": json.dumps([label]), "status": initial_status, "raw": raw},
             )
@@ -271,12 +312,12 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str) -> tuple[int
                 """
                 UPDATE jobs SET
                     title = :title, company = :company, location = :location,
-                    posted_date = :posted_date, linkedin_url = :linkedin_url,
+                    posted_date = :posted_date, job_url = :job_url,
                     apply_url = :apply_url, easy_apply = :easy_apply,
                     salary_min = :salary_min, salary_max = :salary_max,
                     salary_currency = :salary_currency,
                     job_description = :job_description,
-                    labels = :labels, status = :status, raw = :raw
+                    labels = :labels, source = :source, status = :status, raw = :raw
                 WHERE job_id = :job_id
                 """,
                 {**fields, "labels": json.dumps(new_labels), "status": new_status, "raw": raw},
@@ -287,7 +328,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str) -> tuple[int
                 unchanged += 1
 
     conn.commit()
-    return inserted, updated, unchanged
+    return inserted, updated, unchanged, skipped_ats
 
 
 def touch_synced(conn: sqlite3.Connection, task_name: str) -> None:
@@ -350,7 +391,9 @@ def main() -> None:
     for task in tasks:
         task_name: str = task["name"]
         label: str = task["label"]
-        print(f"Fetching runs for '{task_name}' (label: {label}) ...")
+        actor_type: str = task.get("actor", "linkedin")
+        exclude_ats_dups: bool = task.get("exclude_ats_duplicates", False)
+        print(f"Fetching runs for '{task_name}' (label: {label}, actor: {actor_type}) ...")
         try:
             all_runs = fetch_task_runs(username, task_name, api_token)
             pending = runs_to_process(conn, task_name, all_runs)
@@ -363,20 +406,23 @@ def main() -> None:
             if len(pending) > 1:
                 print(f"  Catching up: {len(pending)} runs to process.")
 
-            task_inserted = task_updated = task_unchanged = 0
+            task_inserted = task_updated = task_unchanged = task_skipped = 0
             for run in pending:
                 run_time = run["startedAt"][:16].replace("T", " ")
                 items = fetch_dataset_items(run["defaultDatasetId"], api_token)
                 print(f"  Run {run_time}: {len(items)} items retrieved")
-                ins, upd, unch = ingest(conn, items, label)
-                print(f"    {ins} inserted, {upd} updated, {unch} already existed")
+                ins, upd, unch, skip = ingest(conn, items, label, actor_type, exclude_ats_dups)
+                skip_msg = f", {skip} ATS duplicates skipped" if skip else ""
+                print(f"    {ins} inserted, {upd} updated, {unch} already existed{skip_msg}")
                 task_inserted += ins
                 task_updated += upd
                 task_unchanged += unch
+                task_skipped += skip
                 record_state(conn, task_name, run, ins, upd, unch)
 
             if len(pending) > 1:
-                print(f"  Task total: {task_inserted} inserted, {task_updated} updated, {task_unchanged} already existed")
+                task_skip_msg = f", {task_skipped} ATS duplicates skipped" if task_skipped else ""
+                print(f"  Task total: {task_inserted} inserted, {task_updated} updated, {task_unchanged} already existed{task_skip_msg}")
 
             total_inserted += task_inserted
             total_updated += task_updated

@@ -6,7 +6,11 @@ A personal tool for ingesting nightly LinkedIn job search results (via Apify) in
 
 ## How it works
 
-1. You configure one or more Apify Actor tasks using the **[fantastic-jobs/advanced-linkedin-job-search-api](https://apify.com/fantastic-jobs/advanced-linkedin-job-search-api)** Actor. Each task represents a geographic search (e.g., DC/DMV, North Carolina).
+1. You configure one or more Apify Actor tasks using either:
+   - **[fantastic-jobs/advanced-linkedin-job-search-api](https://apify.com/fantastic-jobs/advanced-linkedin-job-search-api)** — LinkedIn job postings (default)
+   - **[fantastic-jobs/career-site-job-listing-api](https://apify.com/fantastic-jobs/career-site-job-listing-api)** — career-site postings from 54+ ATS platforms (Greenhouse, Lever, Workday, Ashby, etc.)
+
+   Each task represents a search (e.g., by geography, by title, by ATS platform).
 2. A cron job runs `ingest.sh` on a schedule, fetching the latest results from each task and inserting new jobs into a local SQLite database. Duplicate postings (same LinkedIn job ID) are detected and updated rather than re-inserted. Jobs that appear in multiple task runs accumulate labels from each.
 3. You run the Flask app locally to browse, filter, sort, and track your application status for each job.
 
@@ -29,9 +33,12 @@ Sign up at [apify.com](https://apify.com). The free tier includes enough monthly
 
 In the Apify Console, go to **Settings → Integrations → API tokens**. Copy your personal API token — you'll need it in `config.toml`.
 
-### 3. Set up the Actor
+### 3. Set up the Actor(s)
 
-Navigate to the **[fantastic-jobs/advanced-linkedin-job-search-api](https://apify.com/fantastic-jobs/advanced-linkedin-job-search-api)** Actor in the Apify Store and click **Try for free** to open it.
+Navigate to the Actor(s) you want to use in the Apify Store and click **Try for free**:
+
+- **[fantastic-jobs/advanced-linkedin-job-search-api](https://apify.com/fantastic-jobs/advanced-linkedin-job-search-api)** — LinkedIn postings
+- **[fantastic-jobs/career-site-job-listing-api](https://apify.com/fantastic-jobs/career-site-job-listing-api)** — career-site postings across ATS platforms
 
 ### 4. Create a Task for each search
 
@@ -85,14 +92,27 @@ db_path   = "jobs.db"                          # path to SQLite database
 name    = "derek-job-search-dc-dmv"   # Apify task name
 label   = "dc"                         # short internal key stored in the database
 display = "DC/DMV"                     # optional: pretty name shown in the UI filter bar
+# exclude_ats_duplicates = true        # optional: skip results also covered by a career-site task
 
 [[tasks]]
 name    = "derek-job-search-north-carolina"
 label   = "nc"
 display = "NC"
+
+[[tasks]]
+name    = "derek-career-site-search"
+label   = "cs"
+display = "Career Sites"
+actor   = "careersite"                 # use fantastic-jobs/career-site-job-listing-api
 ```
 
-Add as many `[[tasks]]` sections as you have searches. Each task requires a `label` — an arbitrary short string stored in the database that identifies which task a job came from (keep it consistent across ingestion runs). The `display` key is optional; if provided, it is shown as the button label in the UI filter bar. If omitted, the `label` is shown uppercased. You might use geographic tags (`dc`, `nc`), title tags (`pm`, `eng`), or any other dimension that helps you organize results.
+Add as many `[[tasks]]` sections as you have searches. Each task requires a `label` — an arbitrary short string stored in the database that identifies which task a job came from (keep it consistent across ingestion runs). Optional keys:
+
+- `display` — pretty name shown in the UI filter bar; defaults to the `label` uppercased.
+- `actor` — `"linkedin"` (default) or `"careersite"`. Set to `"careersite"` for tasks that use `fantastic-jobs/career-site-job-listing-api`. Career-site jobs are stored with a `cs_` prefix on their IDs to avoid collision with LinkedIn job IDs.
+- `exclude_ats_duplicates` — `true` to skip LinkedIn results that the actor has flagged as duplicates of career-site postings (the `ats_duplicate` field). Useful when you're running both a LinkedIn task and a career-site task to avoid double-ingesting the same job. Skipped items are counted and reported in the ingestion log. In a steady state you'd expect the LinkedIn skip count to roughly equal the career-site insert count for the same run window.
+
+You might use geographic tags (`dc`, `nc`), title tags (`pm`, `eng`), source tags (`cs`), or any other dimension that helps you organize results.
 
 `config.toml` is gitignored so your API token is never committed.
 
@@ -106,10 +126,13 @@ This creates the virtual environment (if needed), installs dependencies, and fet
 
 ```
 Starting ingestion at 2026-05-22 14:00:00 UTC
-Fetching runs for 'derek-job-search-dc-dmv' (label: dc) ...
+Fetching runs for 'derek-job-search-dc-dmv' (label: dc, actor: linkedin) ...
   Run 2026-05-22 14:00: 312 items retrieved
-    291 inserted, 14 updated, 7 already existed
-Done in 4.2s. 291 inserted, 14 updated, 7 unchanged.
+    291 inserted, 14 updated, 7 already existed, 82 ATS duplicates skipped
+Fetching runs for 'derek-career-site-search' (label: cs, actor: careersite) ...
+  Run 2026-05-22 14:00: 88 items retrieved
+    82 inserted, 4 updated, 2 already existed
+Done in 5.1s. 373 inserted, 18 updated, 9 unchanged.
 
 ```
 

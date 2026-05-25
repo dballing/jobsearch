@@ -6,8 +6,16 @@ db_path   = "jobs.db"
 name    = "my-dc-va-search"
 label   = "dc"           # required: short key stored in the database
 display = "DC/DMV"       # optional: pretty name shown in the UI filter bar (defaults to label uppercased)
+# actor = "linkedin"     # optional: "linkedin" (default) or "careersite"
+# exclude_ats_duplicates = true  # optional: skip LinkedIn results already covered by a career-site task
 
 [[tasks]]
 name    = "my-nc-search"
 label   = "nc"           # required
 display = "NC"           # optional
+
+[[tasks]]
+name    = "my-career-site-search"
+label   = "cs"           # required
+display = "Career Sites" # optional
+actor   = "careersite"   # use fantastic-jobs/career-site-job-listing-api

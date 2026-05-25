@@ -37,29 +37,44 @@
     <input type="hidden" name="view"          value="{{ view }}">
     <input type="hidden" name="status_filter" value="{{ status_filter }}">
     {% if label %}<input type="hidden" name="label" value="{{ label }}">{% endif %}
+    {% if source %}<input type="hidden" name="source" value="{{ source }}">{% endif %}
     <input type="search" class="form-control form-control-sm" name="q"
            placeholder="Search title / company…" value="{{ q }}" style="width:220px">
     <button type="submit" class="btn btn-sm btn-outline-secondary">Search</button>
-    {% if q %}<a href="{{ url_for('index', sort=sort, dir=direction, view=view, label=label or None, status_filter=status_filter) }}" class="btn btn-sm btn-outline-danger" title="Clear search">✕</a>{% endif %}
+    {% if q %}<a href="{{ url_for('index', sort=sort, dir=direction, view=view, label=label or None, source=source or None, status_filter=status_filter) }}" class="btn btn-sm btn-outline-danger" title="Clear search">✕</a>{% endif %}
   </form>
 
   <div class="d-flex align-items-center gap-2">
     <span class="text-muted small">Label:</span>
     <div class="btn-group btn-group-sm" role="group">
-      <a href="{{ url_for('index', sort=sort, dir=direction, view=view, status_filter=status_filter, q=q or None) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, view=view, status_filter=status_filter, source=source or None, q=q or None) }}"
          class="btn btn-{{ 'primary' if not label else 'outline-primary' }}">All</a>
       {% for r in labels %}
-      <a href="{{ url_for('index', sort=sort, dir=direction, view=view, status_filter=status_filter, label=r.value, q=q or None, page=1) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, view=view, status_filter=status_filter, source=source or None, label=r.value, q=q or None, page=1) }}"
          class="btn btn-{{ 'primary' if label == r.value else 'outline-primary' }}">{{ r.label }}</a>
       {% endfor %}
     </div>
   </div>
 
+  {% if sources | length > 1 %}
+  <div class="d-flex align-items-center gap-2">
+    <span class="text-muted small">Source:</span>
+    <div class="btn-group btn-group-sm" role="group">
+      <a href="{{ url_for('index', sort=sort, dir=direction, view=view, label=label or None, status_filter=status_filter, q=q or None, page=1) }}"
+         class="btn btn-{{ 'info' if not source else 'outline-info' }}">All</a>
+      {% for s in sources %}
+      <a href="{{ url_for('index', sort=sort, dir=direction, view=view, label=label or None, status_filter=status_filter, source=s.value, q=q or None, page=1) }}"
+         class="btn btn-{{ 'info' if source == s.value else 'outline-info' }}">{{ s.label }}</a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
   <div class="d-flex align-items-center gap-2">
     <span class="text-muted small">Status:</span>
     <div class="btn-group btn-group-sm" role="group">
       {% for key, (sf_label, _) in status_filters.items() %}
-      <a href="{{ url_for('index', sort=sort, dir=direction, view=view, label=label or None, status_filter=key, q=q or None, page=1) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, view=view, label=label or None, status_filter=key, source=source or None, q=q or None, page=1) }}"
          class="btn btn-{{ 'success' if status_filter == key else 'outline-success' }}">{{ sf_label }}</a>
       {% endfor %}
     </div>
@@ -68,9 +83,9 @@
   <div class="d-flex align-items-center gap-2">
     <span class="text-muted small">View:</span>
     <div class="btn-group btn-group-sm" role="group">
-      <a href="{{ url_for('index', sort=sort, dir=direction, label=label or None, status_filter=status_filter, view='grouped', q=q or None, page=1) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, label=label or None, status_filter=status_filter, source=source or None, view='grouped', q=q or None, page=1) }}"
          class="btn btn-{{ 'secondary' if view == 'grouped' else 'outline-secondary' }}">Grouped</a>
-      <a href="{{ url_for('index', sort=sort, dir=direction, label=label or None, status_filter=status_filter, view='flat', q=q or None, page=1) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, label=label or None, status_filter=status_filter, source=source or None, view='flat', q=q or None, page=1) }}"
          class="btn btn-{{ 'secondary' if view == 'flat' else 'outline-secondary' }}">Flat</a>
     </div>
   </div>
@@ -103,6 +118,7 @@
         {% else %}<th>Location</th>{% endif %}
         {{ sort_th('salary_min', 'Salary') }}
         <th>Label</th>
+        {% if sources|length > 1 %}<th>Source</th>{% endif %}
         {{ sort_th('status',     'Status') }}
         {{ sort_th('posted_date','Posted') }}
         {{ sort_th('first_seen', 'First Seen') }}
@@ -132,6 +148,15 @@
             </td>
             <td>—</td>
             <td>—</td>
+            {% if sources|length > 1 %}
+            <td>
+              {% if job.group_source_display %}
+                <span class="badge {{ 'bg-primary' if job.group_source == 'linkedin' else 'bg-info text-dark' }}">{{ job.group_source_display }}</span>
+              {% else %}
+                <span class="text-muted small fst-italic">mixed</span>
+              {% endif %}
+            </td>
+            {% endif %}
             <td>
               {% if job.group_status is not none %}
                 {{ group_status_select(job.sub_job_ids, job.group_status) }}
@@ -149,8 +174,8 @@
             <td></td>
             <td></td>
             <td class="ps-3 small">
-              {% if sub.linkedin_url %}
-                <a href="{{ sub.linkedin_url }}" target="_blank" rel="noopener">{{ sub.location or '—' }}</a>
+              {% if sub.job_url %}
+                <a href="{{ sub.job_url }}" target="_blank" rel="noopener">{{ sub.location or '—' }}</a>
               {% else %}
                 {{ sub.location or '—' }}
               {% endif %}
@@ -164,6 +189,9 @@
                 <span class="badge bg-secondary">{{ r }}</span>
               {% endfor %}
             </td>
+            {% if sources|length > 1 %}
+            <td><span class="badge {{ 'bg-primary' if sub.source == 'linkedin' else 'bg-info text-dark' }}">{{ sub.source_display }}</span></td>
+            {% endif %}
             <td>{{ status_select(sub.job_id, sub.status) }}</td>
             <td class="text-nowrap small">{{ (sub.posted_date or '')[:10] }}</td>
             <td class="text-nowrap small">{{ (sub.first_seen or '')[:10] }}</td>
@@ -174,7 +202,7 @@
           {# ── Single-location row (grouped or flat) ── #}
           <tr>
             <td class="job-title">
-              {% set url = job.get('linkedin_url') %}
+              {% set url = job.get('job_url') %}
               {% if url %}<a href="{{ url }}" target="_blank" rel="noopener">{{ job.title or '(no title)' }}</a>
               {% else %}{{ job.title or '(no title)' }}{% endif %}
               {% if job.job_id %}
@@ -189,6 +217,9 @@
                 <span class="badge bg-secondary">{{ r }}</span>
               {% endfor %}
             </td>
+            {% if sources|length > 1 %}
+            <td><span class="badge {{ 'bg-primary' if job.source == 'linkedin' else 'bg-info text-dark' }}">{{ job.source_display }}</span></td>
+            {% endif %}
             <td>{{ status_select(job.job_id, job.status) }}</td>
             <td class="text-nowrap">{{ (job.posted_date or '')[:10] }}</td>
             <td class="text-nowrap">{{ (job.first_seen or '')[:10] }}</td>
@@ -196,7 +227,7 @@
         {% endif %}
 
       {% else %}
-        <tr><td colspan="8" class="text-center text-muted py-4">No jobs found.</td></tr>
+        <tr><td colspan="{{ 9 if sources|length > 1 else 8 }}" class="text-center text-muted py-4">No jobs found.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -207,15 +238,15 @@
 <nav>
   <ul class="pagination justify-content-center">
     <li class="page-item {% if page <= 1 %}disabled{% endif %}">
-      <a class="page-link" href="{{ url_for('index', page=page-1, sort=sort, dir=direction, label=label or None, view=view, status_filter=status_filter, q=q or None) }}">Previous</a>
+      <a class="page-link" href="{{ url_for('index', page=page-1, sort=sort, dir=direction, label=label or None, view=view, status_filter=status_filter, source=source or None, q=q or None) }}">Previous</a>
     </li>
     {% for p in range([1, page-2]|max, [total_pages+1, page+3]|min) %}
     <li class="page-item {% if p == page %}active{% endif %}">
-      <a class="page-link" href="{{ url_for('index', page=p, sort=sort, dir=direction, label=label or None, view=view, status_filter=status_filter, q=q or None) }}">{{ p }}</a>
+      <a class="page-link" href="{{ url_for('index', page=p, sort=sort, dir=direction, label=label or None, view=view, status_filter=status_filter, source=source or None, q=q or None) }}">{{ p }}</a>
     </li>
     {% endfor %}
     <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
-      <a class="page-link" href="{{ url_for('index', page=page+1, sort=sort, dir=direction, label=label or None, view=view, status_filter=status_filter, q=q or None) }}">Next</a>
+      <a class="page-link" href="{{ url_for('index', page=page+1, sort=sort, dir=direction, label=label or None, view=view, status_filter=status_filter, source=source or None, q=q or None) }}">Next</a>
     </li>
   </ul>
 </nav>

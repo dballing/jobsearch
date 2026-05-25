@@ -52,6 +52,11 @@ STATUS_COLORS = {
     "closed":       "dark",
 }
 
+SOURCE_NAMES = {
+    "linkedin":   "LinkedIn",
+    "careersite": "Career Sites",
+}
+
 STATUS_FILTERS = {
     "new":     ("New",     "status = 'new'"),
     "active":  ("Active",  "status NOT IN ('skipped', 'rejected', 'withdrawn', 'closed')"),
@@ -67,7 +72,9 @@ GROUPED_HEADERS = """
            MIN(salary_min)      AS salary_min,
            MAX(salary_max)      AS salary_max,
            MIN(salary_currency) AS salary_currency,
-           MIN(status)          AS status
+           MIN(status)          AS status,
+           MIN(source)          AS source,
+           MAX(source)          AS source_max
     FROM jobs {where}
     GROUP BY title, company
     {order}
@@ -86,6 +93,14 @@ def get_db() -> sqlite3.Connection:
         cols = [row[1] for row in g.db.execute("PRAGMA table_info(jobs)").fetchall()]
         if "regions" in cols and "labels" not in cols:
             g.db.execute("ALTER TABLE jobs RENAME COLUMN regions TO labels")
+            g.db.commit()
+        # Migrate: rename linkedin_url → job_url if old column still exists.
+        if "linkedin_url" in cols and "job_url" not in cols:
+            g.db.execute("ALTER TABLE jobs RENAME COLUMN linkedin_url TO job_url")
+            g.db.commit()
+        # Migrate: add source column if not present (existing rows default to 'linkedin').
+        if "source" not in cols:
+            g.db.execute("ALTER TABLE jobs ADD COLUMN source TEXT NOT NULL DEFAULT 'linkedin'")
             g.db.commit()
         # Migrate: add last_synced_at to ingest_state if not present.
         state_cols = [row[1] for row in g.db.execute("PRAGMA table_info(ingest_state)").fetchall()]
@@ -122,7 +137,7 @@ def inject_nav_timestamps() -> dict:
     }
 
 
-def build_where(label: str, status_filter: str, q: str = "") -> tuple[str, list]:
+def build_where(label: str, status_filter: str, q: str = "", source: str = "") -> tuple[str, list]:
     conditions: list[str] = []
     params: list = []
     if label:
@@ -131,6 +146,9 @@ def build_where(label: str, status_filter: str, q: str = "") -> tuple[str, list]
     sql_condition = STATUS_FILTERS.get(status_filter, (None, None))[1]
     if sql_condition:
         conditions.append(sql_condition)
+    if source:
+        conditions.append("source = ?")
+        params.append(source)
     if q:
         conditions.append("(title LIKE ? OR company LIKE ?)")
         params.extend([f"%{q}%", f"%{q}%"])
@@ -155,9 +173,10 @@ def decode_labels(raw: str | None) -> list[str]:
 
 def process_job_row(row: sqlite3.Row | dict) -> dict:
     j = dict(row)
-    j["labels"]        = decode_labels(j.get("labels"))
-    j["status_color"]  = STATUS_COLORS.get(j.get("status", "new"), "secondary")
+    j["labels"]         = decode_labels(j.get("labels"))
+    j["status_color"]   = STATUS_COLORS.get(j.get("status", "new"), "secondary")
     j["salary_display"] = format_salary(j)
+    j["source_display"] = SOURCE_NAMES.get(j.get("source", "linkedin"), j.get("source", ""))
     return j
 
 
@@ -176,6 +195,8 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
     multi = h["location_count"] > 1
     sub_statuses = [s.get("status", "new") for s in sub_rows]
     unique_statuses = set(sub_statuses)
+    # group_source: the single source if all sub-rows agree, else None (mixed)
+    group_source = h["source"] if h.get("source") == h.get("source_max") else None
 
     job   = {
         "title":           h["title"],
@@ -185,16 +206,20 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
         "sub_rows":        sub_rows,
         "preview_job_id":  sub_rows[0]["job_id"] if sub_rows else None,
         "group_status":    next(iter(unique_statuses)) if len(unique_statuses) == 1 else None,
+        "group_source":    group_source,
+        "group_source_display": SOURCE_NAMES.get(group_source, "") if group_source else None,
         "sub_job_ids":     [s["job_id"] for s in sub_rows if s.get("job_id")],
     }
     if not multi and sub_rows:
         s = sub_rows[0]
         job.update({
             "job_id":           s.get("job_id"),
-            "linkedin_url":     s.get("linkedin_url"),
+            "job_url":          s.get("job_url"),
             "location_primary": s.get("location") or "—",
             "salary_display":   s["salary_display"],
             "labels":           s["labels"],
+            "source":           s.get("source", "linkedin"),
+            "source_display":   s["source_display"],
             "status":           s.get("status", "new"),
             "status_color":     s["status_color"],
             "posted_date":      s.get("posted_date", ""),
@@ -213,8 +238,17 @@ def available_labels(db: sqlite3.Connection) -> list[dict]:
     ]
 
 
+def available_sources(db: sqlite3.Connection) -> list[dict]:
+    rows = db.execute("SELECT DISTINCT source FROM jobs ORDER BY source").fetchall()
+    return [
+        {"value": r["source"], "label": SOURCE_NAMES.get(r["source"], r["source"])}
+        for r in rows
+    ]
+
+
 def sort_url(col: str, current_sort: str, current_dir: str,
-             label: str, view: str, status_filter: str, q: str = "") -> str:
+             label: str, view: str, status_filter: str, q: str = "",
+             source: str = "") -> str:
     if current_sort != col:
         # Not currently sorted by this column — start ascending.
         new_sort, new_dir = col, "asc"
@@ -225,7 +259,7 @@ def sort_url(col: str, current_sort: str, current_dir: str,
         # Second click already done — clear back to default.
         new_sort, new_dir = DEFAULT_SORT, DEFAULT_DIR
     return url_for("index", sort=new_sort, dir=new_dir,
-                   label=label or None, view=view,
+                   label=label or None, view=view, source=source or None,
                    status_filter=status_filter, q=q or None, page=1)
 
 
@@ -239,6 +273,7 @@ def index():
     direction     = request.args.get("dir", DEFAULT_DIR)
     view          = request.args.get("view", DEFAULT_VIEW)
     status_filter = request.args.get("status_filter", DEFAULT_STATUS_FILTER)
+    source        = request.args.get("source", "")
     page          = max(1, request.args.get("page", 1, type=int))
 
     if sort not in SORTABLE_COLS:
@@ -249,10 +284,12 @@ def index():
         view = DEFAULT_VIEW
     if status_filter not in STATUS_FILTERS:
         status_filter = DEFAULT_STATUS_FILTER
+    if source not in SOURCE_NAMES and source != "":
+        source = ""
     if view == "grouped" and sort == "location":
         sort = DEFAULT_SORT
 
-    where, params = build_where(label, status_filter, q)
+    where, params = build_where(label, status_filter, q, source)
     _TEXT_COLS = {"title", "company", "location", "status"}
     sort_expr = f"{sort} COLLATE NOCASE" if sort in _TEXT_COLS else sort
     order  = f"ORDER BY {sort_expr} {direction.upper()} NULLS LAST"
@@ -274,8 +311,9 @@ def index():
 
     total_pages = max(1, math.ceil(total / PER_PAGE))
     labels      = available_labels(db)
+    sources     = available_sources(db)
     col_urls    = {
-        col: sort_url(col, sort, direction, label, view, status_filter, q)
+        col: sort_url(col, sort, direction, label, view, status_filter, q, source)
         for col in SORTABLE_COLS
     }
 
@@ -295,6 +333,8 @@ def index():
         statuses=STATUSES,
         status_colors=STATUS_COLORS,
         labels=labels,
+        sources=sources,
+        source=source,
         col_urls=col_urls,
     )
 
@@ -362,7 +402,7 @@ def get_job(job_id: str):
         "title":           job["title"],
         "company":         job["company"],
         "location":        job["location"],
-        "linkedin_url":    job["linkedin_url"],
+        "job_url":         job["job_url"],
         "apply_url":       job["apply_url"],
         "easy_apply":      job["easy_apply"],
         "salary_display":  format_salary(job),
