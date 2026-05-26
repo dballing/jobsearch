@@ -2,6 +2,8 @@
 
 A personal tool for ingesting job search results from multiple sources (via Apify) into a local SQLite database, and reviewing them through a Flask web UI.
 
+![Job Search Tracker UI](docs/screenshot.png)
+
 ---
 
 ## How it works
