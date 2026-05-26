@@ -7,6 +7,7 @@
 {% macro status_select(job_id, current_status) %}
 <select class="form-select form-select-sm status-select"
         style="width:auto"
+        autocomplete="off"
         data-prev="{{ current_status }}"
         data-job-id="{{ job_id }}"
         onchange="updateStatus('{{ job_id }}', this)">
@@ -19,6 +20,7 @@
 {% macro group_status_select(sub_job_ids, current_status) %}
 <select class="form-select form-select-sm status-select"
         style="width:auto"
+        autocomplete="off"
         data-prev="{{ current_status }}"
         data-group-ids='{{ sub_job_ids | tojson }}'
         onchange="updateGroupStatus(this)">
