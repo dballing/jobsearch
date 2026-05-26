@@ -181,6 +181,15 @@ def process_job_row(row: sqlite3.Row | dict) -> dict:
     j["status_color"]   = STATUS_COLORS.get(j.get("status", "new"), "secondary")
     j["salary_display"] = format_salary(j)
     j["source_display"] = SOURCE_NAMES.get(j.get("source", "linkedin"), j.get("source", ""))
+    # Extract full locations list from raw JSON for tooltip display.
+    try:
+        raw_data = json.loads(j.get("raw") or "{}")
+        locs = raw_data.get("locations_derived") or []
+        locs = locs if isinstance(locs, list) else []
+    except (json.JSONDecodeError, TypeError):
+        locs = []
+    j["locations_count"] = len(locs)
+    j["locations_all"]   = "\n".join(locs) if len(locs) > 1 else ""
     return j
 
 
@@ -240,6 +249,8 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
             "job_id":           s.get("job_id"),
             "job_url":          s.get("job_url"),
             "location_primary": s.get("location") or "—",
+            "locations_all":    s.get("locations_all", ""),
+            "locations_count":  s.get("locations_count", 1),
             "salary_display":   s["salary_display"],
             "labels":           s["labels"],
             "source":           s.get("source", "linkedin"),

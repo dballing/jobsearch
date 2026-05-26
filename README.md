@@ -227,6 +227,16 @@ When a job already exists in the database and is seen again in a subsequent run:
 
 ---
 
+## Known limitations
+
+### Displayed location may not match your search geography
+
+Each job posting can include multiple locations. The **Location** column in the UI shows only the first location in that list (`locations[0]`), which is whatever order Apify received them in. This means a posting that matched your "Virginia" search filter might display "Billund, Region of South Denmark, Denmark" if that happened to be the first location in the raw data.
+
+There is no reliable programmatic way to sort or prefer locations without knowing which one triggered the match. If a location looks wrong, hover over it to see the full list of locations for that posting, or click through to the original posting.
+
+---
+
 ## Project structure
 
 ```
