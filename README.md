@@ -21,6 +21,8 @@ A personal tool for ingesting job search results from multiple sources (via Apif
 - Python 3.11 or later (3.11 introduced `tomllib`). Python 3.12+ recommended.
 - An [Apify](https://apify.com) account (free tier is sufficient for personal use)
 
+> **Linux note:** On Debian/Ubuntu, `python3-venv` is a separate package and may not be installed by default. If `python3 -m venv .venv` fails, run `sudo apt install python3-venv` first.
+
 ---
 
 ## Apify setup
