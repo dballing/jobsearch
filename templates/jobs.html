@@ -185,7 +185,7 @@
           {# ── Per-location sub-rows ── #}
           {% set outer_index = loop.index %}
           {% for sub in job.sub_rows %}
-          <tr class="group-child group-child-{{ outer_index }} d-none table-secondary">
+          <tr class="group-child group-child-{{ outer_index }} d-none">
             <td></td>
             <td></td>
             <td class="ps-3 small"{% if sub.locations_all %} title="{{ sub.locations_all }}" style="cursor: help;"{% endif %}>

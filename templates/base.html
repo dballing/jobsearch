@@ -17,6 +17,9 @@
     .job-description-text p  { margin-bottom: 0.4rem; }
     .job-description-text ul { margin-bottom: 0.5rem; padding-left: 1.4rem; }
     .job-description-text li { margin-bottom: 0.15rem; }
+    /* Sub-rows: use theme-aware indented shade instead of table-secondary's hardcoded light color */
+    [data-bs-theme="dark"]  .table .group-child { --bs-table-bg: rgba(255,255,255,0.06); color: var(--bs-body-color); }
+    [data-bs-theme="light"] .table .group-child { --bs-table-bg: rgba(0,0,0,0.04); }
   </style>
 </head>
 <body>
