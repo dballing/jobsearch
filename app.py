@@ -40,13 +40,13 @@ DEFAULT_VIEW          = "grouped"
 DEFAULT_STATUS_FILTER = "active"
 
 STATUSES = [
-    "new", "reviewed", "applied", "interviewing",
+    "new", "reviewing", "applied", "interviewing",
     "offered", "rejected", "withdrawn", "skipped", "closed",
 ]
 
 STATUS_COLORS = {
     "new":          "primary",
-    "reviewed":     "secondary",
+    "reviewing":    "secondary",
     "applied":      "info",
     "interviewing": "warning",
     "offered":      "success",
@@ -62,10 +62,11 @@ SOURCE_NAMES = {
 }
 
 STATUS_FILTERS = {
-    "new":     ("New",     "status = 'new'"),
-    "active":  ("Active",  "status NOT IN ('skipped', 'rejected', 'withdrawn', 'closed')"),
-    "applied": ("Applied", "status IN ('applied', 'interviewing', 'offered')"),
-    "all":     ("All",     None),
+    "new":       ("New",       "status = 'new'"),
+    "reviewing": ("Reviewing", "status = 'reviewing'"),
+    "active":    ("Active",    "status NOT IN ('skipped', 'rejected', 'withdrawn', 'closed')"),
+    "applied":   ("Applied",   "status IN ('applied', 'interviewing', 'offered')"),
+    "all":       ("All",       None),
 }
 
 # Grouped header query — one row per (title, company).
@@ -111,6 +112,9 @@ def get_db() -> sqlite3.Connection:
         if state_cols and "last_synced_at" not in state_cols:
             g.db.execute("ALTER TABLE ingest_state ADD COLUMN last_synced_at TEXT")
             g.db.commit()
+        # Migrate: rename 'reviewed' → 'reviewing'.
+        g.db.execute("UPDATE jobs SET status = 'reviewing' WHERE status = 'reviewed'")
+        g.db.commit()
     return g.db
 
 

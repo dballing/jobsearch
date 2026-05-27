@@ -82,6 +82,9 @@ def open_db(path: str) -> sqlite3.Connection:
     if state_cols and "last_synced_at" not in state_cols:
         conn.execute("ALTER TABLE ingest_state ADD COLUMN last_synced_at TEXT")
         conn.commit()
+    # Migrate: rename 'reviewed' → 'reviewing'.
+    conn.execute("UPDATE jobs SET status = 'reviewing' WHERE status = 'reviewed'")
+    conn.commit()
     return conn
 
 
@@ -177,7 +180,7 @@ def _scalar(val: object) -> object:
     return val[0] if isinstance(val, list) else val
 
 
-AUTO_CLOSE_STATUSES = {"new", "reviewed"}
+AUTO_CLOSE_STATUSES = {"new", "reviewing"}
 
 
 def is_expired(item: dict) -> bool:

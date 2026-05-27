@@ -181,7 +181,8 @@ Use the absolute path to `ingest.sh`. The script changes into its own directory 
 - **Label**: filter to a specific search dimension (geography, role type, etc.), or show all.
 - **Source**: filter to LinkedIn or career-site results only. Appears automatically when both sources are present in the database.
 - **Status**:
-  - *New* — jobs not yet reviewed
+  - *New* — jobs not yet looked at
+  - *Reviewing* — jobs you've opened but haven't decided on yet
   - *Active* — jobs not yet skipped, rejected, withdrawn, or closed (default)
   - *Applied* — jobs currently in progress (applied, interviewing, offered)
   - *All* — everything in the database
@@ -199,8 +200,8 @@ Each job has a status dropdown. Available statuses:
 
 | Status | Meaning |
 |--------|---------|
-| `new` | Freshly ingested, not yet reviewed |
-| `reviewed` | You've looked at it but haven't decided |
+| `new` | Freshly ingested, not yet looked at |
+| `reviewing` | You've opened it but haven't decided yet — needs another look |
 | `applied` | Application submitted |
 | `interviewing` | Active interview process |
 | `offered` | Offer received |
@@ -226,7 +227,7 @@ When a job already exists in the database and is seen again in a subsequent run:
 - All mutable fields (title, company, location, salary, description) are refreshed with the latest data from Apify.
 - The `first_seen` timestamp is preserved.
 - If the job appears under a new label (from a different task), that label is added to its label list.
-- If the posting has expired (`date_validthrough` in the past) and the status is `new` or `reviewed`, the status is automatically set to `closed`.
+- If the posting has expired (`date_validthrough` in the past) and the status is `new` or `reviewing`, the status is automatically set to `closed`.
 - If the job description changed and the status was `skipped`, the status is reset to `new`.
 
 ---
