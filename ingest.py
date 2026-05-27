@@ -428,8 +428,9 @@ def main() -> None:
                 items = fetch_dataset_items(run["defaultDatasetId"], api_token)
                 print(f"  Run {run_time}: {len(items)} items retrieved")
                 ins, upd, unch, skip = ingest(conn, items, label, actor_type, exclude_ats_dups, reset_on_change)
-                skip_msg = f", {skip} ATS duplicates skipped" if skip else ""
-                print(f"    {ins} inserted, {upd} updated, {unch} already existed{skip_msg}")
+                skip_msg    = f", {skip} ATS duplicates skipped" if skip else ""
+                reset_note  = " (resets disabled)" if not reset_on_change else ""
+                print(f"    {ins} inserted, {upd} updated{reset_note}, {unch} already existed{skip_msg}")
                 task_inserted += ins
                 task_updated += upd
                 task_unchanged += unch
@@ -437,8 +438,9 @@ def main() -> None:
                 record_state(conn, task_name, run, ins, upd, unch)
 
             if len(pending) > 1:
-                task_skip_msg = f", {task_skipped} ATS duplicates skipped" if task_skipped else ""
-                print(f"  Task total: {task_inserted} inserted, {task_updated} updated, {task_unchanged} already existed{task_skip_msg}")
+                task_skip_msg  = f", {task_skipped} ATS duplicates skipped" if task_skipped else ""
+                task_reset_note = " (resets disabled)" if not reset_on_change else ""
+                print(f"  Task total: {task_inserted} inserted, {task_updated} updated{task_reset_note}, {task_unchanged} already existed{task_skip_msg}")
 
             total_inserted += task_inserted
             total_updated += task_updated
