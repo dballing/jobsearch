@@ -115,6 +115,11 @@ def get_db() -> sqlite3.Connection:
         # Migrate: rename 'reviewed' → 'reviewing'.
         g.db.execute("UPDATE jobs SET status = 'reviewing' WHERE status = 'reviewed'")
         g.db.commit()
+        # Migrate: add refreshed_at column if not present.
+        cols = [row[1] for row in g.db.execute("PRAGMA table_info(jobs)").fetchall()]
+        if "refreshed_at" not in cols:
+            g.db.execute("ALTER TABLE jobs ADD COLUMN refreshed_at TIMESTAMP")
+            g.db.commit()
     return g.db
 
 
@@ -194,6 +199,7 @@ def process_job_row(row: sqlite3.Row | dict) -> dict:
         locs = []
     j["locations_count"] = len(locs)
     j["locations_all"]   = "\n".join(locs) if len(locs) > 1 else ""
+    j["refreshed_at"]    = j.get("refreshed_at")
     return j
 
 
@@ -255,6 +261,7 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
             "location_primary": s.get("location") or "—",
             "locations_all":    s.get("locations_all", ""),
             "locations_count":  s.get("locations_count", 1),
+            "refreshed_at":     s.get("refreshed_at"),
             "salary_display":   s["salary_display"],
             "labels":           s["labels"],
             "source":           s.get("source", "linkedin"),
@@ -457,7 +464,7 @@ def update_jobs_status():
     if new_status not in STATUSES or not job_ids:
         return "Invalid request", 400
     db = get_db()
-    db.executemany("UPDATE jobs SET status = ? WHERE job_id = ?",
+    db.executemany("UPDATE jobs SET status = ?, refreshed_at = NULL WHERE job_id = ?",
                    [(new_status, jid) for jid in job_ids])
     db.commit()
     return "", 204
@@ -469,7 +476,7 @@ def update_status(job_id: str):
     if new_status not in STATUSES:
         return "Invalid status", 400
     db = get_db()
-    db.execute("UPDATE jobs SET status = ? WHERE job_id = ?", (new_status, job_id))
+    db.execute("UPDATE jobs SET status = ?, refreshed_at = NULL WHERE job_id = ?", (new_status, job_id))
     db.commit()
     return "", 204
 

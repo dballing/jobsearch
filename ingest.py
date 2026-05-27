@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     status          TEXT NOT NULL DEFAULT 'new',
     notes           TEXT,
     job_description TEXT,
+    refreshed_at    TIMESTAMP,
     first_seen      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     raw             TEXT NOT NULL
 );
@@ -85,6 +86,11 @@ def open_db(path: str) -> sqlite3.Connection:
     # Migrate: rename 'reviewed' → 'reviewing'.
     conn.execute("UPDATE jobs SET status = 'reviewing' WHERE status = 'reviewed'")
     conn.commit()
+    # Migrate: add refreshed_at column if not present.
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
+    if "refreshed_at" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN refreshed_at TIMESTAMP")
+        conn.commit()
     return conn
 
 
@@ -249,7 +255,8 @@ def extract_fields_careersite(item: dict) -> dict:
 
 
 def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
-           actor_type: str = "linkedin", exclude_ats_dups: bool = False) -> tuple[int, int, int, int]:
+           actor_type: str = "linkedin", exclude_ats_dups: bool = False,
+           reset_on_change: bool = True) -> tuple[int, int, int, int]:
     inserted = updated = unchanged = skipped_ats = 0
 
     for item in items:
@@ -292,10 +299,13 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
             new_labels = existing_labels if label in existing_labels else existing_labels + [label]
 
             desc_changed = fields["job_description"] != row["job_description"]
+            now = datetime.now(timezone.utc).isoformat()
+            refreshed_at = row["refreshed_at"]  # preserve unless we're setting it now
             if expired and current_status in AUTO_CLOSE_STATUSES:
                 new_status = "closed"
-            elif desc_changed and current_status == "skipped":
+            elif desc_changed and current_status == "skipped" and reset_on_change:
                 new_status = "new"
+                refreshed_at = now
                 print(f"  NOTE: description changed for job {fields['job_id']} ({fields['title']}), resetting from skipped → new")
             else:
                 new_status = current_status
@@ -320,10 +330,12 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                     salary_min = :salary_min, salary_max = :salary_max,
                     salary_currency = :salary_currency,
                     job_description = :job_description,
-                    labels = :labels, source = :source, status = :status, raw = :raw
+                    labels = :labels, source = :source, status = :status,
+                    refreshed_at = :refreshed_at, raw = :raw
                 WHERE job_id = :job_id
                 """,
-                {**fields, "labels": json.dumps(new_labels), "status": new_status, "raw": raw},
+                {**fields, "labels": json.dumps(new_labels), "status": new_status,
+                 "refreshed_at": refreshed_at, "raw": raw},
             )
             if something_changed:
                 updated += 1
@@ -396,6 +408,7 @@ def main() -> None:
         label: str = task["label"]
         actor_type: str = task.get("actor", "linkedin")
         exclude_ats_dups: bool = task.get("exclude_ats_duplicates", False)
+        reset_on_change: bool = task.get("reset_on_change", True)
         print(f"Fetching runs for '{task_name}' (label: {label}, actor: {actor_type}) ...")
         try:
             all_runs = fetch_task_runs(username, task_name, api_token)
@@ -414,7 +427,7 @@ def main() -> None:
                 run_time = run["startedAt"][:16].replace("T", " ")
                 items = fetch_dataset_items(run["defaultDatasetId"], api_token)
                 print(f"  Run {run_time}: {len(items)} items retrieved")
-                ins, upd, unch, skip = ingest(conn, items, label, actor_type, exclude_ats_dups)
+                ins, upd, unch, skip = ingest(conn, items, label, actor_type, exclude_ats_dups, reset_on_change)
                 skip_msg = f", {skip} ATS duplicates skipped" if skip else ""
                 print(f"    {ins} inserted, {upd} updated, {unch} already existed{skip_msg}")
                 task_inserted += ins

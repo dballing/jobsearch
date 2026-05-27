@@ -13,6 +13,7 @@ name  = "my-dc-va-search"
 label = "dc"             # required: short key stored in the database
 # actor = "linkedin"    # optional: "linkedin" (default) or "careersite"
 # exclude_ats_duplicates = true  # optional: skip results already covered by a career-site task
+# reset_on_change = true         # optional: reset skipped jobs to new if description changes (default: true)
 
 [[tasks]]
 name  = "my-dc-va-search-career-sites"

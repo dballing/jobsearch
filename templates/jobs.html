@@ -134,6 +134,7 @@
           <tr class="table-group-header">
             <td class="job-title fw-medium">
               {{ job.title or '(no title)' }}
+              {% if job.sub_rows | selectattr('refreshed_at') | list %}<span class="text-warning ms-1" title="One or more postings had their description changed and were reset to new"><i class="bi bi-arrow-repeat"></i></span>{% endif %}
               {% if job.preview_job_id %}
               <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('{{ job.preview_job_id }}')" title="Preview description"><i class="bi bi-card-text"></i></button>
               {% endif %}
@@ -221,6 +222,7 @@
               {% set url = job.get('job_url') %}
               {% if url %}<a href="{{ url }}" target="_blank" rel="noopener">{{ job.title or '(no title)' }}</a>
               {% else %}{{ job.title or '(no title)' }}{% endif %}
+              {% if job.refreshed_at %}<span class="text-warning ms-1" title="Description changed — previously skipped, reset to new on {{ job.refreshed_at[:10] }}"><i class="bi bi-arrow-repeat"></i></span>{% endif %}
               {% if job.job_id %}
               <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('{{ job.job_id }}')" title="Preview description"><i class="bi bi-card-text"></i></button>
               {% endif %}

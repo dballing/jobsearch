@@ -129,6 +129,7 @@ Per-task optional keys:
 
 - `actor` — `"linkedin"` (default) or `"careersite"`. Set to `"careersite"` for tasks that use `fantastic-jobs/career-site-job-listing-api`. Career-site jobs are stored with a `cs_` prefix on their IDs to avoid collision with LinkedIn job IDs.
 - `exclude_ats_duplicates` — `true` to skip LinkedIn results that the actor has flagged as duplicates of career-site postings. Useful when running both a LinkedIn and a career-site task for the same geography to avoid double-ingesting the same job. Skipped items are counted and reported in the ingestion log; in a steady state you'd expect the LinkedIn skip count to roughly equal the career-site insert count for the same run window.
+- `reset_on_change` — `true` (default) to reset `skipped` jobs back to `new` if their description changes on a subsequent run. Set to `false` for tasks where job posters frequently make minor edits to re-surface listings, to avoid spurious resets.
 
 `config.toml` is gitignored so your API token is never committed.
 
@@ -228,7 +229,7 @@ When a job already exists in the database and is seen again in a subsequent run:
 - The `first_seen` timestamp is preserved.
 - If the job appears under a new label (from a different task), that label is added to its label list.
 - If the posting has expired (`date_validthrough` in the past) and the status is `new` or `reviewing`, the status is automatically set to `closed`.
-- If the job description changed and the status was `skipped`, the status is reset to `new`.
+- If the job description changed and the status was `skipped`, the status is reset to `new` (unless `reset_on_change = false` for that task). Jobs reset this way display a ↻ icon next to the title as a visual indicator that they are "new again" rather than freshly ingested. The icon clears the next time you manually change the status.
 
 ---
 
