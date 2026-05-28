@@ -39,6 +39,10 @@ def score_job(
         "You evaluate job postings for a specific candidate. "
         "Respond ONLY with a JSON object on a single line — no markdown, no explanation:\n"
         '{"rating": "low|medium|high", "reason": "one sentence"}\n\n'
+        "Compensation note: dollar amounts with cents (e.g. $51.45, $62.99) are hourly "
+        "wages, not annual salaries. Convert hourly rates to annual (multiply by ~2,080) "
+        "before comparing against the candidate's expectations. Round numbers "
+        "(e.g. $120,000 or $120k) are annual.\n\n"
         f"Candidate description:\n{viability_prompt}"
     )
 
