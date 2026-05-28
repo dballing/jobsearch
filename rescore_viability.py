@@ -12,7 +12,8 @@ Flags:
     --config PATH  Path to TOML config (default: config.toml).
     --dry-run      Print how many jobs would be scored without scoring them.
     --force        Rescore even jobs whose prompt hash already matches current.
-    --all          Also score closed and skipped jobs (default: exclude them).
+    --all          Score all jobs regardless of status (default: active only).
+    --early-stage  Score only new/reviewing jobs (narrower than default).
 """
 
 import argparse
@@ -131,6 +132,10 @@ def main() -> None:
         help="Score all jobs regardless of status (default: active jobs only)",
     )
     parser.add_argument(
+        "--early-stage", action="store_true",
+        help="Score only new/reviewing jobs (narrower than the default active filter)",
+    )
+    parser.add_argument(
         "--verbose", action="store_true",
         help="Print one line per job regardless of whether stdout is a TTY",
     )
@@ -176,7 +181,11 @@ def main() -> None:
         conditions.append("(viability_prompt_hash IS NULL OR viability_prompt_hash != ?)")
         params.append(current_hash)
 
-    if not args.all:
+    if args.all:
+        pass  # No status filter.
+    elif args.early_stage:
+        conditions.append("status IN ('new', 'reviewing')")
+    else:
         # Default: active jobs only (matches the UI "Active" filter).
         conditions.append("status NOT IN ('skipped', 'rejected', 'withdrawn', 'closed')")
 
