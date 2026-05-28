@@ -177,7 +177,18 @@
               {% if job.group_salary == group_varied %}<span class="text-muted fst-italic small">{{ group_varied }}</span>
               {% else %}{{ job.group_salary or '—' }}{% endif %}
             </td>
-            {% if show_viability_filter %}<td></td>{% endif %}
+            {% if show_viability_filter %}
+            <td>
+              {% if job.group_viability == group_varied %}
+                <span class="text-muted fst-italic small">{{ group_varied }}</span>
+              {% elif job.group_viability %}
+                <span class="badge text-bg-{{ job.group_viability_color }}{% if job.group_viability_stale %} opacity-50{% endif %}"
+                      title="{{ job.group_viability_tooltip }}">{{ job.group_viability }}</span>
+              {% else %}
+                <span class="text-muted">—</span>
+              {% endif %}
+            </td>
+            {% endif %}
             <td>
               {% if job.group_labels == group_varied %}<span class="text-muted fst-italic small">{{ group_varied }}</span>
               {% elif job.group_labels %}{% for r in job.group_labels %}<span class="badge bg-secondary">{{ r }}</span> {% endfor %}
@@ -235,7 +246,8 @@
             {% if show_viability_filter %}
             <td>
               {% if sub.viability %}
-              <span class="badge text-bg-{{ sub.viability_color }}" title="{{ sub.viability_reason or '' }}">{{ sub.viability }}</span>
+              <span class="badge text-bg-{{ sub.viability_color }}{% if sub.viability_stale %} opacity-50{% endif %}"
+                    title="{% if sub.viability_stale %}Stale — re-run rescore_viability.sh{% else %}{{ sub.viability_reason or '' }}{% endif %}">{{ sub.viability }}</span>
               {% else %}<span class="text-muted">—</span>{% endif %}
             </td>
             {% endif %}
@@ -274,7 +286,8 @@
             {% if show_viability_filter %}
             <td>
               {% if job.viability %}
-              <span class="badge text-bg-{{ job.viability_color }}" title="{{ job.viability_reason or '' }}">{{ job.viability }}</span>
+              <span class="badge text-bg-{{ job.viability_color }}{% if job.viability_stale %} opacity-50{% endif %}"
+                    title="{% if job.viability_stale %}Stale — re-run rescore_viability.sh{% else %}{{ job.viability_reason or '' }}{% endif %}">{{ job.viability }}</span>
               {% else %}<span class="text-muted">—</span>{% endif %}
             </td>
             {% endif %}

@@ -8,6 +8,7 @@ import tomllib
 from pathlib import Path
 
 from flask import Flask, g, render_template, request, url_for
+from viability import prompt_hash
 
 app = Flask(__name__)
 PER_PAGE = 25
@@ -18,6 +19,10 @@ with open(_config_path, "rb") as _f:
     _cfg = tomllib.load(_f)
 
 DB_PATH: str = _cfg.get("db_path", "jobs.db")
+
+# Compute the current viability prompt hash so the UI can flag stale scores.
+_viability_prompt = _cfg.get("viability", {}).get("prompt", "").strip()
+VIABILITY_CURRENT_HASH: str | None = prompt_hash(_viability_prompt) if _viability_prompt else None
 
 # Build label → display-name mapping.
 # Preferred source: top-level [labels] table in config.toml.
@@ -225,6 +230,11 @@ def process_job_row(row: sqlite3.Row | dict) -> dict:
     j["salary_display"]   = format_salary(j)
     j["source_display"]   = SOURCE_NAMES.get(j.get("source", "linkedin"), j.get("source", ""))
     j["viability_color"]  = VIABILITY_COLORS.get(j.get("viability") or "", "")
+    j["viability_stale"]  = bool(
+        j.get("viability") is not None
+        and VIABILITY_CURRENT_HASH is not None
+        and j.get("viability_prompt_hash") != VIABILITY_CURRENT_HASH
+    )
     # Extract full locations list from raw JSON for tooltip display.
     try:
         raw_data = json.loads(j.get("raw") or "{}")
@@ -277,8 +287,26 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
     # Title/company may vary within a fuzzy group (different titles from different sources)
     title   = h["title"] if h["title"] == h.get("title_max")   else GROUP_VARIED
     company = h["company"] if h["company"] == h.get("company_max") else GROUP_VARIED
-    sub_statuses    = [s.get("status", "new") for s in sub_rows]
-    unique_statuses = set(sub_statuses)
+    sub_statuses      = [s.get("status", "new") for s in sub_rows]
+    unique_statuses   = set(sub_statuses)
+    viability_vals         = [s.get("viability") for s in sub_rows]
+    unique_viabilities     = set(viability_vals)
+    group_viability        = viability_vals[0] if len(unique_viabilities) == 1 else GROUP_VARIED
+    group_viability_color  = VIABILITY_COLORS.get(group_viability or "", "")
+    group_viability_stale  = any(s.get("viability_stale") for s in sub_rows)
+    # Build tooltip: one representative reason per distinct viability level.
+    _seen_levels: dict[str, str] = {}
+    for s in sub_rows:
+        v, r = s.get("viability"), s.get("viability_reason")
+        if v and r and v not in _seen_levels:
+            _seen_levels[v] = r
+    _tooltip_lines = []
+    if group_viability_stale:
+        _tooltip_lines.append("Stale — re-run rescore_viability.sh")
+    for _level in ("high", "medium", "low"):
+        if _level in _seen_levels:
+            _tooltip_lines.append(f"{_level}: {_seen_levels[_level]}")
+    group_viability_tooltip = "\n".join(_tooltip_lines)
     # group_source: the single source if all sub-rows agree, else GROUP_VARIED
     group_source = h["source"] if h.get("source") == h.get("source_max") else GROUP_VARIED
 
@@ -294,6 +322,10 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
         "group_source":     group_source,
         "group_source_display": SOURCE_NAMES.get(group_source, "") if group_source else None,
         "sub_job_ids":      [s["job_id"] for s in sub_rows if s.get("job_id")],
+        "group_viability":         group_viability,
+        "group_viability_color":   group_viability_color,
+        "group_viability_stale":   group_viability_stale,
+        "group_viability_tooltip": group_viability_tooltip,
         "group_salary":     _group_field(sub_rows, "salary_display"),
         "group_labels":     _group_field(sub_rows, "labels"),
         "group_posted":     _group_field(sub_rows, "posted_date",
@@ -321,6 +353,7 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
             "viability":        s.get("viability"),
             "viability_reason": s.get("viability_reason"),
             "viability_color":  s.get("viability_color", ""),
+            "viability_stale":  s.get("viability_stale", False),
         })
     return job
 

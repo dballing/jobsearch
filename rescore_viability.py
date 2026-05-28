@@ -36,7 +36,16 @@ def check_model_currency(client: anthropic.Anthropic, configured_model: str) -> 
         all_models = list(client.models.list())
         model_ids  = {m.id for m in all_models}
 
-        if configured_model not in model_ids:
+        # The models API returns dated IDs (e.g. claude-haiku-4-5-20251001) but
+        # not undated aliases (e.g. claude-haiku-4-5).  Treat a configured model
+        # as available if it matches exactly OR is a prefix of an available ID.
+        def matches_available(name: str) -> bool:
+            return any(
+                mid == name or mid.startswith(name + "-")
+                for mid in model_ids
+            )
+
+        if not matches_available(configured_model):
             print(
                 f"WARNING: configured model '{configured_model}' is not available "
                 f"(it may have been retired). Update [viability] model in config.toml.",
@@ -60,12 +69,15 @@ def check_model_currency(client: anthropic.Anthropic, configured_model: str) -> 
             reverse=True,
         )
 
-        if family_models and family_models[0].id != configured_model:
-            print(
-                f"Note: a newer model is available in this family: "
-                f"'{family_models[0].id}' (you are using '{configured_model}'). "
-                f"Consider updating [viability] model in config.toml."
-            )
+        if family_models:
+            newest = family_models[0].id
+            # Not newer if configured model IS the newest or is an alias for it.
+            if not (newest == configured_model or newest.startswith(configured_model + "-")):
+                print(
+                    f"Note: a newer model is available in this family: "
+                    f"'{newest}' (you are using '{configured_model}'). "
+                    f"Consider updating [viability] model in config.toml."
+                )
     except Exception:
         pass  # Non-fatal — don't interrupt scoring if the check fails.
 
@@ -105,7 +117,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--all", action="store_true",
-        help="Score all jobs including closed ones (default: exclude closed)",
+        help="Score all jobs regardless of status (default: active jobs only)",
     )
     parser.add_argument(
         "--verbose", action="store_true",
@@ -154,7 +166,8 @@ def main() -> None:
         params.append(current_hash)
 
     if not args.all:
-        conditions.append("status != 'closed'")
+        # Default: active jobs only (matches the UI "Active" filter).
+        conditions.append("status NOT IN ('skipped', 'rejected', 'withdrawn', 'closed')")
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
@@ -179,7 +192,6 @@ def main() -> None:
     failed      = 0
     tally: dict[str, int] = {"high": 0, "medium": 0, "low": 0}
     interactive = not args.verbose and sys.stdout.isatty()
-    line_width  = len(f"  [{count}/{count}] Scoring: ") + 72
 
     for i, row in enumerate(rows, 1):
         title   = (row["title"]   or "(no title)").strip()
@@ -189,8 +201,8 @@ def main() -> None:
         if args.verbose:
             print(f"  [{i}/{count}] {label}", end=" ", flush=True)
         elif interactive:
-            line = f"  [{i}/{count}] Scoring: {label}"
-            print(f"\r{line:<{line_width}}", end="", flush=True)
+            # \r returns to start of line; \033[K erases to end of line.
+            print(f"\r\033[K  [{i}/{count}] Scoring: {label}", end="", flush=True)
 
         rating, reason = score_job(client, viability_prompt, dict(row), model=model)
 
