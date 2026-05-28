@@ -36,6 +36,18 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
         "cache_write": 1.25 / 1_000_000,
         "cache_read":  0.10 / 1_000_000,
     },
+    "claude-sonnet-4-5": {
+        "input":       3.00 / 1_000_000,
+        "output":      15.00 / 1_000_000,
+        "cache_write": 3.75 / 1_000_000,
+        "cache_read":  0.30 / 1_000_000,
+    },
+    "claude-sonnet-4-6": {
+        "input":       3.00 / 1_000_000,
+        "output":      15.00 / 1_000_000,
+        "cache_write": 3.75 / 1_000_000,
+        "cache_read":  0.30 / 1_000_000,
+    },
 }
 
 

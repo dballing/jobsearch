@@ -16,11 +16,7 @@ _SYSTEM_BOILERPLATE = (
     "Compensation note: dollar amounts with cents (e.g. $51.45, $62.99) are hourly "
     "wages, not annual salaries. Convert hourly rates to annual (multiply by ~2,080) "
     "before comparing against the candidate's expectations. Round numbers "
-    "(e.g. $120,000 or $120k) are annual. "
-    "Your reason must only reference information that IS present in the posting. "
-    "Never write phrases like 'no salary listed', 'no salary provided', "
-    "'salary not disclosed', 'no compensation information', or any similar "
-    "statement about absent data — omit the topic entirely instead.\n\n"
+    "(e.g. $120,000 or $120k) are annual.\n\n"
 )
 
 
