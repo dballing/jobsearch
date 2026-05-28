@@ -21,6 +21,7 @@ import os
 import sqlite3
 import sys
 import tomllib
+from datetime import datetime, timezone
 from pathlib import Path
 
 import anthropic
@@ -208,6 +209,7 @@ def main() -> None:
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
     count = conn.execute(f"SELECT COUNT(*) FROM jobs {where}", params).fetchone()[0]
+    start_time = datetime.now(timezone.utc)
 
     if args.dry_run:
         print(f"Would score {count} job(s) (run without --dry-run to proceed).")
@@ -219,6 +221,7 @@ def main() -> None:
         conn.close()
         return
 
+    print(f"Starting viability scoring at {start_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
     print(f"Scoring {count} job(s) with model {model}...")
 
     client      = anthropic.Anthropic(api_key=api_key)
@@ -290,6 +293,7 @@ def main() -> None:
             )
             parts.append(f"estimated cost: ${cost:.4f}")
         print("  " + ", ".join(parts))
+    print()
 
 
 if __name__ == "__main__":

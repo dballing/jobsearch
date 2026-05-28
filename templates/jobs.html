@@ -4,12 +4,13 @@
 
 {% block content %}
 
-{% macro status_select(job_id, current_status) %}
+{% macro status_select(job_id, current_status, viability='') %}
 <select class="form-select form-select-sm status-select"
         style="width:auto"
         autocomplete="off"
         data-prev="{{ current_status }}"
         data-job-id="{{ job_id }}"
+        data-viability="{{ viability }}"
         onchange="updateStatus('{{ job_id }}', this)">
   {% for s in statuses %}
   <option value="{{ s }}" {% if s == current_status %}selected{% endif %}>{{ s }}</option>
@@ -17,12 +18,13 @@
 </select>
 {% endmacro %}
 
-{% macro group_status_select(sub_job_ids, current_status) %}
+{% macro group_status_select(sub_job_ids, current_status, viability='') %}
 <select class="form-select form-select-sm status-select"
         style="width:auto"
         autocomplete="off"
         data-prev="{{ current_status }}"
         data-group-ids='{{ sub_job_ids | tojson }}'
+        data-viability="{{ viability }}"
         onchange="updateGroupStatus(this)">
   {% for s in statuses %}
   <option value="{{ s }}" {% if s == current_status %}selected{% endif %}>{{ s }}</option>
@@ -110,6 +112,12 @@
          class="btn btn-{{ 'secondary' if view == 'flat' else 'outline-secondary' }}">Flat</a>
     </div>
   </div>
+
+  {% if show_viability_filter %}
+  <button id="bulk-skip-btn" class="btn btn-sm btn-outline-danger d-none">
+    <i class="bi bi-x-circle"></i> Skip <span id="bulk-skip-count"></span> low &amp; new
+  </button>
+  {% endif %}
 
   <span class="text-muted small ms-auto">
     {{ total }} {{ 'posting' if view == 'flat' else 'job' }}{{ 's' if total != 1 }}
@@ -206,7 +214,7 @@
             {% endif %}
             <td>
               {% if job.group_status is not none %}
-                {{ group_status_select(job.sub_job_ids, job.group_status) }}
+                {{ group_status_select(job.sub_job_ids, job.group_status, job.group_viability if job.group_viability and job.group_viability != group_varied else '') }}
               {% else %}
                 <span class="text-muted small fst-italic">{{ group_varied }}</span>
               {% endif %}
@@ -260,7 +268,7 @@
             {% if sources|length > 1 %}
             <td><span class="badge {{ 'bg-primary' if sub.source == 'linkedin' else 'bg-info text-dark' }}">{{ sub.source_display }}</span></td>
             {% endif %}
-            <td>{{ status_select(sub.job_id, sub.status) }}</td>
+            <td>{{ status_select(sub.job_id, sub.status, sub.viability or '') }}</td>
             <td class="text-nowrap small">{{ (sub.posted_date or '')[:10] }}</td>
             <td class="text-nowrap small">{{ (sub.first_seen or '')[:10] }}</td>
           </tr>
@@ -300,7 +308,7 @@
             {% if sources|length > 1 %}
             <td><span class="badge {{ 'bg-primary' if job.source == 'linkedin' else 'bg-info text-dark' }}">{{ job.source_display }}</span></td>
             {% endif %}
-            <td>{{ status_select(job.job_id, job.status) }}</td>
+            <td>{{ status_select(job.job_id, job.status, job.viability or '') }}</td>
             <td class="text-nowrap">{{ (job.posted_date or '')[:10] }}</td>
             <td class="text-nowrap">{{ (job.first_seen or '')[:10] }}</td>
           </tr>
@@ -350,6 +358,7 @@ function applySelectColor(sel) {
 }
 
 document.querySelectorAll('.status-select').forEach(applySelectColor);
+updateBulkSkipButton();
 
 async function updateGroupStatus(sel) {
   const prev   = sel.dataset.prev;
@@ -367,6 +376,7 @@ async function updateGroupStatus(sel) {
       const sub = document.querySelector(`.status-select[data-job-id="${id}"]`);
       if (sub) { sub.value = status; sub.dataset.prev = status; applySelectColor(sub); }
     });
+    updateBulkSkipButton();
   } catch {
     alert('Failed to update status.');
     sel.value = prev;
@@ -383,11 +393,52 @@ async function updateStatus(jobId, sel) {
     if (!resp.ok) throw new Error();
     sel.dataset.prev = sel.value;
     applySelectColor(sel);
+    updateBulkSkipButton();
   } catch {
     alert('Failed to update status.');
     sel.value = prev;
   }
 }
+
+function getSkippableIds() {
+  const ids = new Set();
+  document.querySelectorAll('.status-select').forEach(sel => {
+    if (sel.value !== 'new') return;
+    if ((sel.dataset.viability || '') !== 'low') return;
+    if (sel.closest('.group-child')) return; // sub-row selects are covered by their group select
+    if (sel.dataset.jobId) {
+      ids.add(sel.dataset.jobId);
+    } else if (sel.dataset.groupIds) {
+      JSON.parse(sel.dataset.groupIds).forEach(id => ids.add(id));
+    }
+  });
+  return [...ids];
+}
+
+function updateBulkSkipButton() {
+  const btn = document.getElementById('bulk-skip-btn');
+  if (!btn) return;
+  const ids = getSkippableIds();
+  document.getElementById('bulk-skip-count').textContent = ids.length;
+  btn.classList.toggle('d-none', ids.length === 0);
+}
+
+async function bulkSkipLow() {
+  const ids = getSkippableIds();
+  if (!ids.length) return;
+  if (!confirm(`Skip ${ids.length} low-viability new job${ids.length === 1 ? '' : 's'} on this page?`)) return;
+  const body = new URLSearchParams({status: 'skipped'});
+  ids.forEach(id => body.append('job_ids', id));
+  try {
+    const resp = await fetch('/jobs/status', {method: 'POST', body});
+    if (!resp.ok) throw new Error();
+    window.location.reload();
+  } catch {
+    alert('Failed to skip jobs.');
+  }
+}
+
+document.getElementById('bulk-skip-btn')?.addEventListener('click', bulkSkipLow);
 
 function toggleGroup(groupKey, btn) {
   const children = document.querySelectorAll('.group-child-' + groupKey);
