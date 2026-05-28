@@ -1,5 +1,18 @@
 # To-Do
 
+## Manual canonicalization from the UI
+
+Sometimes fuzzy matching fails to group postings that a human can clearly
+see are the same role (description just different enough to fall below the
+threshold). Current workaround: skip the unmatched duplicates — they stay
+out of the way and future duplicates inherit `skipped` via status
+inheritance. This is acceptable in practice but means separate "pockets"
+of skipped entries exist for what is logically one job.
+
+Longer-term: a "Link to…" button in the job row that lets the user search
+for and attach a posting to an existing canonical. Makes the correct action
+(canonicalize) as cheap as the workaround (skip). Discussed: 2026-05-28.
+
 ## Pre-ingest database backup
 
 Before any ingest run that will actually do work (i.e. at least one task has pending runs),
