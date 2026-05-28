@@ -2,6 +2,20 @@ api_token = "apify_api_xxxxxxxxxxxxxxxxxxxx"
 username  = "your-apify-username"
 db_path   = "jobs.db"
 
+# Viability scoring — uses the Anthropic API to rate each job high/medium/low.
+# Run `rescore_viability.sh` after ingestion to score new/updated jobs (excludes closed).
+# [viability]
+# enabled = true
+# api_key = "sk-ant-xxxxxxxxxxxxxxxxxxxx"   # Anthropic API key (or set ANTHROPIC_API_KEY env var)
+# model   = "claude-haiku-4-5"              # optional: Anthropic model (default: claude-haiku-4-5)
+# prompt  = """
+# Describe yourself as a candidate. Be specific: background, skills, years of
+# experience, preferred role types, company stage, and any deal-breakers.
+# Example: "I am a senior software engineer with 12 years of Python/cloud
+# experience. I want IC or tech-lead roles at Series A–C startups. No Java-only
+# shops, no more than 10% travel."
+# """
+
 # Global defaults — all can be overridden per task.
 # reset_on_change = true           # reset skipped jobs to new if description changes (default: true)
 

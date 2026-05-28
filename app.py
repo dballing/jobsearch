@@ -61,6 +61,12 @@ SOURCE_NAMES = {
     "careersite": "Career Sites",
 }
 
+VIABILITY_COLORS = {
+    "high":   "success",
+    "medium": "warning",
+    "low":    "danger",
+}
+
 STATUS_FILTERS = {
     "new":       ("New",       "status = 'new'"),
     "reviewing": ("Reviewing", "status = 'reviewing'"),
@@ -129,6 +135,17 @@ def get_db() -> sqlite3.Connection:
         if "canonical_id" not in cols:
             g.db.execute("ALTER TABLE jobs ADD COLUMN canonical_id TEXT")
             g.db.commit()
+        # Migrate: add viability scoring columns if not present.
+        cols = [row[1] for row in g.db.execute("PRAGMA table_info(jobs)").fetchall()]
+        if "viability" not in cols:
+            g.db.execute("ALTER TABLE jobs ADD COLUMN viability TEXT")
+            g.db.commit()
+        if "viability_reason" not in cols:
+            g.db.execute("ALTER TABLE jobs ADD COLUMN viability_reason TEXT")
+            g.db.commit()
+        if "viability_prompt_hash" not in cols:
+            g.db.execute("ALTER TABLE jobs ADD COLUMN viability_prompt_hash TEXT")
+            g.db.commit()
     return g.db
 
 
@@ -159,7 +176,8 @@ def inject_nav_timestamps() -> dict:
     }
 
 
-def build_where(label: str, status_filter: str, q: str = "", source: str = "") -> tuple[str, list]:
+def build_where(label: str, status_filter: str, q: str = "", source: str = "",
+                viability: str = "") -> tuple[str, list]:
     conditions: list[str] = []
     params: list = []
     if label:
@@ -171,6 +189,11 @@ def build_where(label: str, status_filter: str, q: str = "", source: str = "") -
     if source:
         conditions.append("source = ?")
         params.append(source)
+    if viability == "unscored":
+        conditions.append("viability IS NULL")
+    elif viability in VIABILITY_COLORS:
+        conditions.append("viability = ?")
+        params.append(viability)
     if q:
         conditions.append("(title LIKE ? OR company LIKE ?)")
         params.extend([f"%{q}%", f"%{q}%"])
@@ -195,10 +218,11 @@ def decode_labels(raw: str | None) -> list[str]:
 
 def process_job_row(row: sqlite3.Row | dict) -> dict:
     j = dict(row)
-    j["labels"]         = decode_labels(j.get("labels"))
-    j["status_color"]   = STATUS_COLORS.get(j.get("status", "new"), "secondary")
-    j["salary_display"] = format_salary(j)
-    j["source_display"] = SOURCE_NAMES.get(j.get("source", "linkedin"), j.get("source", ""))
+    j["labels"]           = decode_labels(j.get("labels"))
+    j["status_color"]     = STATUS_COLORS.get(j.get("status", "new"), "secondary")
+    j["salary_display"]   = format_salary(j)
+    j["source_display"]   = SOURCE_NAMES.get(j.get("source", "linkedin"), j.get("source", ""))
+    j["viability_color"]  = VIABILITY_COLORS.get(j.get("viability") or "", "")
     # Extract full locations list from raw JSON for tooltip display.
     try:
         raw_data = json.loads(j.get("raw") or "{}")
@@ -292,6 +316,9 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
             "status_color":     s["status_color"],
             "posted_date":      s.get("posted_date", ""),
             "first_seen":       s.get("first_seen", ""),
+            "viability":        s.get("viability"),
+            "viability_reason": s.get("viability_reason"),
+            "viability_color":  s.get("viability_color", ""),
         })
     return job
 
@@ -306,6 +333,13 @@ def available_labels(db: sqlite3.Connection) -> list[dict]:
     ]
 
 
+def has_viability_scores(db: sqlite3.Connection) -> bool:
+    """Return True if any jobs have been scored for viability."""
+    return db.execute(
+        "SELECT COUNT(*) FROM jobs WHERE viability IS NOT NULL"
+    ).fetchone()[0] > 0
+
+
 def available_sources(db: sqlite3.Connection) -> list[dict]:
     rows = db.execute("SELECT DISTINCT source FROM jobs ORDER BY source").fetchall()
     return [
@@ -316,7 +350,7 @@ def available_sources(db: sqlite3.Connection) -> list[dict]:
 
 def sort_url(col: str, current_sort: str, current_dir: str,
              label: str, view: str, status_filter: str, q: str = "",
-             source: str = "") -> str:
+             source: str = "", viability: str = "") -> str:
     if current_sort != col:
         # Not currently sorted by this column — start ascending.
         new_sort, new_dir = col, "asc"
@@ -328,6 +362,7 @@ def sort_url(col: str, current_sort: str, current_dir: str,
         new_sort, new_dir = DEFAULT_SORT, DEFAULT_DIR
     return url_for("index", sort=new_sort, dir=new_dir,
                    label=label or None, view=view, source=source or None,
+                   viability=viability or None,
                    status_filter=status_filter, q=q or None, page=1)
 
 
@@ -342,6 +377,7 @@ def index():
     view          = request.args.get("view", DEFAULT_VIEW)
     status_filter = request.args.get("status_filter", DEFAULT_STATUS_FILTER)
     source        = request.args.get("source", "")
+    viability     = request.args.get("viability", "")
     page          = max(1, request.args.get("page", 1, type=int))
 
     if sort not in SORTABLE_COLS:
@@ -354,10 +390,12 @@ def index():
         status_filter = DEFAULT_STATUS_FILTER
     if source not in SOURCE_NAMES and source != "":
         source = ""
+    if viability not in ("high", "medium", "low", "unscored", ""):
+        viability = ""
     if view == "grouped" and sort == "location":
         sort = DEFAULT_SORT
 
-    where, params = build_where(label, status_filter, q, source)
+    where, params = build_where(label, status_filter, q, source, viability)
     _TEXT_COLS = {"title", "company", "location", "status"}
     sort_expr = f"{sort} COLLATE NOCASE" if sort in _TEXT_COLS else sort
     order  = f"ORDER BY {sort_expr} {direction.upper()} NULLS LAST"
@@ -377,11 +415,12 @@ def index():
                            params + [PER_PAGE, offset]).fetchall()
         jobs  = [process_job_row(r) for r in rows]
 
-    total_pages = max(1, math.ceil(total / PER_PAGE))
-    labels      = available_labels(db)
-    sources     = available_sources(db)
-    col_urls    = {
-        col: sort_url(col, sort, direction, label, view, status_filter, q, source)
+    total_pages          = max(1, math.ceil(total / PER_PAGE))
+    labels               = available_labels(db)
+    sources              = available_sources(db)
+    show_viability_filter = has_viability_scores(db)
+    col_urls             = {
+        col: sort_url(col, sort, direction, label, view, status_filter, q, source, viability)
         for col in SORTABLE_COLS
     }
 
@@ -403,6 +442,8 @@ def index():
         labels=labels,
         sources=sources,
         source=source,
+        viability=viability,
+        show_viability_filter=show_viability_filter,
         col_urls=col_urls,
     )
 
@@ -466,16 +507,18 @@ def get_job(job_id: str):
         return "Not found", 404
     job = dict(row)
     return {
-        "job_id":          job["job_id"],
-        "title":           job["title"],
-        "company":         job["company"],
-        "location":        job["location"],
-        "job_url":         job["job_url"],
-        "apply_url":       job["apply_url"],
-        "easy_apply":      job["easy_apply"],
-        "salary_display":  format_salary(job),
-        "posted_date":     (job["posted_date"] or "")[:10],
-        "job_description": job["job_description"],
+        "job_id":           job["job_id"],
+        "title":            job["title"],
+        "company":          job["company"],
+        "location":         job["location"],
+        "job_url":          job["job_url"],
+        "apply_url":        job["apply_url"],
+        "easy_apply":       job["easy_apply"],
+        "salary_display":   format_salary(job),
+        "posted_date":      (job["posted_date"] or "")[:10],
+        "job_description":  job["job_description"],
+        "viability":        job.get("viability"),
+        "viability_reason": job.get("viability_reason"),
     }
 
 

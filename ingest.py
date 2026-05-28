@@ -33,8 +33,11 @@ CREATE TABLE IF NOT EXISTS jobs (
     status          TEXT NOT NULL DEFAULT 'new',
     notes           TEXT,
     job_description TEXT,
-    refreshed_at    TIMESTAMP,
-    canonical_id    TEXT,
+    refreshed_at          TIMESTAMP,
+    canonical_id          TEXT,
+    viability             TEXT,
+    viability_reason      TEXT,
+    viability_prompt_hash TEXT,
     first_seen      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     raw             TEXT NOT NULL
 );
@@ -95,6 +98,17 @@ def open_db(path: str) -> sqlite3.Connection:
         conn.commit()
     if "canonical_id" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN canonical_id TEXT")
+        conn.commit()
+    # Migrate: add viability scoring columns if not present.
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
+    if "viability" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN viability TEXT")
+        conn.commit()
+    if "viability_reason" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN viability_reason TEXT")
+        conn.commit()
+    if "viability_prompt_hash" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN viability_prompt_hash TEXT")
         conn.commit()
     return conn
 

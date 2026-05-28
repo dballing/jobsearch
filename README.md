@@ -277,6 +277,64 @@ When `inherit_canonical_status = true` (default), a newly ingested duplicate sta
 
 ---
 
+## Viability scoring
+
+`rescore_viability.sh` uses the Anthropic API to rate each job posting as **high**, **medium**, or **low** viability for you as a candidate. Ratings and a one-sentence reason are stored in the database and shown as color-coded badges in the UI.
+
+### Setup
+
+1. Add a `[viability]` section to `config.toml`:
+   ```toml
+   [viability]
+   enabled = true
+   api_key = "sk-ant-xxxxxxxxxxxxxxxxxxxx"   # or set ANTHROPIC_API_KEY env var instead
+   # model = "claude-haiku-4-5"              # optional, this is the default
+   prompt = """
+   I am a senior software engineer with 12 years of Python and cloud infrastructure
+   experience (AWS/GCP). I am looking for IC or tech-lead roles at Series A–C startups
+   or mid-size companies. I will not consider roles that are primarily Java, require
+   relocation, or involve more than 10% travel.
+   """
+   ```
+2. Add `anthropic` to your venv: `pip install anthropic` (or `pip install -r requirements.txt` after the next pull).
+
+### Running
+
+```bash
+./rescore_viability.sh
+```
+
+Or chain it after ingestion in your cron entry:
+
+```
+0 1,5,9,13,17,21 * * * /path/to/jobsearch/ingest.sh && /path/to/jobsearch/rescore_viability.sh
+```
+
+Available flags:
+
+| Flag | Effect |
+|------|--------|
+| `--dry-run` | Show how many jobs would be scored without scoring them |
+| `--force` | Rescore all matching jobs even if their hash already matches the current prompt |
+| `--all` | Also score closed jobs (default: exclude them) |
+| `--config PATH` | Use a different config file |
+
+### How it works
+
+- Each job is scored in a single Anthropic API call. The candidate description (your `prompt`) is sent as a cached system prompt, so only the first call in a session pays full token cost — subsequent calls reuse the cache.
+- A SHA-256 hash of the prompt is stored alongside each score. On subsequent runs, only jobs with a missing or stale hash are re-scored. Change your `prompt` and re-run to update all scores.
+- By default, closed and skipped jobs are excluded (they're not worth paying to score). Use `--all` to include them.
+
+### UI
+
+Once any jobs are scored, the UI shows:
+
+- A **Viability** column with color-coded badges: <span style="color:green">high</span> · <span style="color:#856404">medium</span> · <span style="color:red">low</span>. Hover a badge to see the one-sentence reason.
+- A **Viability filter** in the filter bar: All · High · Medium · Low · Unscored.
+- The viability badge and reason also appear in the job description preview panel (offcanvas).
+
+---
+
 ## Known limitations
 
 ### Displayed location may not match your search geography
@@ -291,15 +349,18 @@ There is no reliable programmatic way to sort or prefer locations without knowin
 
 ```
 jobsearch/
-├── app.py              # Flask web application
-├── ingest.py           # Apify ingestion script
-├── ingest.sh           # venv wrapper for ingest.py
-├── run_app.sh          # venv wrapper for Flask
-├── config.toml         # your local config (gitignored)
-├── config.toml.example # template
-├── requirements.txt    # Python dependencies
-├── jobs.db             # SQLite database (gitignored)
+├── app.py                   # Flask web application
+├── ingest.py                # Apify ingestion script
+├── ingest.sh                # venv wrapper for ingest.py
+├── rescore_viability.py     # AI viability scoring script
+├── rescore_viability.sh     # venv wrapper for rescore_viability.py
+├── viability.py             # shared scoring helpers (prompt_hash, score_job)
+├── run_app.sh               # venv wrapper for Flask
+├── config.toml              # your local config (gitignored)
+├── config.toml.example      # template
+├── requirements.txt         # Python dependencies
+├── jobs.db                  # SQLite database (gitignored)
 └── templates/
-    ├── base.html       # base layout, offcanvas preview panel
-    └── jobs.html       # main jobs table
+    ├── base.html            # base layout, offcanvas preview panel
+    └── jobs.html            # main jobs table
 ```

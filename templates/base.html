@@ -220,9 +220,20 @@
     fetch('/job/' + jobId)
       .then(r => { if (!r.ok) throw new Error(); return r.json(); })
       .then(job => {
+        const viabilityColors = {high: 'success', medium: 'warning', low: 'danger'};
         titleEl.textContent = job.title || '(no title)';
-        metaEl.textContent  = [job.company, job.location, job.salary_display || null]
-                                .filter(Boolean).join(' · ');
+        const metaParts = [job.company, job.location, job.salary_display || null]
+                           .filter(Boolean).map(escHtml).join(' · ');
+        let metaHtml = `<div>${metaParts}</div>`;
+        if (job.viability) {
+          const vColor = viabilityColors[job.viability] || 'secondary';
+          metaHtml += `<div class="mt-1"><span class="badge text-bg-${vColor}">${escHtml(job.viability)}</span>`;
+          if (job.viability_reason) {
+            metaHtml += ` <span class="fst-italic">${escHtml(job.viability_reason)}</span>`;
+          }
+          metaHtml += '</div>';
+        }
+        metaEl.innerHTML = metaHtml;
         bodyEl.innerHTML = '<div class="job-description-text">' + renderDescription(job.job_description) + '</div>';
         if (job.job_url) {
           linkEl.href = job.job_url;
