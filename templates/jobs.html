@@ -167,28 +167,28 @@
                       title="Show locations">
                 <i class="bi bi-chevron-right"></i>
               </button>
-              {% if job.is_fuzzy_group and (job.title == '(varies)' or job.company == '(varies)') %}
+              {% if job.is_fuzzy_group and (job.title == group_varied or job.company == group_varied) %}
               <span class="text-muted small">{{ job.location_count }} similar postings</span>
               {% elif job.is_fuzzy_group %}
               <span class="text-muted small">{{ job.location_count }} postings of this title by this company</span>
               {% endif %}
             </td>
             <td class="text-nowrap">
-              {% if job.group_salary == '(varied)' %}<span class="text-muted fst-italic small">(varied)</span>
+              {% if job.group_salary == group_varied %}<span class="text-muted fst-italic small">{{ group_varied }}</span>
               {% else %}{{ job.group_salary or '—' }}{% endif %}
             </td>
             {% if show_viability_filter %}<td></td>{% endif %}
             <td>
-              {% if job.group_labels == '(varied)' %}<span class="text-muted fst-italic small">(varied)</span>
+              {% if job.group_labels == group_varied %}<span class="text-muted fst-italic small">{{ group_varied }}</span>
               {% elif job.group_labels %}{% for r in job.group_labels %}<span class="badge bg-secondary">{{ r }}</span> {% endfor %}
               {% else %}—{% endif %}
             </td>
             {% if sources|length > 1 %}
             <td>
-              {% if job.group_source_display %}
-                <span class="badge {{ 'bg-primary' if job.group_source == 'linkedin' else 'bg-info text-dark' }}">{{ job.group_source_display }}</span>
+              {% if job.group_source == group_varied %}
+                <span class="text-muted small fst-italic">{{ group_varied }}</span>
               {% else %}
-                <span class="text-muted small fst-italic">mixed</span>
+                <span class="badge {{ 'bg-primary' if job.group_source == 'linkedin' else 'bg-info text-dark' }}">{{ job.group_source_display }}</span>
               {% endif %}
             </td>
             {% endif %}
@@ -196,15 +196,15 @@
               {% if job.group_status is not none %}
                 {{ group_status_select(job.sub_job_ids, job.group_status) }}
               {% else %}
-                <span class="text-muted small fst-italic">mixed</span>
+                <span class="text-muted small fst-italic">{{ group_varied }}</span>
               {% endif %}
             </td>
             <td class="text-nowrap">
-              {% if job.group_posted == '(varied)' %}<span class="text-muted fst-italic small">(varied)</span>
+              {% if job.group_posted == group_varied %}<span class="text-muted fst-italic small">{{ group_varied }}</span>
               {% else %}{{ job.group_posted or '—' }}{% endif %}
             </td>
             <td class="text-nowrap">
-              {% if job.group_first_seen == '(varied)' %}<span class="text-muted fst-italic small">(varied)</span>
+              {% if job.group_first_seen == group_varied %}<span class="text-muted fst-italic small">{{ group_varied }}</span>
               {% else %}{{ job.group_first_seen or '—' }}{% endif %}
             </td>
           </tr>
@@ -212,8 +212,14 @@
           {% set outer_index = loop.index %}
           {% for sub in job.sub_rows %}
           <tr class="group-child group-child-{{ outer_index }} d-none">
-            <td></td>
-            <td></td>
+            <td class="small">
+              {% if job.is_fuzzy_group %}
+                {% if sub.job_url %}<a href="{{ sub.job_url }}" target="_blank" rel="noopener">{{ sub.title or '(no title)' }}</a>
+                {% else %}{{ sub.title or '(no title)' }}{% endif %}
+                {% if sub.refreshed_at %}<span class="text-warning ms-1" title="Description changed — previously skipped, reset to new on {{ sub.refreshed_at[:10] }}"><i class="bi bi-arrow-repeat"></i></span>{% endif %}
+              {% endif %}
+            </td>
+            <td class="small">{% if job.is_fuzzy_group %}{{ sub.company or '—' }}{% endif %}</td>
             <td class="ps-3 small"{% if sub.locations_all %} title="{{ sub.locations_all }}" style="cursor: help;"{% endif %}>
               {% if sub.job_url %}
                 <a href="{{ sub.job_url }}" target="_blank" rel="noopener">{{ sub.location or '—' }}</a>

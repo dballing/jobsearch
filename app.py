@@ -61,6 +61,8 @@ SOURCE_NAMES = {
     "careersite": "Career Sites",
 }
 
+GROUP_VARIED = "(varied)"  # Displayed whenever a grouped field differs across sub-rows.
+
 VIABILITY_COLORS = {
     "high":   "success",
     "medium": "warning",
@@ -247,7 +249,7 @@ def _group_field(sub_rows: list[dict], key: str, fmt=None) -> object:
     if not vals:
         return None
     first = vals[0]
-    return first if all(v == first for v in vals) else "(varied)"
+    return first if all(v == first for v in vals) else GROUP_VARIED
 
 
 def fetch_sub_rows(db: sqlite3.Connection, group_key: str,
@@ -273,12 +275,12 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
     is_fuzzy_group = h["location_count"] > 1
     multi          = is_fuzzy_group
     # Title/company may vary within a fuzzy group (different titles from different sources)
-    title   = h["title"] if h["title"] == h.get("title_max")   else "(varies)"
-    company = h["company"] if h["company"] == h.get("company_max") else "(varies)"
+    title   = h["title"] if h["title"] == h.get("title_max")   else GROUP_VARIED
+    company = h["company"] if h["company"] == h.get("company_max") else GROUP_VARIED
     sub_statuses    = [s.get("status", "new") for s in sub_rows]
     unique_statuses = set(sub_statuses)
-    # group_source: the single source if all sub-rows agree, else None (mixed)
-    group_source = h["source"] if h.get("source") == h.get("source_max") else None
+    # group_source: the single source if all sub-rows agree, else GROUP_VARIED
+    group_source = h["source"] if h.get("source") == h.get("source_max") else GROUP_VARIED
 
     job = {
         "title":            title,
@@ -444,6 +446,7 @@ def index():
         source=source,
         viability=viability,
         show_viability_filter=show_viability_filter,
+        group_varied=GROUP_VARIED,
         col_urls=col_urls,
     )
 
