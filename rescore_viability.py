@@ -26,6 +26,17 @@ import anthropic
 
 from viability import prompt_hash, score_job
 
+# Approximate pricing per token (USD). Update if Anthropic changes rates.
+# Source: https://docs.anthropic.com/en/docs/about-claude/models/overview
+MODEL_PRICING: dict[str, dict[str, float]] = {
+    "claude-haiku-4-5": {
+        "input":       1.00 / 1_000_000,
+        "output":      5.00 / 1_000_000,
+        "cache_write": 1.25 / 1_000_000,
+        "cache_read":  0.10 / 1_000_000,
+    },
+}
+
 
 def check_model_currency(client: anthropic.Anthropic, configured_model: str) -> None:
     """Warn if the configured model is unavailable or a newer sibling exists.
@@ -191,6 +202,10 @@ def main() -> None:
     scored      = 0
     failed      = 0
     tally: dict[str, int] = {"high": 0, "medium": 0, "low": 0}
+    tok_input   = 0
+    tok_output  = 0
+    tok_write   = 0
+    tok_read    = 0
     interactive = not args.verbose and sys.stdout.isatty()
 
     for i, row in enumerate(rows, 1):
@@ -204,7 +219,7 @@ def main() -> None:
             # \r returns to start of line; \033[K erases to end of line.
             print(f"\r\033[K  [{i}/{count}] Scoring: {label}", end="", flush=True)
 
-        rating, reason = score_job(client, viability_prompt, dict(row), model=model)
+        rating, reason, usage = score_job(client, viability_prompt, dict(row), model=model)
 
         if rating is None:
             if args.verbose:
@@ -214,6 +229,11 @@ def main() -> None:
             if args.verbose:
                 print(rating)
             tally[rating] = tally.get(rating, 0) + 1
+            if usage is not None:
+                tok_input  += getattr(usage, "input_tokens",                0) or 0
+                tok_output += getattr(usage, "output_tokens",               0) or 0
+                tok_write  += getattr(usage, "cache_creation_input_tokens", 0) or 0
+                tok_read   += getattr(usage, "cache_read_input_tokens",     0) or 0
             conn.execute(
                 "UPDATE jobs SET viability = ?, viability_reason = ?, "
                 "viability_prompt_hash = ? WHERE job_id = ?",
@@ -228,6 +248,23 @@ def main() -> None:
     breakdown = ", ".join(f"{r}: {tally[r]}" for r in ("high", "medium", "low") if tally.get(r))
     fail_note = f", {failed} failed" if failed else ""
     print(f"Done. {scored} job(s) scored{fail_note}." + (f" ({breakdown})" if breakdown else ""))
+    if tok_input or tok_output:
+        tok_total = tok_input + tok_output + tok_write + tok_read
+        detail = (
+            f"{tok_input:,} input, {tok_output:,} output"
+            + (f", {tok_write:,} cache write, {tok_read:,} cache read" if tok_write or tok_read else "")
+        )
+        parts = [f"{tok_total:,} tokens total ({detail})"]
+        pricing = MODEL_PRICING.get(model)
+        if pricing:
+            cost = (
+                tok_input  * pricing["input"]
+              + tok_output * pricing["output"]
+              + tok_write  * pricing["cache_write"]
+              + tok_read   * pricing["cache_read"]
+            )
+            parts.append(f"estimated cost: ${cost:.4f}")
+        print("  " + ", ".join(parts))
 
 
 if __name__ == "__main__":

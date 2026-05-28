@@ -20,9 +20,27 @@ with open(_config_path, "rb") as _f:
 
 DB_PATH: str = _cfg.get("db_path", "jobs.db")
 
-# Compute the current viability prompt hash so the UI can flag stale scores.
-_viability_prompt = _cfg.get("viability", {}).get("prompt", "").strip()
-VIABILITY_CURRENT_HASH: str | None = prompt_hash(_viability_prompt) if _viability_prompt else None
+# Viability prompt hash — recomputed whenever config.toml changes on disk.
+# Stored as a module-level mtime cache so a page refresh picks up edits
+# without requiring an app restart.
+_cfg_mtime: float = 0.0
+_viability_hash_cache: str | None = None
+
+
+def _current_viability_hash() -> str | None:
+    """Return the viability prompt hash, refreshing if config.toml has changed."""
+    global _cfg_mtime, _viability_hash_cache
+    try:
+        mtime = _config_path.stat().st_mtime
+        if mtime != _cfg_mtime:
+            _cfg_mtime = mtime
+            with open(_config_path, "rb") as _rf:
+                _live_cfg = tomllib.load(_rf)
+            p = _live_cfg.get("viability", {}).get("prompt", "").strip()
+            _viability_hash_cache = prompt_hash(p) if p else None
+    except OSError:
+        pass
+    return _viability_hash_cache
 
 # Build label → display-name mapping.
 # Preferred source: top-level [labels] table in config.toml.
@@ -230,10 +248,11 @@ def process_job_row(row: sqlite3.Row | dict) -> dict:
     j["salary_display"]   = format_salary(j)
     j["source_display"]   = SOURCE_NAMES.get(j.get("source", "linkedin"), j.get("source", ""))
     j["viability_color"]  = VIABILITY_COLORS.get(j.get("viability") or "", "")
+    _cur_hash = _current_viability_hash()
     j["viability_stale"]  = bool(
         j.get("viability") is not None
-        and VIABILITY_CURRENT_HASH is not None
-        and j.get("viability_prompt_hash") != VIABILITY_CURRENT_HASH
+        and _cur_hash is not None
+        and j.get("viability_prompt_hash") != _cur_hash
     )
     # Extract full locations list from raw JSON for tooltip display.
     try:

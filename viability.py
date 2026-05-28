@@ -22,7 +22,7 @@ def score_job(
     viability_prompt: str,
     job: dict,
     model: str = "claude-haiku-4-5",
-) -> tuple[str, str] | tuple[None, None]:
+) -> tuple[str, str, object] | tuple[None, None, None]:
     """Score a job posting for viability against the candidate description.
 
     Returns (rating, reason) where rating is 'low', 'medium', or 'high',
@@ -69,7 +69,7 @@ def score_job(
         rating = str(data.get("rating", "")).lower().strip()
         reason = str(data.get("reason", "")).strip()
         if rating not in VIABILITY_RATINGS or not reason:
-            return None, None
-        return rating, reason
+            return None, None, None
+        return rating, reason, message.usage
     except Exception:
-        return None, None
+        return None, None, None
