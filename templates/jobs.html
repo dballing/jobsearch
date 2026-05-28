@@ -180,7 +180,8 @@
             {% if show_viability_filter %}
             <td>
               {% if job.group_viability == group_varied %}
-                <span class="text-muted fst-italic small">{{ group_varied }}</span>
+                <span class="text-muted fst-italic small"
+                      {% if job.group_viability_tooltip %}title="{{ job.group_viability_tooltip }}" style="cursor:help;"{% endif %}>{{ group_varied }}</span>
               {% elif job.group_viability %}
                 <span class="badge text-bg-{{ job.group_viability_color }}{% if job.group_viability_stale %} opacity-50{% endif %}"
                       title="{{ job.group_viability_tooltip }}">{{ job.group_viability }}</span>

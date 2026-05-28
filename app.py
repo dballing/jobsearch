@@ -306,7 +306,7 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
     for _level in ("high", "medium", "low"):
         if _level in _seen_levels:
             _tooltip_lines.append(f"{_level}: {_seen_levels[_level]}")
-    group_viability_tooltip = "\n".join(_tooltip_lines)
+    group_viability_tooltip = "\n\n".join(_tooltip_lines)
     # group_source: the single source if all sub-rows agree, else GROUP_VARIED
     group_source = h["source"] if h.get("source") == h.get("source_max") else GROUP_VARIED
 
