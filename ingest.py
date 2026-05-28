@@ -8,6 +8,7 @@ import sqlite3
 import sys
 import tomllib
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import requests
@@ -33,6 +34,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     notes           TEXT,
     job_description TEXT,
     refreshed_at    TIMESTAMP,
+    canonical_id    TEXT,
     first_seen      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     raw             TEXT NOT NULL
 );
@@ -86,10 +88,13 @@ def open_db(path: str) -> sqlite3.Connection:
     # Migrate: rename 'reviewed' → 'reviewing'.
     conn.execute("UPDATE jobs SET status = 'reviewing' WHERE status = 'reviewed'")
     conn.commit()
-    # Migrate: add refreshed_at column if not present.
+    # Migrate: add refreshed_at and canonical_id columns if not present.
     cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
     if "refreshed_at" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN refreshed_at TIMESTAMP")
+        conn.commit()
+    if "canonical_id" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN canonical_id TEXT")
         conn.commit()
     return conn
 
@@ -202,6 +207,52 @@ def is_expired(item: dict) -> bool:
         return False
 
 
+def find_canonical(
+    conn: sqlite3.Connection,
+    job_id: str,
+    title: str | None,
+    company: str | None,
+    description: str | None,
+    threshold: float,
+) -> list[sqlite3.Row]:
+    """Return all existing canonical jobs that are near-duplicates, sorted oldest-first.
+
+    Only considers jobs with canonical_id IS NULL (i.e. canonical candidates,
+    not already-linked duplicates) to prevent chaining.  No company filter is
+    applied — the same job can appear under different company names when posted
+    by recruiters or aggregators.  A title quick_ratio > 0.6 pre-filter keeps
+    the search efficient; description similarity >= threshold is the final gate.
+
+    The caller should treat matches[0] as the canonical (oldest first_seen) and
+    link all remaining matches to it, preventing future fragmentation.
+    """
+    if not description or not title:
+        return []
+    candidates = conn.execute(
+        "SELECT * FROM jobs WHERE canonical_id IS NULL AND job_id != ?",
+        (job_id,),
+    ).fetchall()
+    matches: list[sqlite3.Row] = []
+    for candidate in candidates:
+        if not candidate["title"] or not candidate["job_description"]:
+            continue
+        # Title pre-filter: quick_ratio is an upper bound on ratio()
+        title_m = SequenceMatcher(None, title.lower(), candidate["title"].lower())
+        if title_m.quick_ratio() < 0.6:
+            continue
+        if title_m.ratio() < 0.6:
+            continue
+        # Description check
+        desc_m = SequenceMatcher(None, description, candidate["job_description"])
+        if desc_m.quick_ratio() < threshold:
+            continue
+        if desc_m.ratio() >= threshold:
+            matches.append(candidate)
+    # Sort oldest-first so matches[0] is the most-canonical candidate.
+    matches.sort(key=lambda r: r["first_seen"] or "")
+    return matches
+
+
 def extract_fields_linkedin(item: dict) -> dict:
     # Field names from fantastic-jobs/advanced-linkedin-job-search-api (verified against real output).
     # `id` is Apify-internal; `linkedin_id` is the actual LinkedIn job ID used as our PK.
@@ -256,8 +307,10 @@ def extract_fields_careersite(item: dict) -> dict:
 
 def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
            actor_type: str = "linkedin", exclude_ats_dups: bool = False,
-           reset_on_change: bool = True) -> tuple[int, int, int, int]:
-    inserted = updated = unchanged = skipped_ats = 0
+           reset_on_change: bool = True,
+           fuzzy_dedup: bool = False, fuzzy_threshold: float = 0.85,
+           inherit_canonical_status: bool = True) -> tuple[int, int, int, int, int]:
+    inserted = updated = unchanged = skipped_ats = fuzzy_linked = 0
 
     for item in items:
         if exclude_ats_dups and item.get("ats_duplicate") is True:
@@ -278,19 +331,49 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
         expired = is_expired(item)
 
         if row is None:
+            canonical_id = None
             initial_status = "closed" if expired else "new"
+            if fuzzy_dedup and not expired:
+                matches = find_canonical(
+                    conn, fields["job_id"], fields["title"], fields["company"],
+                    fields["job_description"], fuzzy_threshold,
+                )
+                if matches:
+                    canonical = matches[0]
+                    canonical_id = canonical["job_id"]
+                    if inherit_canonical_status:
+                        initial_status = canonical["status"]
+                    print(
+                        f"  NOTE: fuzzy match: {fields['job_id']} ({fields['title']}) "
+                        f"→ canonical {canonical_id} ({canonical['title']}), "
+                        f"status: {initial_status}"
+                    )
+                    fuzzy_linked += 1
+                    # Also link any other orphaned matches to the same canonical so
+                    # future jobs find one group rather than many.
+                    for other in matches[1:]:
+                        conn.execute(
+                            "UPDATE jobs SET canonical_id = ? WHERE job_id = ?",
+                            (canonical_id, other["job_id"]),
+                        )
+                        print(
+                            f"  NOTE: also linking orphan {other['job_id']} ({other['title']}) "
+                            f"→ canonical {canonical_id}"
+                        )
+                        fuzzy_linked += 1
             conn.execute(
                 """
                 INSERT INTO jobs
                     (job_id, title, company, location, posted_date,
                      job_url, apply_url, easy_apply, salary_min, salary_max, salary_currency,
-                     labels, source, status, job_description, raw)
+                     labels, source, status, job_description, canonical_id, raw)
                 VALUES
                     (:job_id, :title, :company, :location, :posted_date,
                      :job_url, :apply_url, :easy_apply, :salary_min, :salary_max, :salary_currency,
-                     :labels, :source, :status, :job_description, :raw)
+                     :labels, :source, :status, :job_description, :canonical_id, :raw)
                 """,
-                {**fields, "labels": json.dumps([label]), "status": initial_status, "raw": raw},
+                {**fields, "labels": json.dumps([label]), "status": initial_status,
+                 "canonical_id": canonical_id, "raw": raw},
             )
             inserted += 1
         else:
@@ -301,6 +384,8 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
             desc_changed = fields["job_description"] != row["job_description"]
             now = datetime.now(timezone.utc).isoformat()
             refreshed_at = row["refreshed_at"]  # preserve unless we're setting it now
+            canonical_id = row["canonical_id"]  # preserve existing link by default
+
             if expired and current_status in AUTO_CLOSE_STATUSES:
                 new_status = "closed"
             elif desc_changed and current_status == "skipped" and reset_on_change:
@@ -310,9 +395,35 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
             else:
                 new_status = current_status
 
+            # Check for a fuzzy canonical on previously-unlinked jobs.
+            if fuzzy_dedup and canonical_id is None:
+                matches = find_canonical(
+                    conn, fields["job_id"], fields["title"], fields["company"],
+                    fields["job_description"], fuzzy_threshold,
+                )
+                if matches:
+                    canonical = matches[0]
+                    canonical_id = canonical["job_id"]
+                    print(
+                        f"  NOTE: fuzzy match: {fields['job_id']} ({fields['title']}) "
+                        f"→ canonical {canonical_id} ({canonical['title']})"
+                    )
+                    fuzzy_linked += 1
+                    for other in matches[1:]:
+                        conn.execute(
+                            "UPDATE jobs SET canonical_id = ? WHERE job_id = ?",
+                            (canonical_id, other["job_id"]),
+                        )
+                        print(
+                            f"  NOTE: also linking orphan {other['job_id']} ({other['title']}) "
+                            f"→ canonical {canonical_id}"
+                        )
+                        fuzzy_linked += 1
+
             something_changed = (
                 new_labels != existing_labels
                 or new_status != current_status
+                or canonical_id != row["canonical_id"]
                 or fields["title"] != row["title"]
                 or fields["company"] != row["company"]
                 or fields["location"] != row["location"]
@@ -331,11 +442,11 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                     salary_currency = :salary_currency,
                     job_description = :job_description,
                     labels = :labels, source = :source, status = :status,
-                    refreshed_at = :refreshed_at, raw = :raw
+                    refreshed_at = :refreshed_at, canonical_id = :canonical_id, raw = :raw
                 WHERE job_id = :job_id
                 """,
                 {**fields, "labels": json.dumps(new_labels), "status": new_status,
-                 "refreshed_at": refreshed_at, "raw": raw},
+                 "refreshed_at": refreshed_at, "canonical_id": canonical_id, "raw": raw},
             )
             if something_changed:
                 updated += 1
@@ -343,7 +454,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                 unchanged += 1
 
     conn.commit()
-    return inserted, updated, unchanged, skipped_ats
+    return inserted, updated, unchanged, skipped_ats, fuzzy_linked
 
 
 def touch_synced(conn: sqlite3.Connection, task_name: str) -> None:
@@ -397,9 +508,11 @@ def main() -> None:
     username: str = config["username"]
     db_path: str = config.get("db_path", "jobs.db")
     tasks: list[dict] = config["tasks"]
+    fuzzy_threshold: float = config.get("fuzzy_threshold", 0.85)
+    inherit_canonical_status: bool = config.get("inherit_canonical_status", True)
 
     conn = open_db(db_path)
-    total_inserted = total_updated = total_unchanged = total_skipped = 0
+    total_inserted = total_updated = total_unchanged = total_skipped = total_fuzzy = 0
     start_time = datetime.now(timezone.utc)
     print(f"Starting ingestion at {start_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
@@ -409,6 +522,7 @@ def main() -> None:
         actor_type: str = task.get("actor", "linkedin")
         exclude_ats_dups: bool = task.get("exclude_ats_duplicates", False)
         reset_on_change: bool = task.get("reset_on_change", True)
+        fuzzy_dedup: bool = task.get("fuzzy_dedup", False)
         print(f"Fetching runs for '{task_name}' (label: {label}, actor: {actor_type}) ...")
         try:
             all_runs = fetch_task_runs(username, task_name, api_token)
@@ -422,37 +536,45 @@ def main() -> None:
             if len(pending) > 1:
                 print(f"  Catching up: {len(pending)} runs to process.")
 
-            task_inserted = task_updated = task_unchanged = task_skipped = 0
+            task_inserted = task_updated = task_unchanged = task_skipped = task_fuzzy = 0
             for run in pending:
                 run_time = run["startedAt"][:16].replace("T", " ")
                 items = fetch_dataset_items(run["defaultDatasetId"], api_token)
                 print(f"  Run {run_time}: {len(items)} items retrieved")
-                ins, upd, unch, skip = ingest(conn, items, label, actor_type, exclude_ats_dups, reset_on_change)
+                ins, upd, unch, skip, fuzzy = ingest(
+                    conn, items, label, actor_type, exclude_ats_dups, reset_on_change,
+                    fuzzy_dedup, fuzzy_threshold, inherit_canonical_status,
+                )
                 skip_msg    = f", {skip} ATS duplicates skipped" if skip else ""
+                fuzzy_msg   = f", {fuzzy} fuzzy-linked" if fuzzy else ""
                 reset_note  = " (resets disabled)" if not reset_on_change else ""
-                print(f"    {ins} inserted, {upd} updated{reset_note}, {unch} already existed{skip_msg}")
+                print(f"    {ins} inserted, {upd} updated{reset_note}, {unch} already existed{skip_msg}{fuzzy_msg}")
                 task_inserted += ins
-                task_updated += upd
+                task_updated  += upd
                 task_unchanged += unch
-                task_skipped += skip
+                task_skipped  += skip
+                task_fuzzy    += fuzzy
                 record_state(conn, task_name, run, ins, upd, unch)
 
             if len(pending) > 1:
-                task_skip_msg  = f", {task_skipped} ATS duplicates skipped" if task_skipped else ""
+                task_skip_msg   = f", {task_skipped} ATS duplicates skipped" if task_skipped else ""
+                task_fuzzy_msg  = f", {task_fuzzy} fuzzy-linked" if task_fuzzy else ""
                 task_reset_note = " (resets disabled)" if not reset_on_change else ""
-                print(f"  Task total: {task_inserted} inserted, {task_updated} updated{task_reset_note}, {task_unchanged} already existed{task_skip_msg}")
+                print(f"  Task total: {task_inserted} inserted, {task_updated} updated{task_reset_note}, {task_unchanged} already existed{task_skip_msg}{task_fuzzy_msg}")
 
             total_inserted += task_inserted
-            total_updated += task_updated
+            total_updated  += task_updated
             total_unchanged += task_unchanged
-            total_skipped += task_skipped
+            total_skipped  += task_skipped
+            total_fuzzy    += task_fuzzy
 
         except requests.HTTPError as exc:
             print(f"  ERROR fetching '{task_name}': {exc}", file=sys.stderr)
 
     conn.close()
     elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
-    print(f"Done in {elapsed:.1f}s. {total_inserted} inserted, {total_updated} updated, {total_unchanged} unchanged, {total_skipped} ATS duplicates skipped.\n")
+    total_fuzzy_msg = f", {total_fuzzy} fuzzy-linked" if total_fuzzy else ""
+    print(f"Done in {elapsed:.1f}s. {total_inserted} inserted, {total_updated} updated, {total_unchanged} unchanged, {total_skipped} ATS duplicates skipped{total_fuzzy_msg}.\n")
 
 
 if __name__ == "__main__":

@@ -147,7 +147,11 @@
                       title="Show locations">
                 <i class="bi bi-chevron-right"></i>
               </button>
+              {% if job.is_fuzzy_group and (job.title == '(varies)' or job.company == '(varies)') %}
+              <span class="text-muted small">{{ job.location_count }} similar postings</span>
+              {% elif job.is_fuzzy_group %}
               <span class="text-muted small">{{ job.location_count }} postings of this title by this company</span>
+              {% endif %}
             </td>
             <td class="text-nowrap">
               {% if job.group_salary == '(varied)' %}<span class="text-muted fst-italic small">(varied)</span>

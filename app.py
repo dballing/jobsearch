@@ -69,9 +69,15 @@ STATUS_FILTERS = {
     "all":       ("All",       None),
 }
 
-# Grouped header query — one row per (title, company).
+# Grouped header query — one row per canonical group.
+# Jobs linked via canonical_id are grouped together; others are their own group.
 GROUPED_HEADERS = """
-    SELECT title, company, COUNT(*) AS location_count,
+    SELECT COALESCE(canonical_id, job_id) AS group_key,
+           MIN(title)           AS title,
+           MAX(title)           AS title_max,
+           MIN(company)         AS company,
+           MAX(company)         AS company_max,
+           COUNT(*)             AS location_count,
            MIN(first_seen)      AS first_seen,
            MIN(posted_date)     AS posted_date,
            MIN(salary_min)      AS salary_min,
@@ -81,11 +87,11 @@ GROUPED_HEADERS = """
            MIN(source)          AS source,
            MAX(source)          AS source_max
     FROM jobs {where}
-    GROUP BY title, company
+    GROUP BY COALESCE(canonical_id, job_id)
     {order}
     LIMIT ? OFFSET ?
 """
-GROUPED_COUNT = "SELECT COUNT(*) FROM (SELECT 1 FROM jobs {where} GROUP BY title, company)"
+GROUPED_COUNT = "SELECT COUNT(*) FROM (SELECT 1 FROM jobs {where} GROUP BY COALESCE(canonical_id, job_id))"
 FLAT_COUNT    = "SELECT COUNT(*) FROM jobs {where}"
 FLAT_SELECT   = "SELECT * FROM jobs {where} {order} LIMIT ? OFFSET ?"
 
@@ -115,10 +121,13 @@ def get_db() -> sqlite3.Connection:
         # Migrate: rename 'reviewed' → 'reviewing'.
         g.db.execute("UPDATE jobs SET status = 'reviewing' WHERE status = 'reviewed'")
         g.db.commit()
-        # Migrate: add refreshed_at column if not present.
+        # Migrate: add refreshed_at and canonical_id columns if not present.
         cols = [row[1] for row in g.db.execute("PRAGMA table_info(jobs)").fetchall()]
         if "refreshed_at" not in cols:
             g.db.execute("ALTER TABLE jobs ADD COLUMN refreshed_at TIMESTAMP")
+            g.db.commit()
+        if "canonical_id" not in cols:
+            g.db.execute("ALTER TABLE jobs ADD COLUMN canonical_id TEXT")
             g.db.commit()
     return g.db
 
@@ -217,31 +226,44 @@ def _group_field(sub_rows: list[dict], key: str, fmt=None) -> object:
     return first if all(v == first for v in vals) else "(varied)"
 
 
-def fetch_sub_rows(db: sqlite3.Connection, title: str, company: str,
+def fetch_sub_rows(db: sqlite3.Connection, group_key: str,
                    where: str, params: list) -> list[dict]:
+    """Fetch all jobs belonging to a canonical group.
+
+    A group contains:
+      - the canonical job itself (canonical_id IS NULL AND job_id = group_key)
+      - all fuzzy duplicates that point at it (canonical_id = group_key)
+    """
     and_clause = f"{where} AND " if where else "WHERE "
     rows = db.execute(
-        f"SELECT * FROM jobs {and_clause}title = ? AND company = ? ORDER BY location",
-        params + [title, company],
+        f"SELECT * FROM jobs {and_clause}"
+        "(canonical_id = ? OR (canonical_id IS NULL AND job_id = ?)) ORDER BY location",
+        params + [group_key, group_key],
     ).fetchall()
     return [process_job_row(r) for r in rows]
 
 
 def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
-    h     = dict(header)
-    multi = h["location_count"] > 1
-    sub_statuses = [s.get("status", "new") for s in sub_rows]
+    h             = dict(header)
+    # is_fuzzy_group: more than one job in this canonical group (canonical + ≥1 duplicate)
+    is_fuzzy_group = h["location_count"] > 1
+    multi          = is_fuzzy_group
+    # Title/company may vary within a fuzzy group (different titles from different sources)
+    title   = h["title"] if h["title"] == h.get("title_max")   else "(varies)"
+    company = h["company"] if h["company"] == h.get("company_max") else "(varies)"
+    sub_statuses    = [s.get("status", "new") for s in sub_rows]
     unique_statuses = set(sub_statuses)
     # group_source: the single source if all sub-rows agree, else None (mixed)
     group_source = h["source"] if h.get("source") == h.get("source_max") else None
 
-    job   = {
-        "title":           h["title"],
-        "company":         h["company"],
-        "location_count":  h["location_count"],
-        "multi":           multi,
-        "sub_rows":        sub_rows,
-        "preview_job_id":  sub_rows[0]["job_id"] if sub_rows else None,
+    job = {
+        "title":            title,
+        "company":          company,
+        "location_count":   h["location_count"],
+        "multi":            multi,
+        "is_fuzzy_group":   is_fuzzy_group,
+        "sub_rows":         sub_rows,
+        "preview_job_id":   sub_rows[0]["job_id"] if sub_rows else None,
         "group_status":     next(iter(unique_statuses)) if len(unique_statuses) == 1 else None,
         "group_source":     group_source,
         "group_source_display": SOURCE_NAMES.get(group_source, "") if group_source else None,
@@ -346,7 +368,7 @@ def index():
         headers = db.execute(GROUPED_HEADERS.format(where=where, order=order),
                              params + [PER_PAGE, offset]).fetchall()
         jobs = [
-            build_grouped_job(h, fetch_sub_rows(db, h["title"], h["company"], where, params))
+            build_grouped_job(h, fetch_sub_rows(db, h["group_key"], where, params))
             for h in headers
         ]
     else:

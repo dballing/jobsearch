@@ -2,6 +2,10 @@ api_token = "apify_api_xxxxxxxxxxxxxxxxxxxx"
 username  = "your-apify-username"
 db_path   = "jobs.db"
 
+# Optional: fuzzy near-duplicate detection settings (global defaults).
+# fuzzy_threshold = 0.85           # min description similarity to consider a near-duplicate (0–1, default: 0.85)
+# inherit_canonical_status = true  # new duplicate inherits the canonical job's status (default: true)
+
 # Map label keys to display names shown in the UI filter bar.
 # If a label has no entry here it is shown uppercased.
 [labels]
@@ -14,6 +18,7 @@ label = "dc"             # required: short key stored in the database
 # actor = "linkedin"    # optional: "linkedin" (default) or "careersite"
 # exclude_ats_duplicates = true  # optional: skip results already covered by a career-site task
 # reset_on_change = true         # optional: reset skipped jobs to new if description changes (default: true)
+# fuzzy_dedup = false            # optional: group near-duplicate descriptions as one row (default: false)
 
 [[tasks]]
 name  = "my-dc-va-search-career-sites"
