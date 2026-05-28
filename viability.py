@@ -7,14 +7,27 @@ import re
 
 VIABILITY_RATINGS = {"low", "medium", "high"}
 
+# Boilerplate prepended to every system prompt before the candidate description.
+# Changing this constant invalidates all existing scores (prompt_hash changes).
+_SYSTEM_BOILERPLATE = (
+    "You evaluate job postings for a specific candidate. "
+    "Respond ONLY with a JSON object on a single line — no markdown, no explanation:\n"
+    '{"rating": "low|medium|high", "reason": "one sentence"}\n\n'
+    "Compensation note: dollar amounts with cents (e.g. $51.45, $62.99) are hourly "
+    "wages, not annual salaries. Convert hourly rates to annual (multiply by ~2,080) "
+    "before comparing against the candidate's expectations. Round numbers "
+    "(e.g. $120,000 or $120k) are annual.\n\n"
+)
+
 
 def prompt_hash(prompt: str) -> str:
-    """Return a stable 32-char hex digest of the viability prompt.
+    """Return a stable 32-char hex digest of the full scoring prompt.
 
-    Used to detect when existing scores were computed with a different
-    (now stale) candidate description.
+    Hashes both the fixed system boilerplate and the candidate description so
+    that changes to either (config edits OR code-level boilerplate updates)
+    correctly invalidate existing scores.
     """
-    return hashlib.sha256(prompt.encode()).hexdigest()[:32]
+    return hashlib.sha256((_SYSTEM_BOILERPLATE + prompt).encode()).hexdigest()[:32]
 
 
 def score_job(
@@ -35,16 +48,7 @@ def score_job(
     company     = (job.get("company")         or "(unknown company)").strip()
     description = (job.get("job_description") or "").strip()[:4000]
 
-    system_text = (
-        "You evaluate job postings for a specific candidate. "
-        "Respond ONLY with a JSON object on a single line — no markdown, no explanation:\n"
-        '{"rating": "low|medium|high", "reason": "one sentence"}\n\n'
-        "Compensation note: dollar amounts with cents (e.g. $51.45, $62.99) are hourly "
-        "wages, not annual salaries. Convert hourly rates to annual (multiply by ~2,080) "
-        "before comparing against the candidate's expectations. Round numbers "
-        "(e.g. $120,000 or $120k) are annual.\n\n"
-        f"Candidate description:\n{viability_prompt}"
-    )
+    system_text = _SYSTEM_BOILERPLATE + f"Candidate description:\n{viability_prompt}"
 
     try:
         message = client.messages.create(
