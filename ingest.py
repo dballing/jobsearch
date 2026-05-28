@@ -69,6 +69,10 @@ CREATE TABLE IF NOT EXISTS ingest_history (
 def open_db(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
+    # WAL mode allows concurrent reads/writes with the Flask app and rescore script.
+    # busy_timeout retries on lock contention instead of raising immediately.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(SCHEMA)
     # Migrate: rename regions → labels if the old column still exists.
     cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
