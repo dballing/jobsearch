@@ -129,12 +129,15 @@ Per-task optional keys:
 
 - `actor` — `"linkedin"` (default) or `"careersite"`. Set to `"careersite"` for tasks that use `fantastic-jobs/career-site-job-listing-api`. Career-site jobs are stored with a `cs_` prefix on their IDs to avoid collision with LinkedIn job IDs.
 - `exclude_ats_duplicates` — `true` to skip LinkedIn results that the actor has flagged as duplicates of career-site postings. Useful when running both a LinkedIn and a career-site task for the same geography to avoid double-ingesting the same job. Skipped items are counted and reported in the ingestion log; in a steady state you'd expect the LinkedIn skip count to roughly equal the career-site insert count for the same run window.
-- `reset_on_change` — `true` (default) to reset `skipped` jobs back to `new` if their description changes on a subsequent run. Set to `false` for tasks where job posters frequently make minor edits to re-surface listings, to avoid spurious resets.
-- `fuzzy_dedup` — `false` (default). Set to `true` to detect near-duplicate job descriptions across sources. When a new job's description is ≥ `fuzzy_threshold` similar to an existing job's description (after a title and company pre-filter), the new job is linked to the existing one as a canonical duplicate and grouped with it in the UI. See [Fuzzy near-duplicate detection](#fuzzy-near-duplicate-detection) for details.
+- `reset_on_change` — overrides the global `reset_on_change` default for this task. See global keys below.
+- `fuzzy_dedup` — overrides the global `fuzzy_dedup` default for this task. See global keys below.
 
 Global optional keys (top-level, not inside `[[tasks]]`):
 
-- `fuzzy_threshold` — float between 0 and 1 (default: `0.85`). Minimum description similarity to consider two jobs near-duplicates. Only takes effect when at least one task has `fuzzy_dedup = true`.
+- `reset_on_change` — `true` (default). Reset `skipped` jobs back to `new` if their description changes on a subsequent run. Set to `false` for tasks where job posters frequently make minor edits to re-surface listings, to avoid spurious resets. Per-task `reset_on_change` overrides this.
+- `fuzzy_dedup` — `true` (default). Master switch: enables near-duplicate detection for all tasks. A per-task `fuzzy_dedup` key overrides this for that task, so you can opt individual tasks out (or in).
+- `fuzzy_desc_threshold` — float between 0 and 1 (default: `0.85`). Minimum description similarity to consider two jobs near-duplicates. Only takes effect when fuzzy dedup is enabled for at least one task.
+- `fuzzy_title_threshold` — float between 0 and 1 (default: `0.6`). Minimum title similarity used as a fast pre-filter before the (more expensive) description comparison. Lower this if you expect near-duplicates with substantially reworded titles; raise it to tighten the filter.
 - `inherit_canonical_status` — `true` (default). When a new job is linked as a duplicate of an existing canonical job, inherit the canonical's current status (e.g. if you already marked it `skipped`, the duplicate starts as `skipped` too). Set to `false` to always start duplicates as `new`.
 
 `config.toml` is gitignored so your API token is never committed.
@@ -249,7 +252,7 @@ Enable it per task with `fuzzy_dedup = true`. On each new job ingested, the scri
 
 1. Pre-filters all existing canonical jobs by title similarity > 60 % (fast upper-bound check).
 2. Computes a full `SequenceMatcher` similarity ratio on the job description.
-3. If the ratio meets `fuzzy_threshold` (default 0.85), the new job is recorded as a duplicate of the existing canonical job — its `canonical_id` is set to the canonical's `job_id`.
+3. If the ratio meets `fuzzy_desc_threshold` (default 0.85), the new job is recorded as a duplicate of the existing canonical job — its `canonical_id` is set to the canonical's `job_id`.
 
 No company filter is applied — the same job often appears under different company names when posted by recruiters or aggregators. Near-duplicate detection is cross-task: a new LinkedIn job is compared against all existing canonical jobs in the database, not just jobs from the same task.
 
@@ -264,12 +267,12 @@ Expand the group to see each posting individually with its own status dropdown a
 
 ### Status inheritance
 
-When `inherit_canonical_status = true` (default), a newly ingested duplicate starts with the same status as its canonical. If you already marked the LinkedIn version as `skipped`, the career-site version starts as `skipped` too, without any manual action.
+When `inherit_canonical_status = true` (default), a newly ingested duplicate starts with the same status as its canonical job. If you already marked the LinkedIn version as `skipped`, the career-site version starts as `skipped` too, without any manual action.
 
 ### Notes
 
 - Only jobs with `canonical_id IS NULL` (i.e. canonical jobs, not already-linked duplicates) are considered as potential matches, preventing chains.
-- Fuzzy matching is CPU-bound. For large ingestion runs with many candidates per company, it can add noticeable time. Lower `fuzzy_threshold` to cast a wider net; raise it to be more conservative.
+- Fuzzy matching is CPU-bound. For large ingestion runs with many candidates per company, it can add noticeable time. Lower `fuzzy_desc_threshold` to cast a wider net; raise it to be more conservative.
 - Existing jobs in the database before `fuzzy_dedup` was enabled are not retroactively linked — only new or re-ingested jobs are checked.
 
 ---

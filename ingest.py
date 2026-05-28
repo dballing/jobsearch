@@ -214,14 +214,15 @@ def find_canonical(
     company: str | None,
     description: str | None,
     threshold: float,
+    title_threshold: float = 0.6,
 ) -> list[sqlite3.Row]:
     """Return all existing canonical jobs that are near-duplicates, sorted oldest-first.
 
     Only considers jobs with canonical_id IS NULL (i.e. canonical candidates,
     not already-linked duplicates) to prevent chaining.  No company filter is
     applied — the same job can appear under different company names when posted
-    by recruiters or aggregators.  A title quick_ratio > 0.6 pre-filter keeps
-    the search efficient; description similarity >= threshold is the final gate.
+    by recruiters or aggregators.  A title similarity >= title_threshold pre-filter
+    keeps the search efficient; description similarity >= threshold is the final gate.
 
     The caller should treat matches[0] as the canonical (oldest first_seen) and
     link all remaining matches to it, preventing future fragmentation.
@@ -238,9 +239,9 @@ def find_canonical(
             continue
         # Title pre-filter: quick_ratio is an upper bound on ratio()
         title_m = SequenceMatcher(None, title.lower(), candidate["title"].lower())
-        if title_m.quick_ratio() < 0.6:
+        if title_m.quick_ratio() < title_threshold:
             continue
-        if title_m.ratio() < 0.6:
+        if title_m.ratio() < title_threshold:
             continue
         # Description check
         desc_m = SequenceMatcher(None, description, candidate["job_description"])
@@ -308,7 +309,8 @@ def extract_fields_careersite(item: dict) -> dict:
 def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
            actor_type: str = "linkedin", exclude_ats_dups: bool = False,
            reset_on_change: bool = True,
-           fuzzy_dedup: bool = False, fuzzy_threshold: float = 0.85,
+           fuzzy_dedup: bool = True, fuzzy_desc_threshold: float = 0.85,
+           fuzzy_title_threshold: float = 0.6,
            inherit_canonical_status: bool = True) -> tuple[int, int, int, int, int]:
     inserted = updated = unchanged = skipped_ats = fuzzy_linked = 0
 
@@ -336,7 +338,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
             if fuzzy_dedup and not expired:
                 matches = find_canonical(
                     conn, fields["job_id"], fields["title"], fields["company"],
-                    fields["job_description"], fuzzy_threshold,
+                    fields["job_description"], fuzzy_desc_threshold, fuzzy_title_threshold,
                 )
                 if matches:
                     canonical = matches[0]
@@ -399,7 +401,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
             if fuzzy_dedup and canonical_id is None:
                 matches = find_canonical(
                     conn, fields["job_id"], fields["title"], fields["company"],
-                    fields["job_description"], fuzzy_threshold,
+                    fields["job_description"], fuzzy_desc_threshold, fuzzy_title_threshold,
                 )
                 if matches:
                     canonical = matches[0]
@@ -508,7 +510,10 @@ def main() -> None:
     username: str = config["username"]
     db_path: str = config.get("db_path", "jobs.db")
     tasks: list[dict] = config["tasks"]
-    fuzzy_threshold: float = config.get("fuzzy_threshold", 0.85)
+    reset_on_change_global: bool = config.get("reset_on_change", True)
+    fuzzy_dedup_global: bool = config.get("fuzzy_dedup", True)
+    fuzzy_desc_threshold: float = config.get("fuzzy_desc_threshold", 0.85)
+    fuzzy_title_threshold: float = config.get("fuzzy_title_threshold", 0.6)
     inherit_canonical_status: bool = config.get("inherit_canonical_status", True)
 
     conn = open_db(db_path)
@@ -521,8 +526,8 @@ def main() -> None:
         label: str = task["label"]
         actor_type: str = task.get("actor", "linkedin")
         exclude_ats_dups: bool = task.get("exclude_ats_duplicates", False)
-        reset_on_change: bool = task.get("reset_on_change", True)
-        fuzzy_dedup: bool = task.get("fuzzy_dedup", False)
+        reset_on_change: bool = task.get("reset_on_change", reset_on_change_global)
+        fuzzy_dedup: bool = task.get("fuzzy_dedup", fuzzy_dedup_global)
         print(f"Fetching runs for '{task_name}' (label: {label}, actor: {actor_type}) ...")
         try:
             all_runs = fetch_task_runs(username, task_name, api_token)
@@ -543,7 +548,7 @@ def main() -> None:
                 print(f"  Run {run_time}: {len(items)} items retrieved")
                 ins, upd, unch, skip, fuzzy = ingest(
                     conn, items, label, actor_type, exclude_ats_dups, reset_on_change,
-                    fuzzy_dedup, fuzzy_threshold, inherit_canonical_status,
+                    fuzzy_dedup, fuzzy_desc_threshold, fuzzy_title_threshold, inherit_canonical_status,
                 )
                 skip_msg    = f", {skip} ATS duplicates skipped" if skip else ""
                 fuzzy_msg   = f", {fuzzy} fuzzy-linked" if fuzzy else ""
