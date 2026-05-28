@@ -97,6 +97,10 @@ def check_model_currency(client: anthropic.Anthropic, configured_model: str) -> 
 def open_db(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
+    # WAL mode lets the Flask app read/write concurrently without blocking.
+    # busy_timeout retries on lock contention instead of raising immediately.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     # Ensure viability columns exist (ingest.py adds them too, but be safe here).
     cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
     if "viability" not in cols:

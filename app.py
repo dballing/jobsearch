@@ -131,6 +131,10 @@ def get_db() -> sqlite3.Connection:
     if "db" not in g:
         g.db = sqlite3.connect(DB_PATH)
         g.db.row_factory = sqlite3.Row
+        # WAL mode allows concurrent reads/writes with the rescore script.
+        # busy_timeout retries on lock contention instead of raising immediately.
+        g.db.execute("PRAGMA journal_mode=WAL")
+        g.db.execute("PRAGMA busy_timeout=5000")
         # Migrate: rename regions → labels if the old column still exists.
         cols = [row[1] for row in g.db.execute("PRAGMA table_info(jobs)").fetchall()]
         if "regions" in cols and "labels" not in cols:
