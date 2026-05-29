@@ -47,6 +47,15 @@ def score_job(
     title       = (job.get("title")           or "(no title)").strip()
     company     = (job.get("company")         or "(unknown company)").strip()
     description = (job.get("job_description") or "").strip()[:4000]
+    sal_min, sal_max = job.get("salary_min"), job.get("salary_max")
+    if sal_min and sal_max:
+        salary_line = f"Salary: ${sal_min:,} – ${sal_max:,}"
+    elif sal_min:
+        salary_line = f"Salary: ${sal_min:,}+"
+    elif sal_max:
+        salary_line = f"Salary: up to ${sal_max:,}"
+    else:
+        salary_line = None  # absent — say nothing; candidate prompt handles the neutral case
 
     system_text = _SYSTEM_BOILERPLATE + f"Candidate description:\n{viability_prompt}"
 
@@ -63,8 +72,9 @@ def score_job(
                 "role": "user",
                 "content": (
                     f"Job title: {title}\n"
-                    f"Company: {company}\n\n"
-                    f"Description:\n{description}"
+                    f"Company: {company}\n"
+                    + (f"{salary_line}\n" if salary_line else "")
+                    + f"\nDescription:\n{description}"
                 ),
             }],
         )
