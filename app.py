@@ -529,7 +529,28 @@ def stats():
         {"label": r["lbl"], "display": LABEL_NAMES.get(r["lbl"], r["lbl"].upper()), "count": r["cnt"]}
         for r in label_rows
     ]
-    return {"total": total, "by_status": by_status, "new_last_7_days": new_7d, "by_label": by_label}
+    viability_rows = db.execute(
+        "SELECT COALESCE(viability, 'unscored') AS level, COUNT(*) AS cnt "
+        "FROM jobs GROUP BY level ORDER BY cnt DESC"
+    ).fetchall()
+    by_viability = {r["level"]: r["cnt"] for r in viability_rows}
+    current_hash = _current_viability_hash()
+    # Only flag stale scores on active jobs — old/closed/skipped jobs are
+    # intentionally not rescored and would make this number misleadingly large.
+    _, active_condition = STATUS_FILTERS["active"]
+    viability_stale = db.execute(
+        f"SELECT COUNT(*) FROM jobs WHERE viability IS NOT NULL "
+        f"AND viability_prompt_hash != ? AND {active_condition}",
+        (current_hash,),
+    ).fetchone()[0] if current_hash else 0
+    return {
+        "total": total,
+        "by_status": by_status,
+        "new_last_7_days": new_7d,
+        "by_label": by_label,
+        "by_viability": by_viability,
+        "viability_stale": viability_stale,
+    }
 
 
 @app.route("/stats/history")

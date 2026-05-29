@@ -270,6 +270,15 @@
         const labelRows = s.by_label.length
           ? s.by_label.map(l => `<tr><td>${escHtml(l.display)}</td><td class="text-end">${l.count}</td></tr>`).join('')
           : '<tr><td colspan="2" class="text-muted">—</td></tr>';
+        const viabilityColors = {high: 'success', medium: 'warning', low: 'danger', unscored: 'secondary'};
+        const viabilityOrder = ['high', 'medium', 'low', 'unscored'];
+        const viabilityRows = viabilityOrder
+          .filter(v => s.by_viability && s.by_viability[v])
+          .map(v => `<tr><td><span class="badge text-bg-${viabilityColors[v]}">${v}</span></td><td class="text-end">${s.by_viability[v]}</td></tr>`)
+          .join('');
+        const staleNote = s.viability_stale
+          ? `<div class="text-muted small mt-1"><i class="bi bi-exclamation-circle"></i> ${s.viability_stale} active job${s.viability_stale === 1 ? '' : 's'} stale</div>`
+          : '';
 
         body.innerHTML = `
           <div class="row g-3 mb-3 text-center">
@@ -287,6 +296,12 @@
               <div class="small fw-semibold text-muted mb-1">By status</div>
               <table class="table table-sm table-borderless mb-0">${statusRows}</table>
             </div>
+            ${viabilityRows ? `
+            <div class="col">
+              <div class="small fw-semibold text-muted mb-1">By viability</div>
+              <table class="table table-sm table-borderless mb-0">${viabilityRows}</table>
+              ${staleNote}
+            </div>` : ''}
             ${s.by_label.length ? `
             <div class="col">
               <div class="small fw-semibold text-muted mb-1">By label</div>
