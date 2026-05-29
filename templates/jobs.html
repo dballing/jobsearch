@@ -256,7 +256,7 @@
             <td>
               {% if sub.viability %}
               <span class="badge text-bg-{{ sub.viability_color }}{% if sub.viability_stale %} opacity-50{% endif %}"
-                    title="{% if sub.viability_stale %}Stale — re-run rescore_viability.sh{% else %}{{ sub.viability_reason or '' }}{% endif %}">{{ sub.viability }}</span>
+                    title="{{ ('Stale — re-run rescore_viability.sh\n\n' if sub.viability_stale else '') ~ (sub.viability_reason or '') }}">{{ sub.viability }}</span>
               {% else %}<span class="text-muted">—</span>{% endif %}
             </td>
             {% endif %}
@@ -296,7 +296,7 @@
             <td>
               {% if job.viability %}
               <span class="badge text-bg-{{ job.viability_color }}{% if job.viability_stale %} opacity-50{% endif %}"
-                    title="{% if job.viability_stale %}Stale — re-run rescore_viability.sh{% else %}{{ job.viability_reason or '' }}{% endif %}">{{ job.viability }}</span>
+                    title="{{ ('Stale — re-run rescore_viability.sh\n\n' if job.viability_stale else '') ~ (job.viability_reason or '') }}">{{ job.viability }}</span>
               {% else %}<span class="text-muted">—</span>{% endif %}
             </td>
             {% endif %}
