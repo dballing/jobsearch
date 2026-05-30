@@ -204,7 +204,7 @@ def main() -> None:
         conditions.append("status IN ('new', 'reviewing')")
     else:
         # Default: active jobs only (matches the UI "Active" filter).
-        conditions.append("status NOT IN ('skipped', 'rejected', 'withdrawn', 'closed')")
+        conditions.append("status NOT IN ('skipped', 'rejected', 'withdrawn', 'ghosted', 'closed')")
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 

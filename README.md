@@ -193,8 +193,8 @@ Use the absolute path to `ingest.sh`. The script changes into its own directory 
 - **Status**:
   - *New* — jobs not yet looked at
   - *Reviewing* — jobs you've opened but haven't decided on yet
-  - *Active* — jobs not yet skipped, rejected, withdrawn, or closed (default)
-  - *Applied* — jobs currently in progress (applied, interviewing, offered)
+  - *Active* — jobs not yet skipped, rejected, withdrawn, ghosted, or closed (default)
+  - *Applied* — jobs currently in progress (applied, interviewing, offered, ghosted)
   - *All* — everything in the database
 - **View**:
   - *Grouped* — near-duplicate jobs (linked via fuzzy dedup) are collapsed into a single row with expandable sub-rows; each un-linked job is its own row (default)
@@ -211,13 +211,14 @@ Each job has a status dropdown. Available statuses:
 | Status | Meaning |
 |--------|---------|
 | `new` | Freshly ingested, not yet looked at |
+| `skipped` | Not a fit — skip for now |
 | `reviewing` | You've opened it but haven't decided yet — needs another look |
 | `applied` | Application submitted |
+| `rejected` | Rejected by employer |
+| `ghosted` | Applied but never heard back — effectively closed from your side |
 | `interviewing` | Active interview process |
 | `offered` | Offer received |
-| `rejected` | Rejected by employer |
 | `withdrawn` | You withdrew your application |
-| `skipped` | Not a fit — skip for now |
 | `closed` | Posting expired or no longer accepting applications |
 
 In grouped view, if all locations for a job share the same status, a group-level dropdown lets you update all of them at once.
@@ -316,14 +317,14 @@ Available flags:
 |------|--------|
 | `--dry-run` | Show how many jobs would be scored without scoring them |
 | `--force` | Rescore all matching jobs even if their hash already matches the current prompt |
-| `--all` | Also score closed jobs (default: exclude them) |
+| `--all` | Also score closed/ghosted jobs (default: exclude them) |
 | `--config PATH` | Use a different config file |
 
 ### How it works
 
 - Each job is scored in a single Anthropic API call. The candidate description (your `prompt`) is sent as a cached system prompt, so only the first call in a session pays full token cost — subsequent calls reuse the cache.
 - A SHA-256 hash of the prompt is stored alongside each score. On subsequent runs, only jobs with a missing or stale hash are re-scored. Change your `prompt` and re-run to update all scores.
-- By default, closed and skipped jobs are excluded (they're not worth paying to score). Use `--all` to include them.
+- By default, closed, ghosted, and skipped jobs are excluded (they're not worth paying to score). Use `--all` to include them.
 
 ### UI
 

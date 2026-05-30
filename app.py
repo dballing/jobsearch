@@ -63,8 +63,9 @@ DEFAULT_VIEW          = "grouped"
 DEFAULT_STATUS_FILTER = "active"
 
 STATUSES = [
-    "new", "reviewing", "applied", "interviewing",
-    "offered", "rejected", "withdrawn", "skipped", "closed",
+    "new", "skipped", "reviewing",
+    "applied", "rejected", "ghosted", "interviewing", "offered",
+    "withdrawn", "closed",
 ]
 
 STATUS_COLORS = {
@@ -76,6 +77,7 @@ STATUS_COLORS = {
     "rejected":     "danger",
     "withdrawn":    "secondary",
     "skipped":      "dark",
+    "ghosted":      "secondary",
     "closed":       "dark",
 }
 
@@ -95,8 +97,8 @@ VIABILITY_COLORS = {
 STATUS_FILTERS = {
     "new":       ("New",       "status = 'new'"),
     "reviewing": ("Reviewing", "status = 'reviewing'"),
-    "active":    ("Active",    "status NOT IN ('skipped', 'rejected', 'withdrawn', 'closed')"),
-    "applied":   ("Applied",   "status IN ('applied', 'interviewing', 'offered')"),
+    "active":    ("Active",    "status NOT IN ('skipped', 'rejected', 'withdrawn', 'ghosted', 'closed')"),
+    "applied":   ("Applied",   "status IN ('applied', 'interviewing', 'offered', 'ghosted')"),
     "all":       ("All",       None),
 }
 
