@@ -390,6 +390,8 @@ jobsearch/
 ├── app.py                   # Flask web application
 ├── ingest.py                # Apify ingestion script
 ├── ingest.sh                # venv wrapper for ingest.py
+├── import_linkedin.py       # one-off import of jobs by LinkedIn URL/ID
+├── import_linkedin.sh       # venv wrapper for import_linkedin.py
 ├── rescore_viability.py     # AI viability scoring script
 ├── rescore_viability.sh     # venv wrapper for rescore_viability.py
 ├── viability.py             # shared scoring helpers (prompt_hash, score_job)
@@ -398,7 +400,10 @@ jobsearch/
 ├── config.toml.example      # template
 ├── requirements.txt         # Python dependencies
 ├── jobs.db                  # SQLite database (gitignored)
+├── TODO.md                  # known open issues and future ideas
+├── docs/
+│   └── screenshot.png       # UI screenshot (used in README)
 └── templates/
-    ├── base.html            # base layout, offcanvas preview panel
-    └── jobs.html            # main jobs table
+    ├── base.html            # base layout, navbar, offcanvas preview, stats modal
+    └── jobs.html            # main jobs table with filters and column picker
 ```
