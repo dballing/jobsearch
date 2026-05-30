@@ -29,6 +29,9 @@ import anthropic
 from ingest import append_history
 from viability import prompt_hash, score_job
 
+# Ranking used to determine whether a new score is strictly better than an old one.
+VIABILITY_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
+
 # Approximate pricing per token (USD). Update if Anthropic changes rates.
 # Source: https://docs.anthropic.com/en/docs/about-claude/models/overview
 MODEL_PRICING: dict[str, dict[str, float]] = {
@@ -196,7 +199,13 @@ def main() -> None:
     params: list = []
 
     if not args.force:
-        conditions.append("(viability_prompt_hash IS NULL OR viability_prompt_hash != ?)")
+        # Always score jobs that have never been scored (viability IS NULL), regardless
+        # of status — they may have inherited a status from a canonical without ever
+        # getting their own evaluation.  Jobs that have been scored are filtered by
+        # prompt hash as usual.
+        conditions.append(
+            "(viability IS NULL OR viability_prompt_hash IS NULL OR viability_prompt_hash != ?)"
+        )
         params.append(current_hash)
 
     if args.all:
@@ -205,7 +214,12 @@ def main() -> None:
         conditions.append("status IN ('new', 'reviewing')")
     else:
         # Default: active jobs only (matches the UI "Active" filter).
-        conditions.append("status NOT IN ('skipped', 'rejected', 'withdrawn', 'ghosted', 'closed')")
+        # NULL-viability jobs are already covered by the hash condition above, so
+        # skipped/closed jobs that have never been scored will still be included.
+        conditions.append(
+            "(status NOT IN ('skipped', 'rejected', 'withdrawn', 'ghosted', 'closed')"
+            " OR viability IS NULL)"
+        )
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
@@ -278,6 +292,30 @@ def main() -> None:
                 append_history(conn, row["job_id"], {
                     "ts": ts, "event": "rescore", "from": old_rating, "to": rating, "reason": reason,
                 })
+            # If this job inherited a skipped status from a canonical and its own
+            # score is strictly better than the canonical's, reset it to 'new' so a
+            # human can review it — the new posting may differ in a meaningful way
+            # (e.g. a remote option that the canonical lacked).
+            if row["canonical_id"] and row["status"] == "skipped":
+                canonical = conn.execute(
+                    "SELECT viability FROM jobs WHERE job_id = ?",
+                    (row["canonical_id"],),
+                ).fetchone()
+                canon_viability = canonical["viability"] if canonical else None
+                new_rank  = VIABILITY_RANK.get(rating, -1)
+                prev_rank = VIABILITY_RANK.get(old_rating or "", -1)
+                canon_rank = VIABILITY_RANK.get(canon_viability or "", -1)
+                if new_rank > canon_rank and new_rank > prev_rank:
+                    conn.execute(
+                        "UPDATE jobs SET status = 'new' WHERE job_id = ? AND status = 'skipped'",
+                        (row["job_id"],),
+                    )
+                    append_history(conn, row["job_id"], {
+                        "ts": ts, "event": "status", "from": "skipped", "to": "new",
+                        "note": f"viability {rating!r} exceeds canonical {canon_viability!r}",
+                    })
+                    if args.verbose:
+                        print(f"    → reset to new (scores higher than canonical {row['canonical_id']})")
             conn.commit()
             scored += 1
 
