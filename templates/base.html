@@ -246,6 +246,7 @@
             else if (e.event === 'imported')   desc = `Imported${e.stub ? ' (stub)' : ''}`;
             else if (e.event === 'status')     desc = `Status: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong>`;
             else if (e.event === 'viability')  desc = `Scored: <strong>${escHtml(e.rating||'?')}</strong>`;
+            else if (e.event === 'rescore')    desc = `Rescored: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong>`;
             else if (e.event === 'refreshed')  desc = 'Description changed';
             else if (e.event === 'linked')     desc = `Linked to canonical`;
             else if (e.event === 'closed')     desc = 'Auto-closed (expired)';

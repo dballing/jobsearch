@@ -268,12 +268,16 @@ def main() -> None:
                 "viability_prompt_hash = ? WHERE job_id = ?",
                 (rating, reason, current_hash, row["job_id"]),
             )
-            append_history(conn, row["job_id"], {
-                "ts":     datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "event":  "viability",
-                "rating": rating,
-                "reason": reason,
-            })
+            old_rating = row["viability"]
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            if old_rating is None:
+                append_history(conn, row["job_id"], {
+                    "ts": ts, "event": "viability", "rating": rating, "reason": reason,
+                })
+            elif old_rating != rating:
+                append_history(conn, row["job_id"], {
+                    "ts": ts, "event": "rescore", "from": old_rating, "to": rating, "reason": reason,
+                })
             conn.commit()
             scored += 1
 
