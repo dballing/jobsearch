@@ -233,6 +233,9 @@
           }
           metaHtml += '</div>';
         }
+        if (job.applied_at) {
+          metaHtml += `<div class="mt-1 text-muted small">Applied: ${escHtml(job.applied_at)}</div>`;
+        }
         metaEl.innerHTML = metaHtml;
         bodyEl.innerHTML = '<div class="job-description-text">' + renderDescription(job.job_description) + '</div>';
         if (job.job_url) {

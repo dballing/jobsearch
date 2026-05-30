@@ -150,6 +150,7 @@
         <th>Label</th>
         {% if sources|length > 1 %}<th>Source</th>{% endif %}
         {{ sort_th('status',     'Status') }}
+        {{ sort_th('applied_at', 'Applied') }}
         {{ sort_th('posted_date','Posted') }}
         {{ sort_th('first_seen', 'First Seen') }}
       </tr>
@@ -220,6 +221,10 @@
               {% endif %}
             </td>
             <td class="text-nowrap">
+              {% if job.group_applied == group_varied %}<span class="text-muted fst-italic small">{{ group_varied }}</span>
+              {% else %}{{ job.group_applied or '—' }}{% endif %}
+            </td>
+            <td class="text-nowrap">
               {% if job.group_posted == group_varied %}<span class="text-muted fst-italic small">{{ group_varied }}</span>
               {% else %}{{ job.group_posted or '—' }}{% endif %}
             </td>
@@ -269,6 +274,7 @@
             <td><span class="badge {{ 'bg-primary' if sub.source == 'linkedin' else 'bg-info text-dark' }}">{{ sub.source_display }}</span></td>
             {% endif %}
             <td>{{ status_select(sub.job_id, sub.status, sub.viability or '') }}</td>
+            <td class="text-nowrap small">{{ sub.applied_at or '—' }}</td>
             <td class="text-nowrap small">{{ (sub.posted_date or '')[:10] }}</td>
             <td class="text-nowrap small">{{ (sub.first_seen or '')[:10] }}</td>
           </tr>
@@ -309,13 +315,14 @@
             <td><span class="badge {{ 'bg-primary' if job.source == 'linkedin' else 'bg-info text-dark' }}">{{ job.source_display }}</span></td>
             {% endif %}
             <td>{{ status_select(job.job_id, job.status, job.viability or '') }}</td>
+            <td class="text-nowrap">{{ job.applied_at or '—' }}</td>
             <td class="text-nowrap">{{ (job.posted_date or '')[:10] }}</td>
             <td class="text-nowrap">{{ (job.first_seen or '')[:10] }}</td>
           </tr>
         {% endif %}
 
       {% else %}
-        <tr><td colspan="{{ 8 + (1 if sources|length > 1 else 0) + (1 if show_viability_filter else 0) }}" class="text-center text-muted py-4">No jobs found.</td></tr>
+        <tr><td colspan="{{ 9 + (1 if sources|length > 1 else 0) + (1 if show_viability_filter else 0) }}" class="text-center text-muted py-4">No jobs found.</td></tr>
       {% endfor %}
     </tbody>
   </table>

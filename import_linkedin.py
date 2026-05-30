@@ -24,6 +24,7 @@ import json
 import re
 import sys
 import tomllib
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -409,23 +410,25 @@ def main() -> None:
 
         effective_status = canon_status if canon_status else args.status
 
+        applied_statuses = {"applied", "interviewing", "offered", "rejected", "withdrawn", "ghosted"}
         conn.execute(
             """
             INSERT INTO jobs
                 (job_id, title, company, location, posted_date, job_url, apply_url,
                  easy_apply, salary_min, salary_max, salary_currency,
-                 labels, source, status, job_description, canonical_id, raw)
+                 labels, source, status, job_description, canonical_id, applied_at, raw)
             VALUES
                 (:job_id, :title, :company, :location, :posted_date, :job_url, :apply_url,
                  :easy_apply, :salary_min, :salary_max, :salary_currency,
-                 :labels, :source, :status, :job_description, :canonical_id, :raw)
+                 :labels, :source, :status, :job_description, :canonical_id, :applied_at, :raw)
             """,
             {
                 **fields,
-                "labels":     labels_json,
-                "status":     effective_status,
+                "labels":       labels_json,
+                "status":       effective_status,
                 "canonical_id": canon_id,
-                "raw":        json.dumps(item, ensure_ascii=False),
+                "applied_at":   datetime.now(timezone.utc).date().isoformat() if effective_status in applied_statuses else None,
+                "raw":          json.dumps(item, ensure_ascii=False),
             },
         )
         conn.commit()

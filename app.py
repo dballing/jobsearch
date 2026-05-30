@@ -55,7 +55,7 @@ LABEL_NAMES: dict[str, str] = _label_names
 
 SORTABLE_COLS = {
     "title", "company", "location", "salary_min",
-    "status", "posted_date", "first_seen",
+    "status", "applied_at", "posted_date", "first_seen",
 }
 DEFAULT_SORT          = "first_seen"
 DEFAULT_DIR           = "desc"
@@ -177,6 +177,15 @@ def get_db() -> sqlite3.Connection:
         if "viability_prompt_hash" not in cols:
             g.db.execute("ALTER TABLE jobs ADD COLUMN viability_prompt_hash TEXT")
             g.db.commit()
+        cols = [row[1] for row in g.db.execute("PRAGMA table_info(jobs)").fetchall()]
+        if "applied_at" not in cols:
+            g.db.execute("ALTER TABLE jobs ADD COLUMN applied_at TEXT")
+            g.db.execute(
+                "UPDATE jobs SET applied_at = first_seen "
+                "WHERE status IN ('applied','interviewing','offered','rejected','withdrawn','ghosted') "
+                "AND applied_at IS NULL"
+            )
+            g.db.commit()
     return g.db
 
 
@@ -253,6 +262,7 @@ def process_job_row(row: sqlite3.Row | dict) -> dict:
     j["status_color"]     = STATUS_COLORS.get(j.get("status", "new"), "secondary")
     j["salary_display"]   = format_salary(j)
     j["source_display"]   = SOURCE_NAMES.get(j.get("source", "linkedin"), j.get("source", ""))
+    j["applied_at"]       = (j.get("applied_at") or "")[:10] or None
     j["viability_color"]  = VIABILITY_COLORS.get(j.get("viability") or "", "")
     _cur_hash = _current_viability_hash()
     j["viability_stale"]  = bool(
@@ -351,6 +361,8 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
         "group_viability_color":   group_viability_color,
         "group_viability_stale":   group_viability_stale,
         "group_viability_tooltip": group_viability_tooltip,
+        "group_applied":    _group_field(sub_rows, "applied_at",
+                                         fmt=lambda v: (v or "")[:10]),
         "group_salary":     _group_field(sub_rows, "salary_display"),
         "group_labels":     _group_field(sub_rows, "labels"),
         "group_posted":     _group_field(sub_rows, "posted_date",
@@ -373,6 +385,7 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
             "source_display":   s["source_display"],
             "status":           s.get("status", "new"),
             "status_color":     s["status_color"],
+            "applied_at":       s.get("applied_at"),
             "posted_date":      s.get("posted_date", ""),
             "first_seen":       s.get("first_seen", ""),
             "viability":        s.get("viability"),
@@ -601,6 +614,7 @@ def get_job(job_id: str):
         "job_description":  job["job_description"],
         "viability":        job.get("viability"),
         "viability_reason": job.get("viability_reason"),
+        "applied_at":       (job.get("applied_at") or "")[:10] or None,
     }
 
 
@@ -611,8 +625,16 @@ def update_jobs_status():
     if new_status not in STATUSES or not job_ids:
         return "Invalid request", 400
     db = get_db()
-    db.executemany("UPDATE jobs SET status = ?, refreshed_at = NULL WHERE job_id = ?",
-                   [(new_status, jid) for jid in job_ids])
+    db.executemany(
+        """UPDATE jobs SET status = ?, refreshed_at = NULL,
+           applied_at = CASE
+             WHEN ? = 'applied' AND status IN ('new','reviewing','skipped') THEN CURRENT_TIMESTAMP
+             WHEN ? IN ('new','reviewing','skipped') THEN NULL
+             ELSE applied_at
+           END
+           WHERE job_id = ?""",
+        [(new_status, new_status, new_status, jid) for jid in job_ids],
+    )
     db.commit()
     return "", 204
 
@@ -623,7 +645,16 @@ def update_status(job_id: str):
     if new_status not in STATUSES:
         return "Invalid status", 400
     db = get_db()
-    db.execute("UPDATE jobs SET status = ?, refreshed_at = NULL WHERE job_id = ?", (new_status, job_id))
+    db.execute(
+        """UPDATE jobs SET status = ?, refreshed_at = NULL,
+           applied_at = CASE
+             WHEN ? = 'applied' AND status IN ('new','reviewing','skipped') THEN CURRENT_TIMESTAMP
+             WHEN ? IN ('new','reviewing','skipped') THEN NULL
+             ELSE applied_at
+           END
+           WHERE job_id = ?""",
+        (new_status, new_status, new_status, job_id),
+    )
     db.commit()
     return "", 204
 

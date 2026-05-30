@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     viability             TEXT,
     viability_reason      TEXT,
     viability_prompt_hash TEXT,
+    applied_at            TEXT,
     first_seen      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     raw             TEXT NOT NULL
 );
@@ -113,6 +114,17 @@ def open_db(path: str) -> sqlite3.Connection:
         conn.commit()
     if "viability_prompt_hash" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN viability_prompt_hash TEXT")
+        conn.commit()
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
+    if "applied_at" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN applied_at TEXT")
+        # Backfill: jobs already in applied/interviewing/offered/rejected/withdrawn/ghosted
+        # use first_seen as a reasonable approximation of when the application was made.
+        conn.execute(
+            "UPDATE jobs SET applied_at = first_seen "
+            "WHERE status IN ('applied','interviewing','offered','rejected','withdrawn','ghosted') "
+            "AND applied_at IS NULL"
+        )
         conn.commit()
     return conn
 
