@@ -26,6 +26,7 @@ from pathlib import Path
 
 import anthropic
 
+from ingest import append_history
 from viability import prompt_hash, score_job
 
 # Approximate pricing per token (USD). Update if Anthropic changes rates.
@@ -267,6 +268,12 @@ def main() -> None:
                 "viability_prompt_hash = ? WHERE job_id = ?",
                 (rating, reason, current_hash, row["job_id"]),
             )
+            append_history(conn, row["job_id"], {
+                "ts":     datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "event":  "viability",
+                "rating": rating,
+                "reason": reason,
+            })
             conn.commit()
             scored += 1
 

@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     viability_reason      TEXT,
     viability_prompt_hash TEXT,
     applied_at            TEXT,
+    history               TEXT NOT NULL DEFAULT '[]',
     first_seen      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     raw             TEXT NOT NULL
 );
@@ -126,6 +127,11 @@ def open_db(path: str) -> sqlite3.Connection:
             "AND applied_at IS NULL"
         )
         conn.commit()
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
+    if "history" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN history TEXT NOT NULL DEFAULT '[]'")
+        conn.commit()
+        bootstrap_history(conn)
     return conn
 
 
@@ -219,6 +225,111 @@ def runs_to_process(
 def _scalar(val: object) -> object:
     """Return the first element if val is a list, otherwise val as-is."""
     return val[0] if isinstance(val, list) else val
+
+
+def _now_iso() -> str:
+    """Return current UTC time as an ISO 8601 string ending in Z."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def append_history(conn: sqlite3.Connection, job_id: str, entry: dict) -> None:
+    """Append one event dict to a job's history JSON array (atomic, no read-modify-write)."""
+    conn.execute(
+        "UPDATE jobs SET history = json_insert(COALESCE(history, '[]'), '$[#]', json(?)) "
+        "WHERE job_id = ?",
+        (json.dumps(entry, ensure_ascii=False), job_id),
+    )
+
+
+def bootstrap_history(conn: sqlite3.Connection) -> None:
+    """Populate approximate history for jobs that have none (run once on migration).
+
+    Constructs a logically coherent event chain from available data.
+    All entries are marked approx=true since timestamps are estimated.
+    """
+    from datetime import timedelta
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    applied_family = {"applied", "interviewing", "offered", "rejected", "withdrawn", "ghosted"}
+
+    rows = conn.execute(
+        "SELECT job_id, first_seen, applied_at, status FROM jobs "
+        "WHERE history IS NULL OR history = '[]'"
+    ).fetchall()
+
+    for row in rows:
+        history: list[dict] = []
+        status    = row["status"]
+        applied_at = row["applied_at"]
+
+        # Normalise first_seen to a full ISO datetime with Z
+        fs_raw = row["first_seen"] or ""
+        if fs_raw:
+            fs_date = fs_raw[:10]
+            fs_time = fs_raw[11:19] if len(fs_raw) > 10 else "12:00:00"
+            fs_dt   = f"{fs_date}T{fs_time}Z"
+        else:
+            fs_date = today
+            fs_dt   = today + "T12:00:00Z"
+
+        # 1. Ingested
+        history.append({"ts": fs_dt, "event": "ingested", "approx": True})
+
+        def _after(base_dt: str, minutes: int = 1) -> str:
+            """Return base_dt + N minutes, guaranteed to be >= fs_dt."""
+            try:
+                dt = datetime.fromisoformat(base_dt.replace("Z", "+00:00"))
+                result = dt + timedelta(minutes=minutes)
+            except ValueError:
+                result = datetime.fromisoformat(fs_dt.replace("Z", "+00:00")) + timedelta(minutes=minutes)
+            # Never let an approximate status timestamp precede ingestion
+            fs_parsed = datetime.fromisoformat(fs_dt.replace("Z", "+00:00"))
+            if result <= fs_parsed:
+                result = fs_parsed + timedelta(minutes=minutes)
+            return result.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # 2. Status at the time of ingestion (best guess)
+        if status in ("reviewing", "skipped"):
+            history.append({
+                "ts": _after(fs_dt, 1),
+                "event": "status", "from": "new", "to": status, "approx": True,
+            })
+
+        # 3. Application-path events — timestamps must be >= ingestion time
+        if applied_at and status in (applied_family | {"closed"}):
+            at_date = applied_at[:10]
+            # If applied_at is the same day as first_seen, anchor after ingestion;
+            # otherwise use noon of the applied date (safe since it's a different day).
+            if at_date == fs_date:
+                applied_ts = _after(fs_dt, 1)
+            else:
+                applied_ts = at_date + "T12:02:00Z"
+            history.append({
+                "ts": applied_ts,
+                "event": "status", "from": "new", "to": "applied", "approx": True,
+            })
+            if status != "applied":
+                try:
+                    next_date = (
+                        datetime.fromisoformat(at_date) + timedelta(days=1)
+                    ).date().isoformat()
+                except ValueError:
+                    next_date = at_date
+                history.append({
+                    "ts": _after(applied_ts, 1),
+                    "event": "status", "from": "applied", "to": status, "approx": True,
+                })
+        elif status == "closed" and not applied_at:
+            history.append({
+                "ts": _after(fs_dt, 1),
+                "event": "status", "from": "new", "to": "closed", "approx": True,
+            })
+
+        conn.execute(
+            "UPDATE jobs SET history = ? WHERE job_id = ?",
+            (json.dumps(history, ensure_ascii=False), row["job_id"]),
+        )
+    conn.commit()
 
 
 AUTO_CLOSE_STATUSES = {"new", "reviewing"}
@@ -408,6 +519,18 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                  "canonical_id": canonical_id, "raw": raw},
             )
             inserted += 1
+            ts = _now_iso()
+            append_history(conn, fields["job_id"], {
+                "ts": ts, "event": "ingested", "label": label, "source": actor_type,
+            })
+            if initial_status == "closed":
+                append_history(conn, fields["job_id"], {
+                    "ts": ts, "event": "status", "from": "new", "to": "closed",
+                })
+            elif canonical_id:
+                append_history(conn, fields["job_id"], {
+                    "ts": ts, "event": "linked", "canonical_id": canonical_id,
+                })
         else:
             current_status = row["status"]
             existing_labels: list[str] = json.loads(row["labels"])
@@ -482,6 +605,19 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
             )
             if something_changed:
                 updated += 1
+                ts = _now_iso()
+                if new_status != current_status:
+                    append_history(conn, fields["job_id"], {
+                        "ts": ts, "event": "status", "from": current_status, "to": new_status,
+                    })
+                    if desc_changed and new_status == "new":
+                        append_history(conn, fields["job_id"], {"ts": ts, "event": "refreshed"})
+                elif desc_changed:
+                    append_history(conn, fields["job_id"], {"ts": ts, "event": "refreshed"})
+                if canonical_id != row["canonical_id"] and canonical_id is not None:
+                    append_history(conn, fields["job_id"], {
+                        "ts": ts, "event": "linked", "canonical_id": canonical_id,
+                    })
             else:
                 unchanged += 1
 

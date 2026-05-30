@@ -236,6 +236,24 @@
         if (job.applied_at) {
           metaHtml += `<div class="mt-1 text-muted small">Applied: ${escHtml(job.applied_at)}</div>`;
         }
+        if (job.history && job.history.length > 0) {
+          const sorted = [...job.history].sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
+          const rows = sorted.map(e => {
+            const ts   = e.ts ? new Date(e.ts).toLocaleString([], {year:'numeric', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '?';
+            const apx  = e.approx ? ' <span class="text-warning" title="approximate">~</span>' : '';
+            let desc;
+            if      (e.event === 'ingested')   desc = `Ingested${e.label ? ' [' + escHtml(e.label) + ']' : ''}`;
+            else if (e.event === 'imported')   desc = `Imported${e.stub ? ' (stub)' : ''}`;
+            else if (e.event === 'status')     desc = `Status: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong>`;
+            else if (e.event === 'viability')  desc = `Scored: <strong>${escHtml(e.rating||'?')}</strong>`;
+            else if (e.event === 'refreshed')  desc = 'Description changed';
+            else if (e.event === 'linked')     desc = `Linked to canonical`;
+            else if (e.event === 'closed')     desc = 'Auto-closed (expired)';
+            else desc = escHtml(e.event);
+            return `<tr><td class="text-muted small text-nowrap pe-3">${escHtml(ts)}${apx}</td><td class="small">${desc}</td></tr>`;
+          }).join('');
+          metaHtml += `<details class="mt-2"><summary class="text-muted small" style="cursor:pointer">History (${job.history.length})</summary><table class="mt-1 w-100">${rows}</table></details>`;
+        }
         metaEl.innerHTML = metaHtml;
         bodyEl.innerHTML = '<div class="job-description-text">' + renderDescription(job.job_description) + '</div>';
         if (job.job_url) {

@@ -29,7 +29,7 @@ from pathlib import Path
 
 import requests
 
-from ingest import APIFY_BASE, _scalar, find_canonical, open_db
+from ingest import APIFY_BASE, _scalar, _now_iso, append_history, find_canonical, open_db
 
 ACTOR_ID = "apimaestro~linkedin-job-detail"
 JOB_URL_RE = re.compile(r"linkedin\.com/jobs/view/(\d+)", re.IGNORECASE)
@@ -367,9 +367,14 @@ def main() -> None:
         ).fetchone()
 
         if existing:
+            old_row = conn.execute("SELECT status FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+            old_status = old_row["status"] if old_row else None
             conn.execute(
                 "UPDATE jobs SET status = ? WHERE job_id = ?", (args.status, job_id)
             )
+            ts = _now_iso()
+            if old_status and old_status != args.status:
+                append_history(conn, job_id, {"ts": ts, "event": "status", "from": old_status, "to": args.status})
             conn.commit()
             print(f"  Updated   {job_id}: status → {args.status}")
             updated += 1
@@ -383,6 +388,8 @@ def main() -> None:
                 "VALUES (?, ?, ?, 'linkedin', ?, ?)",
                 (job_id, url, args.status, labels_json, json.dumps({})),
             )
+            ts = _now_iso()
+            append_history(conn, job_id, {"ts": ts, "event": "imported", "status": args.status, "stub": True})
             conn.commit()
             stubbed += 1
             continue
@@ -431,6 +438,10 @@ def main() -> None:
                 "raw":          json.dumps(item, ensure_ascii=False),
             },
         )
+        ts = _now_iso()
+        append_history(conn, job_id, {"ts": ts, "event": "imported", "status": effective_status})
+        if canon_id:
+            append_history(conn, job_id, {"ts": ts, "event": "linked", "canonical_id": canon_id})
         conn.commit()
         title_str   = fields.get("title")   or "(no title)"
         company_str = fields.get("company") or "(unknown company)"

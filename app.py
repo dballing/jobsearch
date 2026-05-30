@@ -5,9 +5,11 @@ import json
 import math
 import sqlite3
 import tomllib
+from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Flask, g, render_template, request, url_for
+from ingest import append_history, bootstrap_history
 from viability import prompt_hash
 
 app = Flask(__name__)
@@ -186,6 +188,11 @@ def get_db() -> sqlite3.Connection:
                 "AND applied_at IS NULL"
             )
             g.db.commit()
+        cols = [row[1] for row in g.db.execute("PRAGMA table_info(jobs)").fetchall()]
+        if "history" not in cols:
+            g.db.execute("ALTER TABLE jobs ADD COLUMN history TEXT NOT NULL DEFAULT '[]'")
+            g.db.commit()
+            bootstrap_history(g.db)
     return g.db
 
 
@@ -620,6 +627,7 @@ def get_job(job_id: str):
         "viability":        job.get("viability"),
         "viability_reason": job.get("viability_reason"),
         "applied_at":       (job.get("applied_at") or "")[:10] or None,
+        "history":          json.loads(job.get("history") or "[]"),
     }
 
 
@@ -630,6 +638,14 @@ def update_jobs_status():
     if new_status not in STATUSES or not job_ids:
         return "Invalid request", 400
     db = get_db()
+    # Capture old statuses before the bulk update so we can log accurate from→to.
+    placeholders = ",".join("?" * len(job_ids))
+    old_statuses = {
+        r["job_id"]: r["status"]
+        for r in db.execute(
+            f"SELECT job_id, status FROM jobs WHERE job_id IN ({placeholders})", job_ids
+        ).fetchall()
+    }
     db.executemany(
         """UPDATE jobs SET status = ?, refreshed_at = NULL,
            applied_at = CASE
@@ -640,6 +656,11 @@ def update_jobs_status():
            WHERE job_id = ?""",
         [(new_status, new_status, new_status, jid) for jid in job_ids],
     )
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for jid in job_ids:
+        old = old_statuses.get(jid)
+        if old and old != new_status:
+            append_history(db, jid, {"ts": ts, "event": "status", "from": old, "to": new_status})
     db.commit()
     return "", 204
 
@@ -650,6 +671,8 @@ def update_status(job_id: str):
     if new_status not in STATUSES:
         return "Invalid status", 400
     db = get_db()
+    row = db.execute("SELECT status FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    old_status = row["status"] if row else None
     db.execute(
         """UPDATE jobs SET status = ?, refreshed_at = NULL,
            applied_at = CASE
@@ -660,6 +683,9 @@ def update_status(job_id: str):
            WHERE job_id = ?""",
         (new_status, new_status, new_status, job_id),
     )
+    if old_status and old_status != new_status:
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        append_history(db, job_id, {"ts": ts, "event": "status", "from": old_status, "to": new_status})
     db.commit()
     return "", 204
 
