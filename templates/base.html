@@ -239,7 +239,7 @@
         if (job.history && job.history.length > 0) {
           const sorted = [...job.history].sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
           const rows = sorted.map(e => {
-            const ts   = e.ts ? new Date(e.ts).toLocaleString([], {year:'numeric', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '?';
+            const ts   = e.ts ? new Date(e.ts).toLocaleString([], {year:'numeric', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit'}) : '?';
             const apx  = e.approx ? ' <span class="text-warning" title="approximate">~</span>' : '';
             let desc;
             if      (e.event === 'ingested')   desc = `Ingested${e.label ? ' [' + escHtml(e.label) + ']' : ''}`;
