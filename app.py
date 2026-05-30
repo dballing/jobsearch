@@ -471,7 +471,12 @@ def index():
     where, params = build_where(label, status_filter, q, source, viability)
     _TEXT_COLS = {"title", "company", "location", "status"}
     sort_expr = f"{sort} COLLATE NOCASE" if sort in _TEXT_COLS else sort
-    order  = f"ORDER BY {sort_expr} {direction.upper()} NULLS LAST"
+    # For applied_at, NULLs sort first when descending so unapplied jobs
+    # bubble to the top — making it easy to find jobs still needing action.
+    # All other columns keep NULLs last in both directions.
+    _NULLS_FIRST_DESC = {"applied_at"}
+    nulls = "NULLS FIRST" if (sort in _NULLS_FIRST_DESC and direction == "desc") else "NULLS LAST"
+    order  = f"ORDER BY {sort_expr} {direction.upper()} {nulls}"
     offset = (page - 1) * PER_PAGE
 
     if view == "grouped":
