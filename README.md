@@ -336,6 +336,43 @@ Once any jobs are scored, the UI shows:
 
 ---
 
+## Importing existing applications
+
+If you were already tracking LinkedIn applications outside this tool, `import_linkedin.sh` lets you bulk-import them by URL.
+
+```bash
+./import_linkedin.sh --status applied \
+  "https://www.linkedin.com/jobs/view/1234567890" \
+  "https://www.linkedin.com/jobs/view/9876543210"
+```
+
+URLs can also be piped via stdin:
+
+```bash
+cat my_urls.txt | ./import_linkedin.sh --status applied
+```
+
+The tool fetches job details from Apify (`apimaestro/linkedin-job-detail`), maps them to the database schema, and inserts the jobs with the specified status. Near-duplicate detection runs as normal so imports are linked to any matching jobs already in the database.
+
+Available flags:
+
+| Flag | Effect |
+|------|--------|
+| `--status STATUS` | Initial status for all imported jobs (default: `applied`) |
+| `--label LABEL` | Label key to apply (must exist in `[labels]` in config) |
+| `--dry-run` | Print what would be imported without writing anything |
+| `--debug` | Print the raw Apify response — useful if field mapping needs calibration |
+| `--config PATH` | Use a different config file |
+
+### Notes
+
+- **Dead postings**: If a LinkedIn job no longer exists, a stub record is created (URL + status only, no title/description) so the application remains trackable.
+- **Already in database**: If a URL was already ingested via a normal ingest run, its status is updated to the specified value.
+- **Location**: Imported jobs store a single location string from the Apify actor. The multi-location tooltip feature does not apply to imported jobs.
+- **Salary**: The actor may return salary as a range string (e.g. `$120,000 – $150,000`); the tool parses this into `salary_min`/`salary_max`. Hourly rates (values under $1,000) are converted to annual (× 2,080).
+
+---
+
 ## Known limitations
 
 ### Displayed location may not match your search geography
