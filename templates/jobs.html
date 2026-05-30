@@ -113,6 +113,15 @@
     </div>
   </div>
 
+  <div class="dropdown">
+    <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
+            id="colPickerBtn" data-bs-toggle="dropdown" data-bs-auto-close="outside"
+            aria-expanded="false" title="Show/hide columns">
+      <i class="bi bi-layout-three-columns"></i>
+    </button>
+    <ul class="dropdown-menu" id="colPickerMenu" aria-labelledby="colPickerBtn"></ul>
+  </div>
+
   {% if show_viability_filter %}
   <button id="bulk-skip-btn" class="btn btn-sm btn-outline-danger d-none">
     <i class="bi bi-x-circle"></i> Skip <span id="bulk-skip-count"></span> low &amp; new
@@ -131,8 +140,8 @@
   <table class="table table-striped table-hover table-sm align-middle">
     <thead class="table-dark">
       <tr>
-        {% macro sort_th(col, label) %}
-          <th>
+        {% macro sort_th(col, label, cls='') %}
+          <th{% if cls %} class="{{ cls }}"{% endif %}>
             <a href="{{ col_urls[col] }}" class="text-white text-decoration-none text-nowrap">
               {{ label }}
               {% if sort == col %}{{ '↑' if direction == 'asc' else '↓' }}
@@ -143,16 +152,16 @@
 
         {{ sort_th('title',      'Title') }}
         {{ sort_th('company',    'Company') }}
-        {% if view == 'flat' %}{{ sort_th('location', 'Location') }}
-        {% else %}<th>Location</th>{% endif %}
-        {{ sort_th('salary_min', 'Salary') }}
-        {% if show_viability_filter %}<th>Viability</th>{% endif %}
-        <th>Label</th>
-        {% if sources|length > 1 %}<th>Source</th>{% endif %}
+        {% if view == 'flat' %}{{ sort_th('location', 'Location', 'col-location') }}
+        {% else %}<th class="col-location">Location</th>{% endif %}
+        {{ sort_th('salary_min', 'Salary',     'col-salary') }}
+        {% if show_viability_filter %}<th class="col-viability">Viability</th>{% endif %}
+        <th class="col-label">Label</th>
+        {% if sources|length > 1 %}<th class="col-source">Source</th>{% endif %}
         {{ sort_th('status',     'Status') }}
-        {{ sort_th('applied_at', 'Applied') }}
-        {{ sort_th('posted_date','Posted') }}
-        {{ sort_th('first_seen', 'First Seen') }}
+        {{ sort_th('applied_at', 'Applied',    'col-applied') }}
+        {{ sort_th('posted_date','Posted',     'col-posted') }}
+        {{ sort_th('first_seen', 'First Seen', 'col-firstseen') }}
       </tr>
     </thead>
     <tbody>
@@ -169,7 +178,7 @@
               {% endif %}
             </td>
             <td>{{ job.company or '—' }}</td>
-            <td>
+            <td class="col-location">
               {% set outer_index = loop.index %}
               <button class="btn btn-sm btn-link p-0 me-1 expand-toggle"
                       onclick="toggleGroup({{ loop.index }}, this)"
@@ -182,12 +191,12 @@
               <span class="text-muted small">{{ job.location_count }} postings of this title by this company</span>
               {% endif %}
             </td>
-            <td class="text-nowrap">
+            <td class="text-nowrap col-salary">
               {% if job.group_salary == group_varied %}<span class="text-muted fst-italic small">{{ group_varied }}</span>
               {% else %}{{ job.group_salary or '—' }}{% endif %}
             </td>
             {% if show_viability_filter %}
-            <td>
+            <td class="col-viability">
               {% if job.group_viability == group_varied %}
                 <span class="text-muted fst-italic small"
                       {% if job.group_viability_tooltip %}title="{{ job.group_viability_tooltip }}" style="cursor:help;"{% endif %}>{{ group_varied }}</span>
@@ -199,13 +208,13 @@
               {% endif %}
             </td>
             {% endif %}
-            <td>
+            <td class="col-label">
               {% if job.group_labels == group_varied %}<span class="text-muted fst-italic small">{{ group_varied }}</span>
               {% elif job.group_labels %}{% for r in job.group_labels %}<span class="badge bg-secondary">{{ r }}</span> {% endfor %}
               {% else %}—{% endif %}
             </td>
             {% if sources|length > 1 %}
-            <td>
+            <td class="col-source">
               {% if job.group_source == group_varied %}
                 <span class="text-muted small fst-italic">{{ group_varied }}</span>
               {% else %}
@@ -220,15 +229,15 @@
                 <span class="text-muted small fst-italic">{{ group_varied }}</span>
               {% endif %}
             </td>
-            <td class="text-nowrap">
+            <td class="text-nowrap col-applied">
               {% if job.group_applied == group_varied %}<span class="text-muted fst-italic small">{{ group_varied }}</span>
               {% else %}{{ job.group_applied or '—' }}{% endif %}
             </td>
-            <td class="text-nowrap">
+            <td class="text-nowrap col-posted">
               {% if job.group_posted == group_varied %}<span class="text-muted fst-italic small">{{ group_varied }}</span>
               {% else %}{{ job.group_posted or '—' }}{% endif %}
             </td>
-            <td class="text-nowrap">
+            <td class="text-nowrap col-firstseen">
               {% if job.group_first_seen == group_varied %}<span class="text-muted fst-italic small">{{ group_varied }}</span>
               {% else %}{{ job.group_first_seen or '—' }}{% endif %}
             </td>
@@ -245,7 +254,7 @@
               {% endif %}
             </td>
             <td class="small">{% if job.is_fuzzy_group %}{{ sub.company or '—' }}{% endif %}</td>
-            <td class="ps-3 small"{% if sub.locations_all %} title="{{ sub.locations_all }}" style="cursor: help;"{% endif %}>
+            <td class="ps-3 small col-location"{% if sub.locations_all %} title="{{ sub.locations_all }}" style="cursor: help;"{% endif %}>
               {% if sub.job_url %}
                 <a href="{{ sub.job_url }}" target="_blank" rel="noopener">{{ sub.location or '—' }}</a>
               {% else %}
@@ -256,27 +265,27 @@
               <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('{{ sub.job_id }}')" title="Preview description"><i class="bi bi-card-text"></i></button>
               {% endif %}
             </td>
-            <td class="text-nowrap small">{{ sub.salary_display or '—' }}</td>
+            <td class="text-nowrap small col-salary">{{ sub.salary_display or '—' }}</td>
             {% if show_viability_filter %}
-            <td>
+            <td class="col-viability">
               {% if sub.viability %}
               <span class="badge text-bg-{{ sub.viability_color }}{% if sub.viability_stale %} opacity-50{% endif %}"
                     title="{{ ('Stale — re-run rescore_viability.sh\n\n' if sub.viability_stale else '') ~ (sub.viability_reason or '') }}">{{ sub.viability }}</span>
               {% else %}<span class="text-muted">—</span>{% endif %}
             </td>
             {% endif %}
-            <td>
+            <td class="col-label">
               {% for r in sub.labels %}
                 <span class="badge bg-secondary">{{ r }}</span>
               {% endfor %}
             </td>
             {% if sources|length > 1 %}
-            <td><span class="badge {{ 'bg-primary' if sub.source == 'linkedin' else 'bg-info text-dark' }}">{{ sub.source_display }}</span></td>
+            <td class="col-source"><span class="badge {{ 'bg-primary' if sub.source == 'linkedin' else 'bg-info text-dark' }}">{{ sub.source_display }}</span></td>
             {% endif %}
             <td>{{ status_select(sub.job_id, sub.status, sub.viability or '') }}</td>
-            <td class="text-nowrap small">{{ sub.applied_at or '—' }}</td>
-            <td class="text-nowrap small">{{ (sub.posted_date or '')[:10] }}</td>
-            <td class="text-nowrap small">{{ (sub.first_seen or '')[:10] }}</td>
+            <td class="text-nowrap small col-applied">{{ sub.applied_at or '—' }}</td>
+            <td class="text-nowrap small col-posted">{{ (sub.posted_date or '')[:10] }}</td>
+            <td class="text-nowrap small col-firstseen">{{ (sub.first_seen or '')[:10] }}</td>
           </tr>
           {% endfor %}
 
@@ -293,31 +302,31 @@
               {% endif %}
             </td>
             <td>{{ job.company or '—' }}</td>
-            <td{% if job.locations_all %} title="{{ job.locations_all }}" style="cursor: help;"{% endif %}>
+            <td class="col-location"{% if job.locations_all %} title="{{ job.locations_all }}" style="cursor: help;"{% endif %}>
               {{ job.location_primary if view == 'grouped' else (job.location or '—') }}
               {% if job.locations_count > 1 %}<span class="text-muted" style="text-decoration: underline dotted;">+{{ job.locations_count - 1 }}</span>{% endif %}
             </td>
-            <td class="text-nowrap">{{ job.salary_display or '—' }}</td>
+            <td class="text-nowrap col-salary">{{ job.salary_display or '—' }}</td>
             {% if show_viability_filter %}
-            <td>
+            <td class="col-viability">
               {% if job.viability %}
               <span class="badge text-bg-{{ job.viability_color }}{% if job.viability_stale %} opacity-50{% endif %}"
                     title="{{ ('Stale — re-run rescore_viability.sh\n\n' if job.viability_stale else '') ~ (job.viability_reason or '') }}">{{ job.viability }}</span>
               {% else %}<span class="text-muted">—</span>{% endif %}
             </td>
             {% endif %}
-            <td>
+            <td class="col-label">
               {% for r in job.labels %}
                 <span class="badge bg-secondary">{{ r }}</span>
               {% endfor %}
             </td>
             {% if sources|length > 1 %}
-            <td><span class="badge {{ 'bg-primary' if job.source == 'linkedin' else 'bg-info text-dark' }}">{{ job.source_display }}</span></td>
+            <td class="col-source"><span class="badge {{ 'bg-primary' if job.source == 'linkedin' else 'bg-info text-dark' }}">{{ job.source_display }}</span></td>
             {% endif %}
             <td>{{ status_select(job.job_id, job.status, job.viability or '') }}</td>
-            <td class="text-nowrap">{{ job.applied_at or '—' }}</td>
-            <td class="text-nowrap">{{ (job.posted_date or '')[:10] }}</td>
-            <td class="text-nowrap">{{ (job.first_seen or '')[:10] }}</td>
+            <td class="text-nowrap col-applied">{{ job.applied_at or '—' }}</td>
+            <td class="text-nowrap col-posted">{{ (job.posted_date or '')[:10] }}</td>
+            <td class="text-nowrap col-firstseen">{{ (job.first_seen or '')[:10] }}</td>
           </tr>
         {% endif %}
 
@@ -446,6 +455,61 @@ async function bulkSkipLow() {
 }
 
 document.getElementById('bulk-skip-btn')?.addEventListener('click', bulkSkipLow);
+
+// ── Column visibility ──
+const COL_DEFS = [
+  { cls: 'col-location',  label: 'Location',   def: true  },
+  { cls: 'col-salary',    label: 'Salary',      def: true  },
+  {% if show_viability_filter %}
+  { cls: 'col-viability', label: 'Viability',   def: true  },
+  {% endif %}
+  { cls: 'col-label',     label: 'Label',       def: true  },
+  {% if sources|length > 1 %}
+  { cls: 'col-source',    label: 'Source',      def: true  },
+  {% endif %}
+  { cls: 'col-applied',   label: 'Applied',     def: true  },
+  { cls: 'col-posted',    label: 'Posted',      def: true  },
+  { cls: 'col-firstseen', label: 'First Seen',  def: false },
+];
+const COL_PREFS_KEY = 'jobsearch_col_prefs';
+
+function loadColPrefs() {
+  try { return JSON.parse(localStorage.getItem(COL_PREFS_KEY) || 'null') || {}; }
+  catch { return {}; }
+}
+
+function applyColVisibility() {
+  const prefs = loadColPrefs();
+  COL_DEFS.forEach(({ cls, def }) => {
+    const visible = prefs[cls] !== undefined ? prefs[cls] : def;
+    document.querySelectorAll('.' + cls).forEach(el => {
+      el.style.display = visible ? '' : 'none';
+    });
+  });
+}
+
+function buildColPicker() {
+  const menu = document.getElementById('colPickerMenu');
+  if (!menu) return;
+  const prefs = loadColPrefs();
+  menu.innerHTML = COL_DEFS.map(({ cls, label, def }) => {
+    const checked = (prefs[cls] !== undefined ? prefs[cls] : def) ? 'checked' : '';
+    return `<li><label class="dropdown-item d-flex align-items-center gap-2" style="cursor:pointer">
+      <input type="checkbox" class="form-check-input col-toggle" data-col="${cls}" ${checked}> ${label}
+    </label></li>`;
+  }).join('');
+  menu.querySelectorAll('.col-toggle').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const p = loadColPrefs();
+      p[cb.dataset.col] = cb.checked;
+      localStorage.setItem(COL_PREFS_KEY, JSON.stringify(p));
+      applyColVisibility();
+    });
+  });
+}
+
+applyColVisibility();
+buildColPicker();
 
 function toggleGroup(groupKey, btn) {
   const children = document.querySelectorAll('.group-child-' + groupKey);
