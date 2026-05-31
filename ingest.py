@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 # requires Python 3.11+
-"""Ingest Apify LinkedIn job search results into a local SQLite database."""
+"""Ingest Apify LinkedIn job search results into a local SQLite database.
+
+Usage:
+    python3 ingest.py [--config PATH] [--dry-run]
+
+Flags:
+    --config PATH  Path to TOML config (default: config.toml).
+    --dry-run      Fetch pending runs and report item counts per run (with
+                   resolved labels) without writing anything to the database.
+"""
 
 import argparse
 import json
@@ -163,6 +172,30 @@ def fetch_task_runs(username: str, task_name: str, api_token: str) -> list[dict]
     return runs
 
 
+def fetch_run_input(run: dict, api_token: str) -> dict:
+    """Fetch the INPUT record from a run's default key-value store.
+
+    Used to retrieve per-run label overrides (e.g. _jobsearch_label) set via
+    Apify schedule input overrides.  Returns an empty dict on any failure so
+    the caller can fall back gracefully.
+    """
+    store_id = run.get("defaultKeyValueStoreId")
+    if not store_id:
+        return {}
+    try:
+        resp = requests.get(
+            f"{APIFY_BASE}/key-value-stores/{store_id}/records/INPUT",
+            headers={"Authorization": f"Bearer {api_token}"},
+            timeout=15,
+        )
+        if resp.status_code == 404:
+            return {}
+        resp.raise_for_status()
+        return resp.json() or {}
+    except Exception:
+        return {}
+
+
 def fetch_dataset_items(dataset_id: str, api_token: str) -> list[dict]:
     """Fetch all items from a dataset by ID."""
     headers = {"Authorization": f"Bearer {api_token}"}
@@ -194,8 +227,9 @@ def runs_to_process(
 ) -> list[dict]:
     """Return the subset of runs not yet ingested, in chronological order.
 
-    On first ever run (no state) we process only the latest run and record
-    it as the baseline, so we don't retroactively pull months of history.
+    On first ever run (no state) all available runs are returned so that a
+    newly configured task picks up its full backlog.  Use --dry-run first to
+    preview what will be ingested.
     """
     state = conn.execute(
         "SELECT last_run_id FROM ingest_state WHERE task_name = ?",
@@ -203,8 +237,8 @@ def runs_to_process(
     ).fetchone()
 
     if state is None:
-        # No prior state — bootstrap from the most recent run only.
-        return all_runs[-1:] if all_runs else []
+        # No prior state — process all available runs.
+        return list(all_runs)
 
     last_run_id = state["last_run_id"]
     seen = False
@@ -663,6 +697,7 @@ def record_state(conn: sqlite3.Connection, task_name: str, run: dict,
 def main() -> None:
     parser = argparse.ArgumentParser(description="Ingest Apify LinkedIn job results into SQLite.")
     parser.add_argument("--config", default="config.toml", help="Path to TOML config file (default: config.toml)")
+    parser.add_argument("--dry-run", action="store_true", help="Show pending run counts without fetching items or writing to the database")
     args = parser.parse_args()
 
     config_path = Path(args.config)
@@ -685,23 +720,40 @@ def main() -> None:
     conn = open_db(db_path)
     total_inserted = total_updated = total_unchanged = total_skipped = total_fuzzy = 0
     start_time = datetime.now(timezone.utc)
-    print(f"Starting ingestion at {start_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    dry_run_note = " (DRY RUN)" if args.dry_run else ""
+    print(f"Starting ingestion at {start_time.strftime('%Y-%m-%d %H:%M:%S %Z')}{dry_run_note}")
 
     for task in tasks:
-        task_name: str = task["name"]
-        label: str = task["label"]
-        actor_type: str = task.get("actor", "linkedin")
-        exclude_ats_dups: bool = task.get("exclude_ats_duplicates", False)
-        reset_on_change: bool = task.get("reset_on_change", reset_on_change_global)
-        fuzzy_dedup: bool = task.get("fuzzy_dedup", fuzzy_dedup_global)
-        print(f"Fetching runs for '{task_name}' (label: {label}, actor: {actor_type}) ...")
+        task_name:        str       = task["name"]
+        default_label:    str       = task.get("label", "unknown")
+        label_from_input: str | None = task.get("label_from_input")
+        actor_type:       str       = task.get("actor", "linkedin")
+        exclude_ats_dups: bool      = task.get("exclude_ats_duplicates", False)
+        reset_on_change:  bool      = task.get("reset_on_change", reset_on_change_global)
+        fuzzy_dedup:      bool      = task.get("fuzzy_dedup", fuzzy_dedup_global)
+        label_desc = f"label_from_input={label_from_input!r}" if label_from_input else f"label: {default_label}"
+        print(f"Fetching runs for '{task_name}' ({label_desc}, actor: {actor_type}) ...")
         try:
             all_runs = fetch_task_runs(username, task_name, api_token)
             pending = runs_to_process(conn, task_name, all_runs)
 
             if not pending:
                 print(f"  No new runs since last ingestion.")
-                touch_synced(conn, task_name)
+                if not args.dry_run:
+                    touch_synced(conn, task_name)
+                continue
+
+            if args.dry_run:
+                print(f"  {len(pending)} pending run(s):")
+                for run in pending:
+                    run_time = run["startedAt"][:16].replace("T", " ")
+                    if label_from_input:
+                        run_input = fetch_run_input(run, api_token)
+                        run_label = str(run_input.get(label_from_input) or "").strip() or default_label
+                    else:
+                        run_label = default_label
+                    items = fetch_dataset_items(run["defaultDatasetId"], api_token)
+                    print(f"    {run_time} [{run_label}]: {len(items)} item(s)")
                 continue
 
             if len(pending) > 1:
@@ -710,8 +762,17 @@ def main() -> None:
             task_inserted = task_updated = task_unchanged = task_skipped = task_fuzzy = 0
             for run in pending:
                 run_time = run["startedAt"][:16].replace("T", " ")
+                # Resolve the label for this specific run.
+                if label_from_input:
+                    run_input = fetch_run_input(run, api_token)
+                    label = str(run_input.get(label_from_input) or "").strip() or default_label
+                    if label == default_label and label_from_input not in run_input:
+                        print(f"  WARNING: '{label_from_input}' not found in run input; using fallback label '{label}'",
+                              file=sys.stderr)
+                else:
+                    label = default_label
                 items = fetch_dataset_items(run["defaultDatasetId"], api_token)
-                print(f"  Run {run_time}: {len(items)} items retrieved")
+                print(f"  Run {run_time} [{label}]: {len(items)} items retrieved")
                 ins, upd, unch, skip, fuzzy = ingest(
                     conn, items, label, actor_type, exclude_ats_dups, reset_on_change,
                     fuzzy_dedup, fuzzy_desc_threshold, fuzzy_title_threshold, inherit_canonical_status,
@@ -745,7 +806,8 @@ def main() -> None:
     conn.close()
     elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
     total_fuzzy_msg = f", {total_fuzzy} fuzzy-linked" if total_fuzzy else ""
-    print(f"Done in {elapsed:.1f}s. {total_inserted} inserted, {total_updated} updated, {total_unchanged} unchanged, {total_skipped} ATS duplicates skipped{total_fuzzy_msg}.\n")
+    dry_run_prefix = "[DRY-RUN] " if args.dry_run else ""
+    print(f"{dry_run_prefix}Done in {elapsed:.1f}s. {total_inserted} inserted, {total_updated} updated, {total_unchanged} unchanged, {total_skipped} ATS duplicates skipped{total_fuzzy_msg}.\n")
 
 
 if __name__ == "__main__":

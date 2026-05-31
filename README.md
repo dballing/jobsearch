@@ -127,6 +127,7 @@ Multiple tasks can share the same `label` — they contribute to the same filter
 
 Per-task optional keys:
 
+- `label_from_input` — instead of a hardcoded `label`, read the label from a field in each run's input. This lets you use a single generic Apify task added multiple times to a schedule, each entry with its own input overrides and label. See [Generic tasks with per-schedule labels](#generic-tasks-with-per-schedule-labels) below.
 - `actor` — `"linkedin"` (default) or `"careersite"`. Set to `"careersite"` for tasks that use `fantastic-jobs/career-site-job-listing-api`. Career-site jobs are stored with a `cs_` prefix on their IDs to avoid collision with LinkedIn job IDs.
 - `exclude_ats_duplicates` — `true` to skip LinkedIn results that the actor has flagged as duplicates of career-site postings. Useful when running both a LinkedIn and a career-site task for the same geography to avoid double-ingesting the same job. Skipped items are counted and reported in the ingestion log; in a steady state you'd expect the LinkedIn skip count to roughly equal the career-site insert count for the same run window.
 - `reset_on_change` — overrides the global `reset_on_change` default for this task. See global keys below.
@@ -141,6 +142,37 @@ Global optional keys (top-level, not inside `[[tasks]]`):
 - `inherit_canonical_status` — `true` (default). When a new job is linked as a duplicate of an existing canonical job, inherit the canonical's current status (e.g. if you already marked it `skipped`, the duplicate starts as `skipped` too). Set to `false` to always start duplicates as `new`.
 
 `config.toml` is gitignored so your API token is never committed.
+
+#### Generic tasks with per-schedule labels
+
+Instead of creating one Apify task per search variation (per geographic region, for example), you can create a single generic task and drive the label from per-schedule input overrides. This reduces maintenance: you can craft one generic task per actor (`linkedin` or `careersite`) and add those tasks N times into your schedule, each with its own bespoke override values, as well as the label telling `jobsearch` which overrides are contained in which runs.
+
+**How it works:**
+
+1. Create one Apify task per actor type (e.g. `my-generic-linkedin`, `my-generic-careersite`) without any variation-specific input.
+2. Create an Apify schedule. Add each task to the schedule as many times as you have variations, giving each entry its own **Input overrides** containing the variation-specific values plus the label field:
+   ```json
+   {
+     "locationSearch": [", Virginia, United States", "Washington, District of Columbia, United States"],
+     "locationExclusionSearch": ["West Virginia, United States"],
+     "_jobsearch_label": "dc"
+   }
+   ```
+3. In `config.toml`, set `label_from_input` to the field name and `label` as a fallback:
+   ```toml
+   [[tasks]]
+   name             = "my-generic-linkedin"
+   label            = "unknown"
+   label_from_input = "_jobsearch_label"
+
+   [[tasks]]
+   name             = "my-generic-careersite"
+   label            = "unknown"
+   label_from_input = "_jobsearch_label"
+   actor            = "careersite"
+   ```
+
+The ingest script fetches the INPUT record from each run's key-value store to resolve the label. The field name (`_jobsearch_label`) is passed through to the actor but ignored by it — Apify actors silently discard unknown input fields. The per-task `label` is used as a fallback if the field is absent. Existing tasks with a hardcoded `label` and no `label_from_input` are unaffected.
 
 ### 4. Run the first ingestion
 

@@ -33,7 +33,7 @@ nc = "NC"
 
 [[tasks]]
 name  = "my-dc-va-search"
-label = "dc"             # required: short key stored in the database
+label = "dc"             # short key stored in the database; shown in the UI filter bar
 # actor = "linkedin"    # optional: "linkedin" (default) or "careersite"
 # exclude_ats_duplicates = true  # optional: skip results already covered by a career-site task
 # reset_on_change = true         # optional: overrides global default for this task
@@ -47,3 +47,24 @@ actor = "careersite"     # use fantastic-jobs/career-site-job-listing-api
 [[tasks]]
 name  = "my-nc-search"
 label = "nc"
+
+# ── Alternative: one generic task + per-schedule label overrides ──────────────
+# Instead of one task per region, create a single generic task and configure
+# multiple Apify schedules, each with an input override that names the label:
+#
+#   Apify schedule override (JSON):
+#     { "location": "Washington DC, Maryland, Virginia", "_jobsearch_label": "dc" }
+#
+# Then set label_from_input to the field name. `label` is used as a fallback
+# if the field is absent from the run input.
+#
+# [[tasks]]
+# name             = "my-generic-linkedin"
+# label            = "unknown"          # fallback if _jobsearch_label missing
+# label_from_input = "_jobsearch_label" # read label from this run input field
+#
+# [[tasks]]
+# name             = "my-generic-careersite"
+# label            = "unknown"
+# label_from_input = "_jobsearch_label"
+# actor            = "careersite"
