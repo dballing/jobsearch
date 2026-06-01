@@ -19,7 +19,9 @@ db_path   = "jobs.db"
 # """
 
 # Global defaults — all can be overridden per task.
-# reset_on_change = true           # reset skipped jobs to new if description changes (default: true)
+# reset_on_change  = true   # reset skipped jobs to new if description changes (default: true)
+# auto_ghost       = false  # automatically move stale 'applied' jobs to 'ghosted' (default: false)
+# auto_ghost_days  = 180    # days since applied_at before auto-ghosting (default: 180)
 
 # Fuzzy near-duplicate detection (global defaults; per-task key overrides).
 # fuzzy_dedup = true               # enable near-duplicate grouping for all tasks (default: true)

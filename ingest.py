@@ -16,7 +16,7 @@ import json
 import sqlite3
 import sys
 import tomllib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -659,6 +659,34 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
     return inserted, updated, unchanged, skipped_ats, fuzzy_linked
 
 
+def auto_ghost_applied(conn: sqlite3.Connection, days: int) -> int:
+    """Move stale 'applied' jobs to 'ghosted' based on applied_at age.
+
+    Only affects jobs with status = 'applied' — interviewing/offered are
+    intentionally excluded since those warrant a deliberate human decision.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+    rows = conn.execute(
+        "SELECT job_id FROM jobs "
+        "WHERE status = 'applied' AND applied_at IS NOT NULL "
+        "AND substr(applied_at, 1, 10) <= ?",
+        (cutoff,),
+    ).fetchall()
+    now_iso = _now_iso()
+    for row in rows:
+        conn.execute("UPDATE jobs SET status = 'ghosted' WHERE job_id = ?", (row["job_id"],))
+        append_history(conn, row["job_id"], {
+            "ts":    now_iso,
+            "event": "status",
+            "from":  "applied",
+            "to":    "ghosted",
+            "note":  f"auto-ghosted after {days} days without response",
+        })
+    if rows:
+        conn.commit()
+    return len(rows)
+
+
 def touch_synced(conn: sqlite3.Connection, task_name: str) -> None:
     """Record that ingest ran for this task, even if no new data was found."""
     now = datetime.now(timezone.utc).isoformat()
@@ -712,7 +740,9 @@ def main() -> None:
     db_path: str = config.get("db_path", "jobs.db")
     tasks: list[dict] = config["tasks"]
     reset_on_change_global: bool = config.get("reset_on_change", True)
-    fuzzy_dedup_global: bool = config.get("fuzzy_dedup", True)
+    auto_ghost: bool             = config.get("auto_ghost", False)
+    auto_ghost_days: int         = config.get("auto_ghost_days", 180)
+    fuzzy_dedup_global: bool     = config.get("fuzzy_dedup", True)
     fuzzy_desc_threshold: float = config.get("fuzzy_desc_threshold", 0.85)
     fuzzy_title_threshold: float = config.get("fuzzy_title_threshold", 0.6)
     inherit_canonical_status: bool = config.get("inherit_canonical_status", True)
@@ -803,11 +833,18 @@ def main() -> None:
         except requests.HTTPError as exc:
             print(f"  ERROR fetching '{task_name}': {exc}", file=sys.stderr)
 
+    ghosted_count = 0
+    if auto_ghost and not args.dry_run:
+        ghosted_count = auto_ghost_applied(conn, auto_ghost_days)
+        if ghosted_count:
+            print(f"Auto-ghosted {ghosted_count} applied job(s) with no activity in {auto_ghost_days}+ days.")
+
     conn.close()
     elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
-    total_fuzzy_msg = f", {total_fuzzy} fuzzy-linked" if total_fuzzy else ""
-    dry_run_prefix = "[DRY-RUN] " if args.dry_run else ""
-    print(f"{dry_run_prefix}Done in {elapsed:.1f}s. {total_inserted} inserted, {total_updated} updated, {total_unchanged} unchanged, {total_skipped} ATS duplicates skipped{total_fuzzy_msg}.\n")
+    total_fuzzy_msg  = f", {total_fuzzy} fuzzy-linked" if total_fuzzy else ""
+    ghost_msg        = f", {ghosted_count} auto-ghosted" if ghosted_count else ""
+    dry_run_prefix   = "[DRY-RUN] " if args.dry_run else ""
+    print(f"{dry_run_prefix}Done in {elapsed:.1f}s. {total_inserted} inserted, {total_updated} updated, {total_unchanged} unchanged, {total_skipped} ATS duplicates skipped{total_fuzzy_msg}{ghost_msg}.\n")
 
 
 if __name__ == "__main__":

@@ -273,6 +273,11 @@ When a job already exists in the database and is seen again in a subsequent run:
 - If the job appears under a new label (from a different task), that label is added to its label list.
 - If the posting has expired (`date_validthrough` in the past) and the status is `new` or `reviewing`, the status is automatically set to `closed`.
 - If the job description changed and the status was `skipped`, the status is reset to `new` (unless `reset_on_change = false` for that task). Jobs reset this way display a ↻ icon next to the title as a visual indicator that they are "new again" rather than freshly ingested. The icon clears the next time you manually change the status.
+- If `auto_ghost = true`, any job with status `applied` whose `applied_at` date is at least `auto_ghost_days` (default: 180) days in the past is automatically moved to `ghosted`. Jobs in `interviewing` or other statuses are not affected — those warrant a deliberate human decision. Set these in `config.toml`:
+  ```toml
+  auto_ghost      = true
+  auto_ghost_days = 60    # days since application before auto-ghosting
+  ```
 
 ---
 
