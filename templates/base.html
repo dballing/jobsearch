@@ -249,6 +249,7 @@
             else if (e.event === 'rescore')    desc = `Rescored: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong>`;
             else if (e.event === 'refreshed')  desc = 'Description changed';
             else if (e.event === 'linked')     desc = `Linked to canonical`;
+            else if (e.event === 'unlinked')   desc = 'Unlinked from canonical';
             else if (e.event === 'closed')     desc = 'Auto-closed (expired)';
             else desc = escHtml(e.event);
             return `<tr><td class="text-muted small text-nowrap pe-3">${escHtml(ts)}${apx}</td><td class="small">${desc}</td></tr>`;

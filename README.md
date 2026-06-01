@@ -308,6 +308,22 @@ When `inherit_canonical_status = true` (default), a newly ingested duplicate sta
 - Fuzzy matching is CPU-bound. For large ingestion runs with many candidates per company, it can add noticeable time. Lower `fuzzy_desc_threshold` to cast a wider net; raise it to be more conservative.
 - Existing jobs in the database before `fuzzy_dedup` was enabled are not retroactively linked — only new or re-ingested jobs are checked.
 
+### Manual linking
+
+When fuzzy matching doesn't catch two postings you can see are the same role, you can link them manually. Each job row has a **🔗 link icon** (next to the preview button). Clicking it opens a search dialog:
+
+1. Type a title or company name to search for the canonical job.
+2. Select the match from the results.
+3. Click **Link to selected**.
+
+The page reloads and the two jobs appear as a single grouped row.
+
+If the job being linked has a `new` or `reviewing` status, it automatically inherits the canonical's status on link (same behaviour as `inherit_canonical_status` during ingest).
+
+If you select a job that is itself already linked to a canonical, your job is linked to that root directly — no chains are created.
+
+To **unlink** a job, click its 🔗 icon (shown in blue when a link is active) and click **Unlink** in the dialog.
+
 ---
 
 ## Viability scoring

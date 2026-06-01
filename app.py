@@ -690,5 +690,86 @@ def update_status(job_id: str):
     return "", 204
 
 
+@app.route("/jobs/autocomplete")
+def jobs_autocomplete():
+    q       = request.args.get("q", "").strip()
+    exclude = request.args.get("exclude", "")
+    if not q:
+        return []
+    db   = get_db()
+    like = f"%{q}%"
+    rows = db.execute(
+        """SELECT j.job_id, j.title, j.company, j.location, j.status, j.viability,
+                  j.canonical_id,
+                  c.title   AS canonical_title,
+                  c.company AS canonical_company
+           FROM jobs j
+           LEFT JOIN jobs c ON c.job_id = j.canonical_id
+           WHERE (j.title LIKE ? OR j.company LIKE ?)
+             AND j.job_id != ?
+           ORDER BY j.first_seen DESC
+           LIMIT 10""",
+        (like, like, exclude or ""),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.route("/job/<job_id>/link", methods=["POST"])
+def link_job(job_id: str):
+    db             = get_db()
+    target_raw     = request.form.get("canonical_id", "").strip()
+    ts             = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # ── Unlink ──────────────────────────────────────────────────────────────
+    if not target_raw:
+        db.execute("UPDATE jobs SET canonical_id = NULL WHERE job_id = ?", (job_id,))
+        append_history(db, job_id, {"ts": ts, "event": "unlinked"})
+        db.commit()
+        return "", 204
+
+    # ── Link ─────────────────────────────────────────────────────────────────
+    if target_raw == job_id:
+        return {"error": "A job cannot be linked to itself."}, 400
+
+    target_row = db.execute(
+        "SELECT job_id, canonical_id, title, company FROM jobs WHERE job_id = ?",
+        (target_raw,),
+    ).fetchone()
+    if not target_row:
+        return {"error": f"Job {target_raw!r} not found."}, 404
+
+    # Follow one hop to the root (prevents chaining).
+    resolved_root = target_row["canonical_id"] or target_row["job_id"]
+
+    if resolved_root == job_id:
+        return {"error": "Cannot create a circular link."}, 400
+
+    # Update the job itself.
+    db.execute("UPDATE jobs SET canonical_id = ? WHERE job_id = ?", (resolved_root, job_id))
+    append_history(db, job_id, {"ts": ts, "event": "linked", "canonical_id": resolved_root})
+
+    # Inherit the canonical's status if the job is still in an early state.
+    job_row = db.execute("SELECT status FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    if job_row and job_row["status"] in ("new", "reviewing"):
+        root_row = db.execute("SELECT status FROM jobs WHERE job_id = ?", (resolved_root,)).fetchone()
+        if root_row and root_row["status"] not in ("new", "reviewing"):
+            db.execute("UPDATE jobs SET status = ? WHERE job_id = ?", (root_row["status"], job_id))
+            append_history(db, job_id, {
+                "ts": ts, "event": "status",
+                "from": job_row["status"], "to": root_row["status"],
+                "note": "inherited from canonical on link",
+            })
+
+    # Re-point any existing dependents of this job to the new root so no
+    # two-hop chains are created (data model guarantees at most one hop).
+    db.execute(
+        "UPDATE jobs SET canonical_id = ? WHERE canonical_id = ?",
+        (resolved_root, job_id),
+    )
+
+    db.commit()
+    return {"canonical_id": resolved_root}, 200
+
+
 if __name__ == "__main__":
     app.run(debug=True)
