@@ -72,7 +72,7 @@ def normalize_location(location: str | None) -> str | None:
 
 
 VALID_STATUSES = [
-    "new", "skipped", "reviewing",
+    "new", "skipped", "autoskipped", "reviewing",
     "applied", "rejected", "ghosted", "interviewing", "offered",
     "withdrawn", "closed",
 ]

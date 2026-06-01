@@ -243,7 +243,8 @@ Each job has a status dropdown. Available statuses:
 | Status | Meaning |
 |--------|---------|
 | `new` | Freshly ingested, not yet looked at |
-| `skipped` | Not a fit — skip for now |
+| `skipped` | Not a fit — skip for now (set manually) |
+| `autoskipped` | Automatically skipped by viability scoring (see `auto_skip` below) |
 | `reviewing` | You've opened it but haven't decided yet — needs another look |
 | `applied` | Application submitted |
 | `rejected` | Rejected by employer |
@@ -255,7 +256,7 @@ Each job has a status dropdown. Available statuses:
 
 In grouped view, if all locations for a job share the same status, a group-level dropdown lets you update all of them at once.
 
-> **Tip:** If a job you've marked `skipped` has its description updated by the employer, it will automatically be reset to `new` on the next ingestion run so you can take another look.
+> **Tip:** If a job you've marked `skipped` (or that was auto-set to `autoskipped`) has its description updated by the employer, it will automatically be reset to `new` on the next ingestion run so you can take another look.
 
 ### Previewing job descriptions
 
@@ -373,6 +374,17 @@ Available flags:
 - Each job is scored in a single Anthropic API call. The candidate description (your `prompt`) is sent as a cached system prompt, so only the first call in a session pays full token cost — subsequent calls reuse the cache.
 - A SHA-256 hash of the prompt is stored alongside each score. On subsequent runs, only jobs with a missing or stale hash are re-scored. Change your `prompt` and re-run to update all scores.
 - By default, closed, ghosted, and skipped jobs are excluded (they're not worth paying to score). Use `--all` to include them.
+
+### Auto-skip
+
+Once you have confidence in your viability prompt, you can enable automatic skipping of low (or low+medium) scoring jobs. Add to your `[viability]` config:
+
+```toml
+auto_skip            = true   # default: false
+auto_skip_confidence = "low"  # "low" (only low) or "medium" (low + medium)
+```
+
+When enabled, any `new` or `reviewing` job that scores at or below the threshold is automatically set to `autoskipped` after rescoring. This status is functionally identical to `skipped` (excluded from the Active filter, subject to `reset_on_change`) but is visually and historically distinguishable from a manually-set skip. The rescore summary line reports how many were auto-skipped.
 
 ### UI
 

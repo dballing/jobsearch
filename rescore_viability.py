@@ -188,7 +188,15 @@ def main() -> None:
             "or the ANTHROPIC_API_KEY environment variable."
         )
 
-    model   = viability_cfg.get("model", "claude-haiku-4-5")
+    model              = viability_cfg.get("model", "claude-haiku-4-5")
+    auto_skip          = viability_cfg.get("auto_skip", False)
+    auto_skip_conf_raw = viability_cfg.get("auto_skip_confidence", "low").lower().strip()
+    if auto_skip_conf_raw not in VIABILITY_RANK:
+        sys.exit(
+            f"Invalid auto_skip_confidence {auto_skip_conf_raw!r}. "
+            "Must be 'low' or 'medium'."
+        )
+    auto_skip_threshold = VIABILITY_RANK[auto_skip_conf_raw]
     db_path = config.get("db_path", "jobs.db")
 
     current_hash = prompt_hash(viability_prompt)
@@ -217,7 +225,7 @@ def main() -> None:
         # NULL-viability jobs are already covered by the hash condition above, so
         # skipped/closed jobs that have never been scored will still be included.
         conditions.append(
-            "(status NOT IN ('skipped', 'rejected', 'withdrawn', 'ghosted', 'closed')"
+            "(status NOT IN ('skipped', 'autoskipped', 'rejected', 'withdrawn', 'ghosted', 'closed')"
             " OR viability IS NULL)"
         )
 
@@ -242,8 +250,9 @@ def main() -> None:
     client      = anthropic.Anthropic(api_key=api_key)
     check_model_currency(client, model)
     rows        = conn.execute(f"SELECT * FROM jobs {where}", params).fetchall()
-    scored      = 0
-    failed      = 0
+    scored       = 0
+    failed       = 0
+    auto_skipped = 0
     tally: dict[str, int] = {"high": 0, "medium": 0, "low": 0}
     tok_input   = 0
     tok_output  = 0
@@ -269,9 +278,8 @@ def main() -> None:
                 print("FAILED")
             failed += 1
         else:
-            if args.verbose:
-                print(rating)
             tally[rating] = tally.get(rating, 0) + 1
+            did_autoskip = False
             if usage is not None:
                 tok_input  += getattr(usage, "input_tokens",                0) or 0
                 tok_output += getattr(usage, "output_tokens",               0) or 0
@@ -282,7 +290,8 @@ def main() -> None:
                 "viability_prompt_hash = ? WHERE job_id = ?",
                 (rating, reason, current_hash, row["job_id"]),
             )
-            old_rating = row["viability"]
+            old_rating   = row["viability"]
+            current_status = row["status"]
             ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             if old_rating is None:
                 append_history(conn, row["job_id"], {
@@ -292,39 +301,76 @@ def main() -> None:
                 append_history(conn, row["job_id"], {
                     "ts": ts, "event": "rescore", "from": old_rating, "to": rating, "reason": reason,
                 })
-            # If this job inherited a skipped status from a canonical and its own
-            # score is strictly better than the canonical's, reset it to 'new' so a
-            # human can review it — the new posting may differ in a meaningful way
-            # (e.g. a remote option that the canonical lacked).
-            if row["canonical_id"] and row["status"] == "skipped":
+
+            # Auto-skip: if enabled and job is new/reviewing and score is at or below
+            # the configured threshold, move it to autoskipped.
+            if (auto_skip
+                    and current_status in ("new", "reviewing")
+                    and VIABILITY_RANK.get(rating, -1) <= auto_skip_threshold):
+                conn.execute(
+                    "UPDATE jobs SET status = 'autoskipped' WHERE job_id = ?",
+                    (row["job_id"],),
+                )
+                append_history(conn, row["job_id"], {
+                    "ts": ts, "event": "status",
+                    "from": current_status, "to": "autoskipped",
+                    "note": f"auto-skipped by rescore (viability: {rating})",
+                })
+                auto_skipped += 1
+                did_autoskip  = True
+
+            # Canonical promotion: if this linked job scores strictly better than
+            # both its canonical and its own previous score, decide whether to
+            # surface it for human review or keep it auto-skipped.
+            elif row["canonical_id"] and current_status in ("skipped", "autoskipped"):
                 canonical = conn.execute(
                     "SELECT viability FROM jobs WHERE job_id = ?",
                     (row["canonical_id"],),
                 ).fetchone()
                 canon_viability = canonical["viability"] if canonical else None
-                new_rank  = VIABILITY_RANK.get(rating, -1)
-                prev_rank = VIABILITY_RANK.get(old_rating or "", -1)
+                new_rank   = VIABILITY_RANK.get(rating, -1)
+                prev_rank  = VIABILITY_RANK.get(old_rating or "", -1)
                 canon_rank = VIABILITY_RANK.get(canon_viability or "", -1)
                 if new_rank > canon_rank and new_rank > prev_rank:
-                    conn.execute(
-                        "UPDATE jobs SET status = 'new' WHERE job_id = ? AND status = 'skipped'",
-                        (row["job_id"],),
-                    )
-                    append_history(conn, row["job_id"], {
-                        "ts": ts, "event": "status", "from": "skipped", "to": "new",
-                        "note": f"viability {rating!r} exceeds canonical {canon_viability!r}",
-                    })
-                    if args.verbose:
-                        print(f"    → reset to new (scores higher than canonical {row['canonical_id']})")
+                    if auto_skip and new_rank <= auto_skip_threshold:
+                        # Score improved but still at/below threshold — update to
+                        # autoskipped to record the re-evaluation.
+                        conn.execute(
+                            "UPDATE jobs SET status = 'autoskipped' WHERE job_id = ?",
+                            (row["job_id"],),
+                        )
+                        append_history(conn, row["job_id"], {
+                            "ts": ts, "event": "status",
+                            "from": current_status, "to": "autoskipped",
+                            "note": f"re-evaluated; still at/below auto-skip threshold (viability: {rating})",
+                        })
+                        if args.verbose:
+                            print(f"    → autoskipped (re-evaluated, still {rating})")
+                    else:
+                        # Score exceeds threshold (or auto_skip is off) — surface for review.
+                        conn.execute(
+                            "UPDATE jobs SET status = 'new' WHERE job_id = ?",
+                            (row["job_id"],),
+                        )
+                        append_history(conn, row["job_id"], {
+                            "ts": ts, "event": "status",
+                            "from": current_status, "to": "new",
+                            "note": f"viability {rating!r} exceeds canonical {canon_viability!r}",
+                        })
+                        if args.verbose:
+                            print(f"    → reset to new (scores higher than canonical {row['canonical_id']})")
+            if args.verbose:
+                print(f"{rating} → autoskipped" if did_autoskip else rating)
             conn.commit()
             scored += 1
 
     if interactive:
         print()  # move past the progress line
     conn.close()
-    breakdown = ", ".join(f"{r}: {tally[r]}" for r in ("high", "medium", "low") if tally.get(r))
-    fail_note = f", {failed} failed" if failed else ""
-    print(f"Done. {scored} job(s) scored{fail_note}." + (f" ({breakdown})" if breakdown else ""))
+    breakdown      = ", ".join(f"{r}: {tally[r]}" for r in ("high", "medium", "low") if tally.get(r))
+    fail_note      = f", {failed} failed" if failed else ""
+    autoskip_note  = f", {auto_skipped} auto-skipped" if auto_skipped else ""
+    print(f"Done. {scored} job(s) scored{fail_note}{autoskip_note}." + (f" ({breakdown})" if breakdown else ""))
     if tok_input or tok_output:
         tok_total = tok_input + tok_output + tok_write + tok_read
         detail = (

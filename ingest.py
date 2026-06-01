@@ -323,7 +323,7 @@ def bootstrap_history(conn: sqlite3.Connection) -> None:
             return result.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         # 2. Status at the time of ingestion (best guess)
-        if status in ("reviewing", "skipped"):
+        if status in ("reviewing", "skipped", "autoskipped"):
             history.append({
                 "ts": _after(fs_dt, 1),
                 "event": "status", "from": "new", "to": status, "approx": True,
@@ -577,10 +577,10 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
 
             if expired and current_status in AUTO_CLOSE_STATUSES:
                 new_status = "closed"
-            elif desc_changed and current_status == "skipped" and reset_on_change:
+            elif desc_changed and current_status in ("skipped", "autoskipped") and reset_on_change:
                 new_status = "new"
                 refreshed_at = now
-                print(f"  NOTE: description changed for job {fields['job_id']} ({fields['title']}), resetting from skipped → new")
+                print(f"  NOTE: description changed for job {fields['job_id']} ({fields['title']}), resetting from {current_status} → new")
             else:
                 new_status = current_status
 

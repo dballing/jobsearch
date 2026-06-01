@@ -8,6 +8,8 @@ db_path   = "jobs.db"
 # enabled = true
 # api_key = "sk-ant-xxxxxxxxxxxxxxxxxxxx"   # Anthropic API key (or set ANTHROPIC_API_KEY env var)
 # model   = "claude-haiku-4-5"              # optional: Anthropic model (default: claude-haiku-4-5)
+# auto_skip            = false              # auto-set low/medium jobs to 'autoskipped' during rescore
+# auto_skip_confidence = "low"             # threshold: "low" (only low) or "medium" (low + medium)
 # prompt  = """
 # Describe yourself as a candidate. Be specific: background, skills, years of
 # experience, preferred role types, company stage, and any deal-breakers.

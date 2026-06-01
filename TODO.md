@@ -19,14 +19,6 @@ jobs table. Title pre-filter stays as a cheap first pass. Needs a one-time backf
 existing rows (ties into the `--backfill` flag idea). Revisit once the current SequenceMatcher
 approach has run long enough to reveal real-world misses. Discussed: 2026-05-28.
 
-## Auto-skip based on viability score
-
-Once confidence in the viability scoring is high (i.e. the candidate prompt is
-well-tuned and producing reliable results), add a config option to automatically
-set low- or medium-viability jobs to `skipped` during a rescore run. Configurable
-threshold (e.g. `auto_skip_at = "low"` or `"medium"`). Should be opt-in and
-explicit — never on by default. Discussed: 2026-05-28.
-
 ## Archival of old closed jobs
 
 Add an `archived` boolean column rather than a separate database. Archiving sets
