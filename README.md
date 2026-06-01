@@ -318,7 +318,7 @@ When `inherit_canonical_status = true` (default), a newly ingested duplicate sta
 
 When fuzzy matching doesn't catch two postings you can see are the same role, you can link them manually. Each job row has a **🔗 link icon** (next to the preview button). Clicking it opens a search dialog:
 
-1. Type a title or company name to search for the canonical job.
+1. Type a title or company name to search for the canonical job. Multiple words narrow results (all must match); wrap a phrase in quotes for an exact-phrase match (e.g. `"senior tpm" zillow`).
 2. Select the match from the results.
 3. Click **Link to selected**.
 

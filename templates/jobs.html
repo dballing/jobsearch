@@ -25,7 +25,7 @@
 
         <label class="form-label small fw-semibold">Search for canonical</label>
         <input type="search" id="linkSearchInput" class="form-control form-control-sm mb-2"
-               placeholder="Type title or company…" autocomplete="off">
+               placeholder='Search title / company — words narrow results; "phrase" for exact match…' autocomplete="off">
         <div id="linkResults" class="list-group list-group-flush small"></div>
 
         <div id="linkWarning" class="alert alert-warning py-2 small mt-2 d-none"></div>
@@ -600,7 +600,8 @@ async function fetchLinkResults(q) {
                     data-job-id="${escHtml(r.job_id)}"
                     data-canonical-id="${escHtml(r.canonical_id || '')}"
                     data-canonical-title="${escHtml(r.canonical_title || '')}">
-              <div>${escHtml(r.title || '(no title)')} <span class="text-muted">— ${escHtml(r.company || '')}</span></div>
+              <div>${escHtml(r.title || '(no title)')}</div>
+              <div class="text-muted" style="font-size:.85em">${escHtml(r.company || '')}</div>
               ${sub}
             </button>`;
   }).join('');

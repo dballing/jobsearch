@@ -3,6 +3,7 @@
 
 import json
 import math
+import shlex
 import sqlite3
 import tomllib
 from datetime import datetime, timezone
@@ -698,20 +699,32 @@ def jobs_autocomplete():
     exclude = request.args.get("exclude", "")
     if not q:
         return []
-    db   = get_db()
-    like = f"%{q}%"
+    db = get_db()
+    # Quoted phrases ("senior tpm") count as one token; unquoted words split normally.
+    # Fall back to plain split if the user leaves a quote unclosed.
+    try:
+        tokens = shlex.split(q)
+    except ValueError:
+        tokens = q.split()
+    if not tokens:
+        return []
+    # Each token must appear in title OR company (AND across tokens).
+    token_clauses = " AND ".join(
+        "(j.title LIKE ? OR j.company LIKE ?)" for _ in tokens
+    )
+    token_params  = [p for t in tokens for p in (f"%{t}%", f"%{t}%")]
     rows = db.execute(
-        """SELECT j.job_id, j.title, j.company, j.location, j.status, j.viability,
-                  j.canonical_id,
-                  c.title   AS canonical_title,
-                  c.company AS canonical_company
-           FROM jobs j
-           LEFT JOIN jobs c ON c.job_id = j.canonical_id
-           WHERE (j.title LIKE ? OR j.company LIKE ?)
-             AND j.job_id != ?
-           ORDER BY j.first_seen DESC
-           LIMIT 10""",
-        (like, like, exclude or ""),
+        f"""SELECT j.job_id, j.title, j.company, j.location, j.status, j.viability,
+                   j.canonical_id,
+                   c.title   AS canonical_title,
+                   c.company AS canonical_company
+            FROM jobs j
+            LEFT JOIN jobs c ON c.job_id = j.canonical_id
+            WHERE {token_clauses}
+              AND j.job_id != ?
+            ORDER BY j.first_seen DESC
+            LIMIT 10""",
+        token_params + [exclude or ""],
     ).fetchall()
     return [dict(r) for r in rows]
 
