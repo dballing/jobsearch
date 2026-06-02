@@ -370,7 +370,7 @@ AUTO_CLOSE_STATUSES = {"new", "reviewing"}
 
 
 def is_expired(item: dict) -> bool:
-    val = _scalar(item.get("date_validthrough"))
+    val = _scalar(item.get("date_valid_through") or item.get("date_validthrough"))
     if not val:
         return False
     try:
@@ -430,13 +430,16 @@ def find_canonical(
 
 
 def extract_fields_linkedin(item: dict) -> dict:
-    # Field names from fantastic-jobs/advanced-linkedin-job-search-api (verified against real output).
-    # `id` is Apify-internal; `linkedin_id` is the actual LinkedIn job ID used as our PK.
-    # `directapply` = LinkedIn Easy Apply (apply without leaving LinkedIn).
+    # Field names from fantastic-jobs/advanced-linkedin-job-search-api.
+    # `linkedin_id` is the actual LinkedIn job ID used as our PK (type changed to int June 2026;
+    #   str() conversion handles both old string and new integer values).
+    # `direct_apply` (was `directapply`) = LinkedIn Easy Apply.
     # Salary fields are AI-extracted by the actor and may be absent.
+    # `external_apply_url` was removed June 2026 with no replacement; apply_url will be None.
+    # New name checked first with old name as fallback during the transition window.
     # _scalar() guards against fields that are arrays in JSON for multi-value records.
-    salary_min = _scalar(item.get("ai_salary_minvalue"))
-    salary_max = _scalar(item.get("ai_salary_maxvalue"))
+    salary_min = _scalar(item.get("ai_salary_min_value") or item.get("ai_salary_minvalue"))
+    salary_max = _scalar(item.get("ai_salary_max_value") or item.get("ai_salary_maxvalue"))
     return {
         "job_id": str(_scalar(item.get("linkedin_id")) or "").strip(),
         "title": _scalar(item.get("title")),
@@ -445,7 +448,9 @@ def extract_fields_linkedin(item: dict) -> dict:
         "posted_date": _scalar(item.get("date_posted")),
         "job_url": f"https://www.linkedin.com/jobs/view/{_scalar(item.get('linkedin_id'))}",
         "apply_url": _scalar(item.get("external_apply_url")) or None,
-        "easy_apply": 1 if str(_scalar(item.get("directapply", "")) or "").lower() == "true" else 0,
+        "easy_apply": 1 if str(
+            _scalar(item.get("direct_apply") or item.get("directapply") or "") or ""
+        ).lower() == "true" else 0,
         "source": "linkedin",
         "salary_min": int(salary_min) if salary_min not in (None, "", "null") else None,
         "salary_max": int(salary_max) if salary_max not in (None, "", "null") else None,
@@ -460,8 +465,8 @@ def extract_fields_careersite(item: dict) -> dict:
     # any collision with numeric LinkedIn IDs stored in the same table.
     # `url` is both the canonical job page and the apply URL (career sites have no
     # separate apply link). Easy Apply is not applicable.
-    salary_min = _scalar(item.get("ai_salary_minvalue"))
-    salary_max = _scalar(item.get("ai_salary_maxvalue"))
+    salary_min = _scalar(item.get("ai_salary_min_value") or item.get("ai_salary_minvalue"))
+    salary_max = _scalar(item.get("ai_salary_max_value") or item.get("ai_salary_maxvalue"))
     raw_id  = str(_scalar(item.get("id")) or "").strip()
     job_url = _scalar(item.get("url")) or None
     return {

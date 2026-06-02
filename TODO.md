@@ -1,5 +1,15 @@
 # To-Do
 
+## Clean up upstream API field-name fallbacks (after 2026-06-08)
+
+`ingest.py` currently checks new field names first with old names as fallbacks
+(e.g. `ai_salary_min_value` or `ai_salary_minvalue`) to survive the
+`fantastic-jobs/advanced-linkedin-job-search-api` breaking change on 2026-06-08.
+The legacy build is fully removed 2026-06-22. Once the dust has settled and
+ingestion is confirmed working with the new build, remove the old-name fallbacks
+to keep the code tidy. Affects `is_expired()` and both `extract_fields_*` functions
+in `ingest.py`.
+
 ## Pre-ingest database backup
 
 Before any ingest run that will actually do work (i.e. at least one task has pending runs),

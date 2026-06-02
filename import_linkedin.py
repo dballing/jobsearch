@@ -434,7 +434,7 @@ def main() -> None:
                 "labels":       labels_json,
                 "status":       effective_status,
                 "canonical_id": canon_id,
-                "applied_at":   datetime.now(timezone.utc).date().isoformat() if effective_status in applied_statuses else None,
+                "applied_at":   datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if effective_status in applied_statuses else None,
                 "raw":          json.dumps(item, ensure_ascii=False),
             },
         )
