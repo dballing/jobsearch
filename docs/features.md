@@ -116,7 +116,7 @@ Add a `[viability]` section to `config.toml` — see [Configuration → Viabilit
 
 Or chain after ingestion in cron:
 ```
-0 1,5,9,13,17,21 * * * /path/to/ingest.sh && /path/to/rescore_viability.sh
+0 1,5,9,13,17,21 * * * /path/to/jobsearch/ingest.sh >> /path/to/jobsearch/ingest.log 2>&1 && /path/to/jobsearch/rescore_viability.sh >> /path/to/jobsearch/viability.log 2>&1
 ```
 
 | Flag | Effect |

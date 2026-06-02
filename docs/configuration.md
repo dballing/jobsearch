@@ -30,6 +30,7 @@ name  = "my-job-search-dc-dmv"   # Apify task name (short form)
 label = "dc"                      # label key stored in the database
 ```
 
+
 Multiple tasks can share the same `label` — they contribute to the same filter group. Use the Source filter in the UI to distinguish LinkedIn from career-site results within a label.
 
 ### Per-task keys
@@ -48,10 +49,10 @@ Multiple tasks can share the same `label` — they contribute to the same filter
 
 Instead of creating one Apify task per search variation, create a single generic task and drive the label from per-schedule input overrides. This reduces maintenance: add the task N times to one schedule, each entry with its own bespoke input overrides.
 
-**Apify schedule input override (per entry):**
+**(Sample) Apify schedule input override (per entry):**
 ```json
 {
-  "locationSearch": [", Virginia, United States", "Washington, District of Columbia, United States"],
+  "locationSearch": ["Virginia, United States", "Washington, District of Columbia, United States"],
   "locationExclusionSearch": ["West Virginia, United States"],
   "_jobsearch_label": "dc"
 }

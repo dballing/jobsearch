@@ -119,7 +119,7 @@ Open [http://127.0.0.1:5000](http://127.0.0.1:5000).
 ## Scheduled ingestion (cron)
 
 ```
-0 1,5,9,13,17,21 * * * /path/to/jobsearch/ingest.sh >> /path/to/jobsearch/ingest.log 2>&1
+0 1,5,9,13,17,21 * * * /path/to/jobsearch/ingest.sh >> /path/to/jobsearch/ingest.log 2>&1 && /path/to/jobsearch/rescore_viability.sh >> /path/to/jobsearch/viability.log 2>&1
 ```
 
 Use the absolute path to `ingest.sh`. The script changes into its own directory, so relative paths in `config.toml` work correctly.
