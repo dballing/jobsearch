@@ -11,9 +11,7 @@ A personal tool for ingesting job search results from multiple sources (via Apif
 1. You configure one or more Apify Actor tasks using either:
    - **[fantastic-jobs/advanced-linkedin-job-search-api](https://apify.com/fantastic-jobs/advanced-linkedin-job-search-api)** — LinkedIn job postings (default)
    - **[fantastic-jobs/career-site-job-listing-api](https://apify.com/fantastic-jobs/career-site-job-listing-api)** — career-site postings from 54+ ATS platforms (Greenhouse, Lever, Workday, Ashby, etc.)
-
-   Each task represents a search (e.g., by geography, by title, by ATS platform). Multiple tasks can share a label to group results in the UI.
-2. A cron job runs `ingest.sh` on a schedule, fetching the latest results from each task and inserting new jobs into a local SQLite database. Duplicate postings (same job ID) are detected and updated rather than re-inserted. Jobs that appear in multiple task runs accumulate labels from each.
+2. A cron job runs `ingest.sh` on a schedule, fetching the latest results and inserting new jobs into a local SQLite database.
 3. You run the Flask app locally to browse, filter, sort, and track your application status for each job.
 
 ---
@@ -50,21 +48,16 @@ Rather than running the Actor directly, create a **Task** for each search so you
 
 1. In the Actor page, click **Create new Task**.
 2. Give the task a descriptive name, e.g. `my-job-search-dc-dmv`.
-3. Configure your search parameters. Some common fields:
-   - **Keywords** — job title(s) or skills
-   - **Location** — geographic area, or leave blank for remote-only searches
-   - **Date posted** — how far back to look; see note below
-   - **Job type**, **Experience level**, **Remote/on-site**, etc.
-4. Save the task.
-5. Repeat for each additional search.
+3. Configure your search parameters (keywords, location, date range, job type, etc.).
+4. Save the task. Repeat for each additional search.
 
-> **Note on date range:** Both actors support four windows: **1h**, **24h**, **7d**, and **6m** (all active jobs). The first three return full job descriptions; the 6-month window does not — you'll get titles and companies but empty descriptions.
+> **Note on date range:** Both actors support four windows: **1h**, **24h**, **7d**, and **6m** (all active jobs). The first three return full job descriptions; the 6-month window does not.
 
-> **Note:** The task name you give in the Apify Console is what you'll use in `config.toml`. The format expected is the short name only (e.g., `my-job-search-dc-dmv`), not the full `username~taskname` form — the ingestion script constructs that automatically.
+> **Note:** Use the short task name (e.g. `my-job-search-dc-dmv`) in `config.toml` — the ingestion script adds `username~` automatically.
 
 ### 5. Schedule each task
 
-In each task's page, click the **Schedules** tab and create a schedule. A cron expression like `0 1,5,9,13,17,21 * * *` runs the task every 4 hours. Adjust to your preference.
+In each task's **Schedules** tab, create a schedule. `0 1,5,9,13,17,21 * * *` runs every 4 hours.
 
 ---
 
@@ -85,113 +78,32 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-`ingest.sh` and `run_app.sh` require the `.venv` to exist and will exit with an error if it does not — run this step before scheduling cron or starting the app.
-
 ### 3. Create `config.toml`
-
-Copy the example and fill in your details:
 
 ```bash
 cp config.toml.example config.toml
 ```
 
-Edit `config.toml`:
+Minimal working config:
 
 ```toml
-api_token = "apify_api_xxxxxxxxxxxxxxxxxxxx"   # your Apify API token
-username  = "your-apify-username"              # your Apify username
-db_path   = "jobs.db"                          # path to SQLite database
+api_token = "apify_api_xxxxxxxxxxxxxxxxxxxx"
+username  = "your-apify-username"
 
-# Map label keys to display names shown in the UI filter bar.
-# If a label has no entry here it is shown uppercased.
 [labels]
 dc = "DC/DMV"
-nc = "NC"
 
 [[tasks]]
-name  = "my-job-search-dc-dmv"      # Apify task name
-label = "dc"                         # short key stored in the database
-
-[[tasks]]
-name  = "my-job-search-dc-dmv-career-sites"
-label = "dc"                         # same label — joins the DC/DMV filter group
-actor = "careersite"                 # use fantastic-jobs/career-site-job-listing-api
-# exclude_ats_duplicates = true      # skip results already covered by the career-site task
-
-[[tasks]]
-name  = "my-job-search-north-carolina"
-label = "nc"
+name  = "my-job-search-dc-dmv"
+label = "dc"
 ```
 
-Multiple tasks can share the same `label` — they contribute to the same filter group and their jobs accumulate that label. Labels represent the search dimension (geography, role type, etc.); use the Source filter in the UI to distinguish LinkedIn from career-site results within a label. The `[labels]` table maps each label key to a display name; any label without an entry is shown uppercased.
-
-Per-task optional keys:
-
-- `label_from_input` — instead of a hardcoded `label`, read the label from a field in each run's input. This lets you use a single generic Apify task added multiple times to a schedule, each entry with its own input overrides and label. See [Generic tasks with per-schedule labels](#generic-tasks-with-per-schedule-labels) below.
-- `actor` — `"linkedin"` (default) or `"careersite"`. Set to `"careersite"` for tasks that use `fantastic-jobs/career-site-job-listing-api`. Career-site jobs are stored with a `cs_` prefix on their IDs to avoid collision with LinkedIn job IDs.
-- `exclude_ats_duplicates` — `true` to skip LinkedIn results that the actor has flagged as duplicates of career-site postings. Useful when running both a LinkedIn and a career-site task for the same geography to avoid double-ingesting the same job. Skipped items are counted and reported in the ingestion log; in a steady state you'd expect the LinkedIn skip count to roughly equal the career-site insert count for the same run window.
-- `reset_on_change` — overrides the global `reset_on_change` default for this task. See global keys below.
-- `fuzzy_dedup` — overrides the global `fuzzy_dedup` default for this task. See global keys below.
-
-Global optional keys (top-level, not inside `[[tasks]]`):
-
-- `reset_on_change` — `true` (default). Reset `skipped` jobs back to `new` if their description changes on a subsequent run. Set to `false` for tasks where job posters frequently make minor edits to re-surface listings, to avoid spurious resets. Per-task `reset_on_change` overrides this.
-- `fuzzy_dedup` — `true` (default). Master switch: enables near-duplicate detection for all tasks. A per-task `fuzzy_dedup` key overrides this for that task, so you can opt individual tasks out (or in).
-- `fuzzy_desc_threshold` — float between 0 and 1 (default: `0.85`). Minimum description similarity to consider two jobs near-duplicates. Only takes effect when fuzzy dedup is enabled for at least one task.
-- `fuzzy_title_threshold` — float between 0 and 1 (default: `0.6`). Minimum title similarity used as a fast pre-filter before the (more expensive) description comparison. Lower this if you expect near-duplicates with substantially reworded titles; raise it to tighten the filter.
-- `inherit_canonical_status` — `true` (default). When a new job is linked as a duplicate of an existing canonical job, inherit the canonical's current status (e.g. if you already marked it `skipped`, the duplicate starts as `skipped` too). Set to `false` to always start duplicates as `new`.
-
-`config.toml` is gitignored so your API token is never committed.
-
-#### Generic tasks with per-schedule labels
-
-Instead of creating one Apify task per search variation (per geographic region, for example), you can create a single generic task and drive the label from per-schedule input overrides. This reduces maintenance: you can craft one generic task per actor (`linkedin` or `careersite`) and add those tasks N times into your schedule, each with its own bespoke override values, as well as the label telling `jobsearch` which overrides are contained in which runs.
-
-**How it works:**
-
-1. Create one Apify task per actor type (e.g. `my-generic-linkedin`, `my-generic-careersite`) without any variation-specific input.
-2. Create an Apify schedule. Add each task to the schedule as many times as you have variations, giving each entry its own **Input overrides** containing the variation-specific values plus the label field:
-   ```json
-   {
-     "locationSearch": [", Virginia, United States", "Washington, District of Columbia, United States"],
-     "locationExclusionSearch": ["West Virginia, United States"],
-     "_jobsearch_label": "dc"
-   }
-   ```
-3. In `config.toml`, set `label_from_input` to the field name and `label` as a fallback:
-   ```toml
-   [[tasks]]
-   name             = "my-generic-linkedin"
-   label            = "unknown"
-   label_from_input = "_jobsearch_label"
-
-   [[tasks]]
-   name             = "my-generic-careersite"
-   label            = "unknown"
-   label_from_input = "_jobsearch_label"
-   actor            = "careersite"
-   ```
-
-The ingest script fetches the INPUT record from each run's key-value store to resolve the label. The field name (`_jobsearch_label`) is passed through to the actor but ignored by it — Apify actors silently discard unknown input fields. The per-task `label` is used as a fallback if the field is absent. Existing tasks with a hardcoded `label` and no `label_from_input` are unaffected.
+→ See **[Configuration reference](docs/configuration.md)** for all available options.
 
 ### 4. Run the first ingestion
 
 ```bash
 ./ingest.sh
-```
-
-This fetches the latest results from each Apify task. You should see output like:
-
-```
-Starting ingestion at 2026-05-22 14:00:00 UTC
-Fetching runs for 'my-job-search-dc-dmv' (label: dc, actor: linkedin) ...
-  Run 2026-05-22 14:00: 312 items retrieved
-    291 inserted, 14 updated, 7 already existed, 82 ATS duplicates skipped
-Fetching runs for 'my-job-search-dc-dmv-career-sites' (label: dc, actor: careersite) ...
-  Run 2026-05-22 14:00: 88 items retrieved
-    82 inserted, 4 updated, 2 already existed
-Done in 5.1s. 373 inserted, 18 updated, 9 unchanged, 82 ATS duplicates skipped.
-
 ```
 
 ### 5. Start the web UI
@@ -200,251 +112,24 @@ Done in 5.1s. 373 inserted, 18 updated, 9 unchanged, 82 ATS duplicates skipped.
 ./run_app.sh
 ```
 
-Then open [http://127.0.0.1:5000](http://127.0.0.1:5000) in your browser.
+Open [http://127.0.0.1:5000](http://127.0.0.1:5000).
 
 ---
 
 ## Scheduled ingestion (cron)
 
-To keep the database current automatically, add a cron job that runs `ingest.sh`. Edit your crontab with `crontab -e`:
-
 ```
 0 1,5,9,13,17,21 * * * /path/to/jobsearch/ingest.sh >> /path/to/jobsearch/ingest.log 2>&1
 ```
 
-Use the absolute path to `ingest.sh`. The script changes into its own directory before running, so relative paths in `config.toml` (e.g., `db_path = "jobs.db"`) work correctly.
+Use the absolute path to `ingest.sh`. The script changes into its own directory, so relative paths in `config.toml` work correctly.
 
 ---
 
-## Using the web UI
+## Documentation
 
-### Filtering
-
-- **Label**: filter to a specific search dimension (geography, role type, etc.), or show all.
-- **Source**: filter to LinkedIn or career-site results only. Appears automatically when both sources are present in the database.
-- **Status**:
-  - *New* — jobs not yet looked at
-  - *Reviewing* — jobs you've opened but haven't decided on yet
-  - *Active* — jobs not yet skipped, rejected, withdrawn, ghosted, or closed (default)
-  - *Applied* — jobs currently in progress (applied, interviewing, offered, ghosted)
-  - *All* — everything in the database
-- **View**:
-  - *Grouped* — near-duplicate jobs (linked via fuzzy dedup) are collapsed into a single row with expandable sub-rows; each un-linked job is its own row (default)
-  - *Flat* — one row per posting
-
-### Sorting
-
-Click any column header to sort. Click again to reverse. Click a third time to return to the default sort. Sorting is case-insensitive.
-
-### Tracking status
-
-Each job has a status dropdown. Available statuses:
-
-| Status | Meaning |
-|--------|---------|
-| `new` | Freshly ingested, not yet looked at |
-| `skipped` | Not a fit — skip for now (set manually) |
-| `autoskipped` | Automatically skipped by viability scoring (see `auto_skip` below) |
-| `reviewing` | You've opened it but haven't decided yet — needs another look |
-| `applied` | Application submitted |
-| `rejected` | Rejected by employer |
-| `ghosted` | Applied but never heard back — effectively closed from your side |
-| `interviewing` | Active interview process |
-| `offered` | Offer received |
-| `withdrawn` | You withdrew your application |
-| `closed` | Posting expired or no longer accepting applications |
-
-In grouped view, if all locations for a job share the same status, a group-level dropdown lets you update all of them at once.
-
-> **Tip:** If a job you've marked `skipped` (or that was auto-set to `autoskipped`) has its description updated by the employer, it will automatically be reset to `new` on the next ingestion run so you can take another look.
-
-### Previewing job descriptions
-
-Click the card icon (&#9783;) next to any job title to open a side panel with the full job description. The **View Job** button at the bottom links to the original posting.
-
----
-
-## Re-ingestion behavior
-
-When a job already exists in the database and is seen again in a subsequent run:
-
-- All mutable fields (title, company, location, salary, description) are refreshed with the latest data from Apify.
-- The `first_seen` timestamp is preserved.
-- If the job appears under a new label (from a different task), that label is added to its label list.
-- If the posting has expired (`date_validthrough` in the past) and the status is `new` or `reviewing`, the status is automatically set to `closed`.
-- If the job description changed and the status was `skipped`, the status is reset to `new` (unless `reset_on_change = false` for that task). Jobs reset this way display a ↻ icon next to the title as a visual indicator that they are "new again" rather than freshly ingested. The icon clears the next time you manually change the status.
-- If `auto_ghost = true`, any job with status `applied` whose `applied_at` date is at least `auto_ghost_days` (default: 180) days in the past is automatically moved to `ghosted`. Jobs in `interviewing` or other statuses are not affected — those warrant a deliberate human decision. Set these in `config.toml`:
-  ```toml
-  auto_ghost      = true
-  auto_ghost_days = 60    # days since application before auto-ghosting
-  ```
-
----
-
-## Fuzzy near-duplicate detection
-
-When the same job is posted on multiple platforms (LinkedIn and a career-site ATS), or when an employer posts nearly identical jobs under slightly different titles, you end up with duplicate entries in the database. The fuzzy dedup feature detects and groups these automatically.
-
-### How it works
-
-Enable it per task with `fuzzy_dedup = true`. On each new job ingested, the script:
-
-1. Pre-filters all existing canonical jobs by title similarity > 60 % (fast upper-bound check).
-2. Computes a full `SequenceMatcher` similarity ratio on the job description.
-3. If the ratio meets `fuzzy_desc_threshold` (default 0.85), the new job is recorded as a duplicate of the existing canonical job — its `canonical_id` is set to the canonical's `job_id`.
-
-No company filter is applied — the same job often appears under different company names when posted by recruiters or aggregators. Near-duplicate detection is cross-task: a new LinkedIn job is compared against all existing canonical jobs in the database, not just jobs from the same task.
-
-### UI behavior
-
-Fuzzy-linked jobs are **grouped together** in the Grouped view, exactly like multi-location postings. The group header shows:
-
-- **"N similar postings"** if the canonical and duplicate(s) have different titles or companies.
-- **"N postings of this title by this company"** if they share the same title and company (e.g. same job across multiple locations with near-identical descriptions).
-
-Expand the group to see each posting individually with its own status dropdown and description preview.
-
-### Status inheritance
-
-When `inherit_canonical_status = true` (default), a newly ingested duplicate starts with the same status as its canonical job. If you already marked the LinkedIn version as `skipped`, the career-site version starts as `skipped` too, without any manual action.
-
-### Notes
-
-- Only jobs with `canonical_id IS NULL` (i.e. canonical jobs, not already-linked duplicates) are considered as potential matches, preventing chains.
-- Fuzzy matching is CPU-bound. For large ingestion runs with many candidates per company, it can add noticeable time. Lower `fuzzy_desc_threshold` to cast a wider net; raise it to be more conservative.
-- Existing jobs in the database before `fuzzy_dedup` was enabled are not retroactively linked — only new or re-ingested jobs are checked.
-
-### Manual linking
-
-When fuzzy matching doesn't catch two postings you can see are the same role, you can link them manually. Each job row has a **🔗 link icon** (next to the preview button). Clicking it opens a search dialog:
-
-1. Type a title or company name to search for the canonical job. Multiple words narrow results (all must match); wrap a phrase in quotes for an exact-phrase match (e.g. `"senior tpm" zillow`).
-2. Select the match from the results.
-3. Click **Link to selected**.
-
-The page reloads and the two jobs appear as a single grouped row.
-
-If the job being linked has a `new` or `reviewing` status, it automatically inherits the canonical's status on link (same behaviour as `inherit_canonical_status` during ingest).
-
-If you select a job that is itself already linked to a canonical, your job is linked to that root directly — no chains are created.
-
-To **unlink** a job, click its 🔗 icon (shown in blue when a link is active) and click **Unlink** in the dialog.
-
----
-
-## Viability scoring
-
-`rescore_viability.sh` uses the Anthropic API to rate each job posting as **high**, **medium**, or **low** viability for you as a candidate. Ratings and a one-sentence reason are stored in the database and shown as color-coded badges in the UI.
-
-### Setup
-
-1. Add a `[viability]` section to `config.toml`:
-   ```toml
-   [viability]
-   enabled = true
-   api_key = "sk-ant-xxxxxxxxxxxxxxxxxxxx"   # or set ANTHROPIC_API_KEY env var instead
-   # model = "claude-haiku-4-5"              # optional, this is the default
-   prompt = """
-   I am a senior software engineer with 12 years of Python and cloud infrastructure
-   experience (AWS/GCP). I am looking for IC or tech-lead roles at Series A–C startups
-   or mid-size companies. I will not consider roles that are primarily Java, require
-   relocation, or involve more than 10% travel.
-   """
-   ```
-2. Add `anthropic` to your venv: `pip install anthropic` (or `pip install -r requirements.txt` after the next pull).
-
-### Running
-
-```bash
-./rescore_viability.sh
-```
-
-Or chain it after ingestion in your cron entry:
-
-```
-0 1,5,9,13,17,21 * * * /path/to/jobsearch/ingest.sh && /path/to/jobsearch/rescore_viability.sh
-```
-
-Available flags:
-
-| Flag | Effect |
-|------|--------|
-| `--dry-run` | Show how many jobs would be scored without scoring them |
-| `--force` | Rescore all matching jobs even if their hash already matches the current prompt |
-| `--all` | Also score closed/ghosted jobs (default: exclude them) |
-| `--config PATH` | Use a different config file |
-
-### How it works
-
-- Each job is scored in a single Anthropic API call. The candidate description (your `prompt`) is sent as a cached system prompt, so only the first call in a session pays full token cost — subsequent calls reuse the cache.
-- A SHA-256 hash of the prompt is stored alongside each score. On subsequent runs, only jobs with a missing or stale hash are re-scored. Change your `prompt` and re-run to update all scores.
-- By default, closed, ghosted, and skipped jobs are excluded (they're not worth paying to score). Use `--all` to include them.
-
-### Auto-skip
-
-Once you have confidence in your viability prompt, you can enable automatic skipping of low (or low+medium) scoring jobs. Add to your `[viability]` config:
-
-```toml
-auto_skip            = true   # default: false
-auto_skip_confidence = "low"  # "low" (only low) or "medium" (low + medium)
-```
-
-When enabled, any `new` or `reviewing` job that scores at or below the threshold is automatically set to `autoskipped` after rescoring. This status is functionally identical to `skipped` (excluded from the Active filter, subject to `reset_on_change`) but is visually and historically distinguishable from a manually-set skip. The rescore summary line reports how many were auto-skipped.
-
-### UI
-
-Once any jobs are scored, the UI shows:
-
-- A **Viability** column with color-coded badges: <span style="color:green">high</span> · <span style="color:#856404">medium</span> · <span style="color:red">low</span>. Hover a badge to see the one-sentence reason.
-- A **Viability filter** in the filter bar: All · High · Medium · Low · Unscored.
-- The viability badge and reason also appear in the job description preview panel (offcanvas).
-
----
-
-## Importing existing applications
-
-If you were already tracking LinkedIn applications outside this tool, `import_linkedin.sh` lets you bulk-import them by URL.
-
-```bash
-./import_linkedin.sh --status applied \
-  "https://www.linkedin.com/jobs/view/1234567890" \
-  "https://www.linkedin.com/jobs/view/9876543210"
-```
-
-URLs can also be piped via stdin:
-
-```bash
-cat my_urls.txt | ./import_linkedin.sh --status applied
-```
-
-The tool fetches job details from Apify (`apimaestro/linkedin-job-detail`), maps them to the database schema, and inserts the jobs with the specified status. Near-duplicate detection runs as normal so imports are linked to any matching jobs already in the database.
-
-Available flags:
-
-| Flag | Effect |
-|------|--------|
-| `--status STATUS` | Initial status for all imported jobs (default: `applied`) |
-| `--label LABEL` | Label key to apply (must exist in `[labels]` in config) |
-| `--dry-run` | Print what would be imported without writing anything |
-| `--debug` | Print the raw Apify response — useful if field mapping needs calibration |
-| `--config PATH` | Use a different config file |
-
-### Notes
-
-- **Dead postings**: If a LinkedIn job no longer exists, a stub record is created (URL + status only, no title/description) so the application remains trackable.
-- **Already in database**: If a URL was already ingested via a normal ingest run, its status is updated to the specified value.
-- **Location**: Imported jobs store a single location string from the Apify actor. The multi-location tooltip feature does not apply to imported jobs.
-- **Salary**: The actor may return salary as a range string (e.g. `$120,000 – $150,000`); the tool parses this into `salary_min`/`salary_max`. Hourly rates (values under $1,000) are converted to annual (× 2,080).
-
----
-
-## Known limitations
-
-### Displayed location may not match your search geography
-
-Each job posting can include multiple locations. The **Location** column in the UI shows only the first location in that list (`locations[0]`), which is whatever order Apify received them in. This means a posting that matched your "Virginia" search filter might display "Billund, Region of South Denmark, Denmark" if that happened to be the first location in the raw data.
-
-There is no reliable programmatic way to sort or prefer locations without knowing which one triggered the match. If a location looks wrong, hover over it to see the full list of locations for that posting, or click through to the original posting.
+- **[Configuration reference](docs/configuration.md)** — all `config.toml` keys, tasks, labels, viability config, auto-ghost, generic tasks with per-schedule labels
+- **[Features](docs/features.md)** — web UI, status reference, fuzzy dedup, manual linking, viability scoring, auto-skip, importing existing applications, known limitations
 
 ---
 
@@ -467,6 +152,8 @@ jobsearch/
 ├── jobs.db                  # SQLite database (gitignored)
 ├── TODO.md                  # known open issues and future ideas
 ├── docs/
+│   ├── configuration.md     # full config reference
+│   ├── features.md          # feature documentation
 │   └── screenshot.png       # UI screenshot (used in README)
 └── templates/
     ├── base.html            # base layout, navbar, offcanvas preview, stats modal
