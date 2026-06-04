@@ -44,9 +44,11 @@ def score_job(
     The system prompt is marked for prompt caching so repeated calls within
     the same session (same candidate description) only pay full token cost once.
     """
-    title       = (job.get("title")           or "(no title)").strip()
-    company     = (job.get("company")         or "(unknown company)").strip()
-    description = (job.get("job_description") or "").strip()[:4000]
+    title          = (job.get("title")           or "(no title)").strip()
+    company_raw    = (job.get("company")         or "(unknown company)").strip()
+    company_actual = (job.get("company_actual")  or "").strip()
+    company        = f"{company_actual} (posted via {company_raw})" if company_actual and company_actual != company_raw else company_raw
+    description    = (job.get("job_description") or "").strip()[:4000]
     sal_min, sal_max = job.get("salary_min"), job.get("salary_max")
     if sal_min and sal_max:
         salary_line = f"Salary: ${sal_min:,} – ${sal_max:,}"

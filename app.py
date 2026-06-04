@@ -115,6 +115,8 @@ GROUPED_HEADERS = """
            MAX(title)           AS title_max,
            MIN(company)         AS company,
            MAX(company)         AS company_max,
+           MIN(COALESCE(company_actual, company)) AS company_eff,
+           MAX(COALESCE(company_actual, company)) AS company_eff_max,
            COUNT(*)             AS location_count,
            MIN(first_seen)      AS first_seen,
            MIN(posted_date)     AS posted_date,
@@ -196,6 +198,10 @@ def get_db() -> sqlite3.Connection:
             g.db.execute("ALTER TABLE jobs ADD COLUMN history TEXT NOT NULL DEFAULT '[]'")
             g.db.commit()
             bootstrap_history(g.db)
+        cols = [row[1] for row in g.db.execute("PRAGMA table_info(jobs)").fetchall()]
+        if "company_actual" not in cols:
+            g.db.execute("ALTER TABLE jobs ADD COLUMN company_actual TEXT")
+            g.db.commit()
     return g.db
 
 
@@ -245,8 +251,8 @@ def build_where(label: str, status_filter: str, q: str = "", source: str = "",
         conditions.append("viability = ?")
         params.append(viability)
     if q:
-        conditions.append("(title LIKE ? OR company LIKE ?)")
-        params.extend([f"%{q}%", f"%{q}%"])
+        conditions.append("(title LIKE ? OR company LIKE ? OR company_actual LIKE ?)")
+        params.extend([f"%{q}%", f"%{q}%", f"%{q}%"])
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     return where, params
 
@@ -269,6 +275,8 @@ def decode_labels(raw: str | None) -> list[str]:
 def process_job_row(row: sqlite3.Row | dict) -> dict:
     j = dict(row)
     j["labels"]           = decode_labels(j.get("labels"))
+    j["company_actual"]   = j.get("company_actual")
+    j["company_display"]  = j.get("company_actual") or j.get("company") or ""
     j["status_color"]     = STATUS_COLORS.get(j.get("status", "new"), "secondary")
     j["salary_display"]   = format_salary(j)
     j["source_display"]   = SOURCE_NAMES.get(j.get("source", "linkedin"), j.get("source", ""))
@@ -330,8 +338,8 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
     is_fuzzy_group = h["location_count"] > 1
     multi          = is_fuzzy_group
     # Title/company may vary within a fuzzy group (different titles from different sources)
-    title   = h["title"] if h["title"] == h.get("title_max")   else GROUP_VARIED
-    company = h["company"] if h["company"] == h.get("company_max") else GROUP_VARIED
+    title   = h["title"] if h["title"] == h.get("title_max")         else GROUP_VARIED
+    company = h["company_eff"] if h["company_eff"] == h.get("company_eff_max") else GROUP_VARIED
     sub_statuses      = [s.get("status", "new") for s in sub_rows]
     unique_statuses   = set(sub_statuses)
     viability_vals         = [s.get("viability") for s in sub_rows]
@@ -358,6 +366,7 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
     job = {
         "title":            title,
         "company":          company,
+        "company_display":  company,
         "location_count":   h["location_count"],
         "multi":            multi,
         "is_fuzzy_group":   is_fuzzy_group,
@@ -367,6 +376,7 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
         "group_source":     group_source,
         "group_source_display": SOURCE_NAMES.get(group_source, "") if group_source else None,
         "sub_job_ids":      [s["job_id"] for s in sub_rows if s.get("job_id")],
+        "has_company_override":    any(s.get("company_actual") for s in sub_rows),
         "group_viability":         group_viability,
         "group_viability_color":   group_viability_color,
         "group_viability_stale":   group_viability_stale,
@@ -402,6 +412,9 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
             "viability_reason": s.get("viability_reason"),
             "viability_color":  s.get("viability_color", ""),
             "viability_stale":  s.get("viability_stale", False),
+            "company":          s.get("company", ""),
+            "company_actual":   s.get("company_actual"),
+            "company_display":  s.get("company_display", ""),
         })
     return job
 
@@ -620,6 +633,7 @@ def get_job(job_id: str):
         "job_id":           job["job_id"],
         "title":            job["title"],
         "company":          job["company"],
+        "company_actual":   job.get("company_actual"),
         "location":         job["location"],
         "job_url":          job["job_url"],
         "apply_url":        job["apply_url"],
@@ -693,6 +707,21 @@ def update_status(job_id: str):
     return "", 204
 
 
+@app.route("/job/<job_id>/company_actual", methods=["POST"])
+def set_company_actual(job_id: str):
+    value = request.form.get("company_actual", "").strip() or None
+    db = get_db()
+    row = db.execute("SELECT company_actual FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    if not row:
+        return "Not found", 404
+    old = row["company_actual"]
+    db.execute("UPDATE jobs SET company_actual = ? WHERE job_id = ?", (value, job_id))
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    append_history(db, job_id, {"ts": ts, "event": "company_actual", "from": old, "to": value})
+    db.commit()
+    return "", 204
+
+
 @app.route("/jobs/autocomplete")
 def jobs_autocomplete():
     q       = request.args.get("q", "").strip()
@@ -710,9 +739,9 @@ def jobs_autocomplete():
         return []
     # Each token must appear in title OR company (AND across tokens).
     token_clauses = " AND ".join(
-        "(j.title LIKE ? OR j.company LIKE ?)" for _ in tokens
+        "(j.title LIKE ? OR j.company LIKE ? OR COALESCE(j.company_actual, j.company) LIKE ?)" for _ in tokens
     )
-    token_params  = [p for t in tokens for p in (f"%{t}%", f"%{t}%")]
+    token_params  = [p for t in tokens for p in (f"%{t}%", f"%{t}%", f"%{t}%")]
     rows = db.execute(
         f"""SELECT j.job_id, j.title, j.company, j.location, j.status, j.viability,
                    j.canonical_id,

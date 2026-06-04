@@ -44,6 +44,17 @@ Click the &#9783; icon next to any job title to open a side panel with the full 
 
 The preview panel also provides a **Cover Letter Prompt** button. Clicking it copies a ready-to-paste prompt to your clipboard containing the job title, company, location, salary (if known), and full description. Paste it directly into whatever AI chat session you use to generate cover letters — no manual copy-paste of the job description required. The button briefly flashes "✓ Copied!" to confirm the clipboard write succeeded.
 
+### Company name override
+
+When a job is posted by a third party (e.g. a job board or recruiting firm) rather than the actual employer, the ingested company name may reflect the posting agent rather than the hiring organization. To correct this, open the job preview and enter the real employer name in the **Actual company name** field below the meta bar, then press Save or Enter.
+
+- The override replaces the displayed company name in the table and preview panel. The original name is shown in muted italic as "(via Original Name)" in the preview.
+- In the main table, an asterisk (<sup>*</sup>) appears next to the company name when an override is active; hovering shows the original name.
+- Both the original and override names are searched when using the title/company search bar.
+- The cover letter prompt includes both names (e.g. "Company: Actual Co (advertised by Posting Agent)").
+- Viability scoring sends both names to the AI with the same "posted via" note.
+- The override is cleared by deleting the field contents and saving. The original ingested name is always preserved.
+
 ### Bulk-skip low-viability jobs
 
 When any `new` jobs on the current page have a `low` viability score, a **Skip N low & new** button appears in the filter bar. Clicking it confirms and sets all matching jobs on that page to `skipped` in one action.

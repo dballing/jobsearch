@@ -220,6 +220,8 @@
     bodyEl.innerHTML    = '<div class="text-center py-5"><div class="spinner-border text-secondary" role="status"></div></div>';
     linkEl.classList.add('d-none');
     document.getElementById('coverLetterBtn').classList.add('d-none');
+    const _prevEditor = document.getElementById('companyActualEditor');
+    if (_prevEditor) _prevEditor.remove();
     bootstrap.Offcanvas.getOrCreateInstance(panel).show();
 
     fetch('/job/' + jobId)
@@ -227,8 +229,11 @@
       .then(job => {
         const viabilityColors = {high: 'success', medium: 'warning', low: 'danger'};
         titleEl.textContent = job.title || '(no title)';
-        const metaParts = [job.company, job.location, job.salary_display || null]
-                           .filter(Boolean).map(escHtml).join(' · ');
+        const companyHtml = job.company_actual
+          ? `${escHtml(job.company_actual)} <span class="text-muted fst-italic" style="font-size:.85em">(via ${escHtml(job.company)})</span>`
+          : escHtml(job.company || '');
+        const metaParts = [companyHtml, job.location ? escHtml(job.location) : null, job.salary_display ? escHtml(job.salary_display) : null]
+                           .filter(Boolean).join(' · ');
         let metaHtml = `<div>${metaParts}</div>`;
         if (job.viability) {
           const vColor = viabilityColors[job.viability] || 'secondary';
@@ -254,7 +259,8 @@
             else if (e.event === 'rescore')    desc = `Rescored: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong>`;
             else if (e.event === 'refreshed')  desc = 'Description changed';
             else if (e.event === 'linked')     desc = `Linked to canonical`;
-            else if (e.event === 'unlinked')   desc = 'Unlinked from canonical';
+            else if (e.event === 'unlinked')        desc = 'Unlinked from canonical';
+            else if (e.event === 'company_actual')  desc = e.to ? `Company override set: <strong>${escHtml(e.to)}</strong>` : 'Company override cleared';
             else if (e.event === 'closed')     desc = 'Auto-closed (expired)';
             else desc = escHtml(e.event);
             return `<tr><td class="text-muted small text-nowrap pe-3">${escHtml(ts)}${apx}</td><td class="small">${desc}</td></tr>`;
@@ -262,6 +268,55 @@
           metaHtml += `<details class="mt-2"><summary class="text-muted small" style="cursor:pointer">History (${job.history.length})</summary><table class="mt-1 w-100">${rows}</table></details>`;
         }
         metaEl.innerHTML = metaHtml;
+
+        // Company override editor — injected below the meta bar
+        const existingEditor = document.getElementById('companyActualEditor');
+        if (existingEditor) existingEditor.remove();
+        const editorDiv = document.createElement('div');
+        editorDiv.id = 'companyActualEditor';
+        editorDiv.className = 'px-3 py-2 border-bottom d-flex align-items-center gap-2 small';
+        const inputEl = document.createElement('input');
+        inputEl.type = 'text';
+        inputEl.className = 'form-control form-control-sm';
+        inputEl.placeholder = 'Actual company name (if different)…';
+        inputEl.value = job.company_actual || '';
+        inputEl.style.maxWidth = '260px';
+        const saveBtn = document.createElement('button');
+        saveBtn.className = 'btn btn-sm btn-outline-primary';
+        saveBtn.textContent = 'Save';
+        const clearBtn = document.createElement('button');
+        clearBtn.className = 'btn btn-sm btn-outline-secondary' + (job.company_actual ? '' : ' d-none');
+        clearBtn.textContent = 'Clear';
+        const feedbackEl = document.createElement('span');
+        feedbackEl.className = 'text-success small';
+
+        async function saveCompanyActual(value) {
+          const body = new URLSearchParams({company_actual: value});
+          const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/company_actual`, {method: 'POST', body});
+          if (resp.ok) {
+            job.company_actual = value || null;
+            // Refresh the meta display
+            const updatedCompanyHtml = job.company_actual
+              ? `${escHtml(job.company_actual)} <span class="text-muted fst-italic" style="font-size:.85em">(via ${escHtml(job.company)})</span>`
+              : escHtml(job.company || '');
+            const updatedParts = [updatedCompanyHtml, job.location ? escHtml(job.location) : null, job.salary_display ? escHtml(job.salary_display) : null].filter(Boolean).join(' · ');
+            metaEl.querySelector('div').innerHTML = updatedParts;
+            clearBtn.classList.toggle('d-none', !job.company_actual);
+            feedbackEl.textContent = 'Saved!';
+            setTimeout(() => { feedbackEl.textContent = ''; }, 2000);
+          } else {
+            feedbackEl.className = 'text-danger small';
+            feedbackEl.textContent = 'Save failed.';
+          }
+        }
+
+        saveBtn.addEventListener('click', () => saveCompanyActual(inputEl.value.trim()));
+        clearBtn.addEventListener('click', () => { inputEl.value = ''; saveCompanyActual(''); });
+        inputEl.addEventListener('keydown', e => { if (e.key === 'Enter') saveBtn.click(); });
+
+        editorDiv.append(inputEl, saveBtn, clearBtn, feedbackEl);
+        metaEl.insertAdjacentElement('afterend', editorDiv);
+
         bodyEl.innerHTML = '<div class="job-description-text">' + renderDescription(job.job_description) + '</div>';
         if (job.job_url) {
           linkEl.href = job.job_url;
@@ -274,7 +329,9 @@
           const parts = [
             'Please write a cover letter for the following position using our established template and process.\n',
             `**Job Title:** ${job.title || '(no title)'}`,
-            `**Company:** ${job.company || '(unknown)'}`,
+            job.company_actual
+              ? `**Company:** ${job.company_actual} (advertised by ${job.company})`
+              : `**Company:** ${job.company || '(unknown)'}`,
             job.location ? `**Location:** ${job.location}` : null,
             job.salary_display ? `**Salary:** ${job.salary_display}` : null,
             '\n**Job Description:**',

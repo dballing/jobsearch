@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     viability_prompt_hash TEXT,
     applied_at            TEXT,
     history               TEXT NOT NULL DEFAULT '[]',
+    company_actual        TEXT,
     first_seen      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     raw             TEXT NOT NULL
 );
@@ -141,6 +142,10 @@ def open_db(path: str) -> sqlite3.Connection:
         conn.execute("ALTER TABLE jobs ADD COLUMN history TEXT NOT NULL DEFAULT '[]'")
         conn.commit()
         bootstrap_history(conn)
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
+    if "company_actual" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN company_actual TEXT")
+        conn.commit()
     return conn
 
 
