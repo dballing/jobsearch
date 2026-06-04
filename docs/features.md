@@ -40,6 +40,10 @@ In grouped view, if all postings in a group share the same status, a group-level
 
 Click the &#9783; icon next to any job title to open a side panel with the full description and application history. The **View Job** button links to the original posting.
 
+### Cover letter prompt
+
+The preview panel also provides a **Cover Letter Prompt** button. Clicking it copies a ready-to-paste prompt to your clipboard containing the job title, company, location, salary (if known), and full description. Paste it directly into whatever AI chat session you use to generate cover letters — no manual copy-paste of the job description required. The button briefly flashes "✓ Copied!" to confirm the clipboard write succeeded.
+
 ### Bulk-skip low-viability jobs
 
 When any `new` jobs on the current page have a `low` viability score, a **Skip N low & new** button appears in the filter bar. Clicking it confirms and sets all matching jobs on that page to `skipped` in one action.

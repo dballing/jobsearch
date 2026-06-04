@@ -87,9 +87,13 @@
     <div class="offcanvas-body d-flex flex-column p-0">
       <div id="jobPreviewMeta" class="px-3 py-2 bg-body-secondary border-bottom small text-body-secondary"></div>
       <div id="jobPreviewBody" class="flex-grow-1 overflow-auto px-3 py-3"></div>
-      <div class="px-3 py-2 border-top">
+      <div class="px-3 py-2 border-top d-flex gap-2 align-items-center">
         <a id="jobPreviewLink" href="#" target="_blank" rel="noopener"
            class="btn btn-sm btn-outline-primary d-none">View Job</a>
+        <button id="coverLetterBtn" class="btn btn-sm btn-outline-secondary d-none"
+                title="Copy cover letter prompt to clipboard">
+          <i class="bi bi-clipboard"></i> Cover Letter Prompt
+        </button>
       </div>
     </div>
   </div>
@@ -215,6 +219,7 @@
     metaEl.textContent  = '';
     bodyEl.innerHTML    = '<div class="text-center py-5"><div class="spinner-border text-secondary" role="status"></div></div>';
     linkEl.classList.add('d-none');
+    document.getElementById('coverLetterBtn').classList.add('d-none');
     bootstrap.Offcanvas.getOrCreateInstance(panel).show();
 
     fetch('/job/' + jobId)
@@ -262,6 +267,29 @@
           linkEl.href = job.job_url;
           linkEl.classList.remove('d-none');
         }
+        // Wire up the cover letter copy button
+        const clBtn = document.getElementById('coverLetterBtn');
+        clBtn.classList.remove('d-none');
+        clBtn.onclick = function() {
+          const parts = [
+            'Please write a cover letter for the following position using our established template and process.\n',
+            `**Job Title:** ${job.title || '(no title)'}`,
+            `**Company:** ${job.company || '(unknown)'}`,
+            job.location ? `**Location:** ${job.location}` : null,
+            job.salary_display ? `**Salary:** ${job.salary_display}` : null,
+            '\n**Job Description:**',
+            job.job_description || '(no description)',
+          ].filter(Boolean).join('\n');
+          navigator.clipboard.writeText(parts).then(() => {
+            const orig = clBtn.innerHTML;
+            clBtn.innerHTML = '<i class="bi bi-check-lg"></i> Copied!';
+            clBtn.classList.replace('btn-outline-secondary', 'btn-outline-success');
+            setTimeout(() => {
+              clBtn.innerHTML = orig;
+              clBtn.classList.replace('btn-outline-success', 'btn-outline-secondary');
+            }, 2000);
+          }).catch(() => alert('Copy failed — your browser may not support clipboard access.'));
+        };
       })
       .catch(() => {
         titleEl.textContent = 'Error';
