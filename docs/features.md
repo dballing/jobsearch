@@ -39,6 +39,8 @@ When grouping by **Employer**, sorting works on two independent axes: the **Comp
 
 Use the **⊞ columns** button in the filter bar to show or hide individual columns. Preferences are saved in `localStorage` per browser.
 
+The **Per page** dropdown sets how many rows are shown per page — 25 (default), 50, 100, 200, or **All** (everything on one page; handy for Ctrl-F, slower on large result sets). When grouping by employer it counts employer sections per page. Changing it preserves your current filters and sort.
+
 ### Status reference
 
 | Status | Meaning |

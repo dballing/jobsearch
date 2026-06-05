@@ -13,6 +13,7 @@
    link; cp carries the active exact-comp-range filter. #}
 {% set rt = return_to or none %}
 {% set cp = comp or none %}
+{% set pp = per_page if per_page != '25' else none %}
 
 {# ── Link-to-canonical modal ── #}
 <div class="modal fade" id="linkModal" tabindex="-1" aria-labelledby="linkModalLabel" aria-hidden="true">
@@ -279,6 +280,7 @@
     {% if source %}<input type="hidden" name="source" value="{{ source }}">{% endif %}
     {% if viability %}<input type="hidden" name="viability" value="{{ viability }}">{% endif %}
     {% if rt %}<input type="hidden" name="return_to" value="{{ rt }}">{% endif %}
+    {% if pp %}<input type="hidden" name="per_page" value="{{ pp }}">{% endif %}
     <input type="search" class="form-control form-control-sm" name="q"
            placeholder="Search title / company…" value="{{ q }}" style="width:220px">
     <button type="submit" class="btn btn-sm btn-outline-secondary">Search</button>
@@ -287,17 +289,17 @@
     {% if return_to %}
     <a href="{{ return_to }}" class="btn btn-sm btn-warning" title="Restore your filters and return to where you were">↩ Restore filters</a>
     {% elif q %}
-    <a href="{{ url_for('index', sort=sort, dir=direction, group_match=gm, group_employer=ge, emp_dir=ed, label=label or None, source=source or None, viability=viability or None, status_filter=status_filter) }}" class="btn btn-sm btn-outline-danger" title="Clear search">✕</a>
+    <a href="{{ url_for('index', sort=sort, dir=direction, group_match=gm, group_employer=ge, emp_dir=ed, per_page=pp, label=label or None, source=source or None, viability=viability or None, status_filter=status_filter) }}" class="btn btn-sm btn-outline-danger" title="Clear search">✕</a>
     {% endif %}
   </form>
 
   <div class="d-flex align-items-center gap-2">
     <span class="text-muted small">Label:</span>
     <div class="btn-group btn-group-sm" role="group">
-      <a href="{{ url_for('index', sort=sort, dir=direction, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, status_filter=status_filter, source=source or None, viability=viability or None, q=q or None) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, per_page=pp, status_filter=status_filter, source=source or None, viability=viability or None, q=q or None) }}"
          class="btn btn-{{ 'primary' if not label else 'outline-primary' }}">All</a>
       {% for r in labels %}
-      <a href="{{ url_for('index', sort=sort, dir=direction, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, status_filter=status_filter, source=source or None, viability=viability or None, label=r.value, q=q or None, page=1) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, per_page=pp, status_filter=status_filter, source=source or None, viability=viability or None, label=r.value, q=q or None, page=1) }}"
          class="btn btn-{{ 'primary' if label == r.value else 'outline-primary' }}">{{ r.label }}</a>
       {% endfor %}
     </div>
@@ -307,10 +309,10 @@
   <div class="d-flex align-items-center gap-2">
     <span class="text-muted small">Source:</span>
     <div class="btn-group btn-group-sm" role="group">
-      <a href="{{ url_for('index', sort=sort, dir=direction, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, label=label or None, status_filter=status_filter, viability=viability or None, q=q or None, page=1) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, per_page=pp, label=label or None, status_filter=status_filter, viability=viability or None, q=q or None, page=1) }}"
          class="btn btn-{{ 'info' if not source else 'outline-info' }}">All</a>
       {% for s in sources %}
-      <a href="{{ url_for('index', sort=sort, dir=direction, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, label=label or None, status_filter=status_filter, viability=viability or None, source=s.value, q=q or None, page=1) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, per_page=pp, label=label or None, status_filter=status_filter, viability=viability or None, source=s.value, q=q or None, page=1) }}"
          class="btn btn-{{ 'info' if source == s.value else 'outline-info' }}">{{ s.label }}</a>
       {% endfor %}
     </div>
@@ -321,15 +323,15 @@
   <div class="d-flex align-items-center gap-2">
     <span class="text-muted small">Viability:</span>
     <div class="btn-group btn-group-sm" role="group">
-      <a href="{{ url_for('index', sort=sort, dir=direction, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, label=label or None, status_filter=status_filter, source=source or None, q=q or None, page=1) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, per_page=pp, label=label or None, status_filter=status_filter, source=source or None, q=q or None, page=1) }}"
          class="btn btn-{{ 'secondary' if not viability else 'outline-secondary' }}">All</a>
-      <a href="{{ url_for('index', sort=sort, dir=direction, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, label=label or None, status_filter=status_filter, source=source or None, viability='high', q=q or None, page=1) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, per_page=pp, label=label or None, status_filter=status_filter, source=source or None, viability='high', q=q or None, page=1) }}"
          class="btn btn-{{ 'success' if viability == 'high' else 'outline-success' }}">High</a>
-      <a href="{{ url_for('index', sort=sort, dir=direction, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, label=label or None, status_filter=status_filter, source=source or None, viability='medium', q=q or None, page=1) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, per_page=pp, label=label or None, status_filter=status_filter, source=source or None, viability='medium', q=q or None, page=1) }}"
          class="btn btn-{{ 'warning' if viability == 'medium' else 'outline-warning' }}">Medium</a>
-      <a href="{{ url_for('index', sort=sort, dir=direction, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, label=label or None, status_filter=status_filter, source=source or None, viability='low', q=q or None, page=1) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, per_page=pp, label=label or None, status_filter=status_filter, source=source or None, viability='low', q=q or None, page=1) }}"
          class="btn btn-{{ 'danger' if viability == 'low' else 'outline-danger' }}">Low</a>
-      <a href="{{ url_for('index', sort=sort, dir=direction, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, label=label or None, status_filter=status_filter, source=source or None, viability='unscored', q=q or None, page=1) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, per_page=pp, label=label or None, status_filter=status_filter, source=source or None, viability='unscored', q=q or None, page=1) }}"
          class="btn btn-{{ 'secondary' if viability == 'unscored' else 'outline-secondary' }}">Unscored</a>
     </div>
   </div>
@@ -339,7 +341,7 @@
     <span class="text-muted small">Status:</span>
     <div class="btn-group btn-group-sm" role="group">
       {% for key, (sf_label, _) in status_filters.items() %}
-      <a href="{{ url_for('index', sort=sort, dir=direction, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, label=label or None, status_filter=key, source=source or None, viability=viability or None, q=q or None, page=1) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, per_page=pp, label=label or None, status_filter=key, source=source or None, viability=viability or None, q=q or None, page=1) }}"
          class="btn btn-{{ 'success' if status_filter == key else 'outline-success' }}">{{ sf_label }}</a>
       {% endfor %}
     </div>
@@ -348,10 +350,10 @@
   <div class="d-flex align-items-center gap-2">
     <span class="text-muted small">Group&nbsp;by:</span>
     <div class="btn-group btn-group-sm" role="group">
-      <a href="{{ url_for('index', sort=sort, dir=direction, label=label or None, status_filter=status_filter, source=source or None, viability=viability or None, group_match=('0' if group_match else '1'), group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, q=q or None, page=1) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, label=label or None, status_filter=status_filter, source=source or None, viability=viability or None, group_match=('0' if group_match else '1'), group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, per_page=pp, q=q or None, page=1) }}"
          class="btn btn-{{ 'secondary' if group_match else 'outline-secondary' }}"
          title="Collapse fuzzy-matched duplicate postings into one row">Matched-Jobs</a>
-      <a href="{{ url_for('index', sort=sort, dir=direction, label=label or None, status_filter=status_filter, source=source or None, viability=viability or None, group_match=gm, group_employer=('0' if group_employer else '1'), emp_dir=ed, return_to=rt, comp=cp, q=q or None, page=1) }}"
+      <a href="{{ url_for('index', sort=sort, dir=direction, label=label or None, status_filter=status_filter, source=source or None, viability=viability or None, group_match=gm, group_employer=('0' if group_employer else '1'), emp_dir=ed, return_to=rt, comp=cp, per_page=pp, q=q or None, page=1) }}"
          class="btn btn-{{ 'secondary' if group_employer else 'outline-secondary' }}"
          title="Group postings under their employer">Employer</a>
     </div>
@@ -364,6 +366,15 @@
       <i class="bi bi-layout-three-columns"></i>
     </button>
     <ul class="dropdown-menu" id="colPickerMenu" aria-labelledby="colPickerBtn"></ul>
+  </div>
+
+  <div class="d-flex align-items-center gap-1">
+    <span class="text-muted small">Per&nbsp;page:</span>
+    <select class="form-select form-select-sm" style="width:auto" onchange="setPerPage(this.value)" title="Rows per page">
+      {% for opt in per_page_options %}
+      <option value="{{ opt }}" {% if per_page == opt %}selected{% endif %}>{{ 'All' if opt == 'all' else opt }}</option>
+      {% endfor %}
+    </select>
   </div>
 
   {% if show_viability_filter %}
@@ -450,15 +461,15 @@
 <nav>
   <ul class="pagination justify-content-center">
     <li class="page-item {% if page <= 1 %}disabled{% endif %}">
-      <a class="page-link" href="{{ url_for('index', page=page-1, sort=sort, dir=direction, label=label or None, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, status_filter=status_filter, source=source or None, viability=viability or None, q=q or None) }}">Previous</a>
+      <a class="page-link" href="{{ url_for('index', page=page-1, sort=sort, dir=direction, label=label or None, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, per_page=pp, status_filter=status_filter, source=source or None, viability=viability or None, q=q or None) }}">Previous</a>
     </li>
     {% for p in range([1, page-2]|max, [total_pages+1, page+3]|min) %}
     <li class="page-item {% if p == page %}active{% endif %}">
-      <a class="page-link" href="{{ url_for('index', page=p, sort=sort, dir=direction, label=label or None, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, status_filter=status_filter, source=source or None, viability=viability or None, q=q or None) }}">{{ p }}</a>
+      <a class="page-link" href="{{ url_for('index', page=p, sort=sort, dir=direction, label=label or None, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, per_page=pp, status_filter=status_filter, source=source or None, viability=viability or None, q=q or None) }}">{{ p }}</a>
     </li>
     {% endfor %}
     <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
-      <a class="page-link" href="{{ url_for('index', page=page+1, sort=sort, dir=direction, label=label or None, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, status_filter=status_filter, source=source or None, viability=viability or None, q=q or None) }}">Next</a>
+      <a class="page-link" href="{{ url_for('index', page=page+1, sort=sort, dir=direction, label=label or None, group_match=gm, group_employer=ge, emp_dir=ed, return_to=rt, comp=cp, per_page=pp, status_filter=status_filter, source=source or None, viability=viability or None, q=q or None) }}">Next</a>
     </li>
   </ul>
 </nav>
@@ -790,6 +801,14 @@ function searchByComp(min, max, btn) {
   p.set('status_filter', 'all');
   p.set('return_to', ret);
   window.location.href = '/?' + p.toString();
+}
+
+// Page-size dropdown: set per_page (preserving all other state) and jump to page 1.
+function setPerPage(value) {
+  const p = new URLSearchParams(window.location.search);
+  if (value && value !== '25') { p.set('per_page', value); } else { p.delete('per_page'); }
+  p.set('page', '1');
+  window.location.search = p.toString();
 }
 
 // Title-cell icon: "Search all" seeded with this exact title string.

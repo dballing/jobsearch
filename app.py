@@ -14,7 +14,8 @@ from ingest import append_history, bootstrap_history
 from viability import prompt_hash
 
 app = Flask(__name__)
-PER_PAGE = 25
+PER_PAGE = 25                                  # default page size
+PER_PAGE_OPTIONS = ["25", "50", "100", "200", "all"]  # user-selectable page sizes
 
 # Load config once at startup.
 _config_path = Path("config.toml")
@@ -531,7 +532,7 @@ def sort_url(col: str, current_sort: str, current_dir: str,
              label: str, group_match: bool, group_employer: bool,
              status_filter: str, q: str = "",
              source: str = "", viability: str = "", emp_dir: str = "asc",
-             return_to: str = "", comp: str = "") -> str:
+             return_to: str = "", comp: str = "", per_page: str = "25") -> str:
     if current_sort != col:
         # Not currently sorted by this column — start ascending.
         new_sort, new_dir = col, "asc"
@@ -548,7 +549,8 @@ def sort_url(col: str, current_sort: str, current_dir: str,
                    emp_dir=emp_dir if emp_dir != "asc" else None,
                    source=source or None, viability=viability or None,
                    status_filter=status_filter, q=q or None,
-                   return_to=return_to or None, comp=comp or None, page=1)
+                   return_to=return_to or None, comp=comp or None,
+                   per_page=per_page if per_page != str(PER_PAGE) else None, page=1)
 
 
 @app.route("/")
@@ -600,6 +602,10 @@ def index():
     if not comp_active:
         comp = ""
     comp_display = format_salary({"salary_min": comp_min, "salary_max": comp_max}) if comp_active else ""
+    # Page size: 25/50/100/200, or "all" (single page, no LIMIT).
+    per_page = request.args.get("per_page", str(PER_PAGE))
+    if per_page not in PER_PAGE_OPTIONS:
+        per_page = str(PER_PAGE)
 
     if sort not in SORTABLE_COLS:
         sort = DEFAULT_SORT
@@ -624,7 +630,12 @@ def index():
     _NULLS_FIRST_DESC = {"applied_at"}
     nulls = "NULLS FIRST" if (sort in _NULLS_FIRST_DESC and direction == "desc") else "NULLS LAST"
     order  = f"ORDER BY {sort_expr} {direction.upper()} {nulls}"
-    offset = (page - 1) * PER_PAGE
+    # "all" → single page, no LIMIT (SQLite treats LIMIT -1 as unlimited).
+    if per_page == "all":
+        page, limit, offset = 1, -1, 0
+    else:
+        limit  = int(per_page)
+        offset = (page - 1) * limit
 
     employer_groups = None
     jobs = None
@@ -639,7 +650,7 @@ def index():
             page_sql, count_sql = EMPLOYER_PAGE_FLAT, EMPLOYER_COUNT_FLAT
         total    = db.execute(count_sql.format(where=where), params).fetchone()[0]
         emp_rows = db.execute(page_sql.format(where=where, dir=emp_dir.upper()),
-                              params + [PER_PAGE, offset]).fetchall()
+                              params + [limit, offset]).fetchall()
         employer_groups = []
         for er in emp_rows:
             employer = er["employer"]
@@ -667,7 +678,7 @@ def index():
     elif group_match:
         total   = db.execute(GROUPED_COUNT.format(where=where), params).fetchone()[0]
         headers = db.execute(GROUPED_HEADERS.format(where=where, order=order),
-                             params + [PER_PAGE, offset]).fetchall()
+                             params + [limit, offset]).fetchall()
         jobs = [
             build_grouped_job(h, fetch_sub_rows(db, h["group_key"], where, params))
             for h in headers
@@ -675,16 +686,16 @@ def index():
     else:
         total = db.execute(FLAT_COUNT.format(where=where), params).fetchone()[0]
         rows  = db.execute(FLAT_SELECT.format(where=where, order=order),
-                           params + [PER_PAGE, offset]).fetchall()
+                           params + [limit, offset]).fetchall()
         jobs  = [process_job_row(r) for r in rows]
 
-    total_pages          = max(1, math.ceil(total / PER_PAGE))
+    total_pages          = 1 if per_page == "all" else max(1, math.ceil(total / limit))
     labels               = available_labels(db)
     sources              = available_sources(db)
     show_viability_filter = has_viability_scores(db)
     col_urls             = {
         col: sort_url(col, sort, direction, label, group_match, group_employer,
-                      status_filter, q, source, viability, emp_dir, return_to, comp)
+                      status_filter, q, source, viability, emp_dir, return_to, comp, per_page)
         for col in SORTABLE_COLS
     }
     # Link on the Company header (employer mode only): flip the employer-section
@@ -695,7 +706,8 @@ def index():
                           emp_dir="desc" if emp_dir == "asc" else "asc",
                           source=source or None, viability=viability or None,
                           status_filter=status_filter, q=q or None,
-                          return_to=return_to or None, comp=comp or None, page=1)
+                          return_to=return_to or None, comp=comp or None,
+                          per_page=per_page if per_page != str(PER_PAGE) else None, page=1)
 
     return render_template(
         "jobs.html",
@@ -716,6 +728,8 @@ def index():
         return_to=return_to,
         comp=comp,
         comp_display=comp_display,
+        per_page=per_page,
+        per_page_options=PER_PAGE_OPTIONS,
         status_filter=status_filter,
         status_filters=STATUS_FILTERS,
         statuses=STATUSES,
