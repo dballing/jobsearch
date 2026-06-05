@@ -426,6 +426,10 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
         "company":          company,
         "company_display":  company,
         "location_count":   h["location_count"],
+        # Group's aggregate comp band (MIN low / MAX high); for a uniform group
+        # this is the shared range, used by the salary-cell comp-search icon.
+        "salary_min":       h.get("salary_min"),
+        "salary_max":       h.get("salary_max"),
         "multi":            multi,
         "is_fuzzy_group":   is_fuzzy_group,
         "sub_rows":         sub_rows,

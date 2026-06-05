@@ -15,7 +15,12 @@ The search box matches job title and company. A plain **Search** keeps your curr
 
 **Search all** runs the same term against **every** job with a clean slate — all statuses, default grouping and sort — so nothing is hidden behind your filters. This is handy when a job looks familiar and you want to find its potential duplicate to [link manually](#manual-linking), without losing your place. While in this mode a banner shows "your filters are paused"; click the **✕ / Restore filters** button (or run a normal search) to return to exactly the filtered view you came from. Your prior view is remembered in the URL, so linking a job (which reloads the page) doesn't lose it.
 
-**Exact comp-range search** — click the 🔍 icon next to any salary to find every job with that identical salary band, across all statuses. An exact-matching comp range with slightly different descriptions is a common sign of a near-duplicate that fuzzy dedup missed. This uses the same paused-filters / restore mechanism as Search all, so you can match the duplicate and jump straight back to where you were.
+Two in-row shortcuts run a Search all seeded from a specific job, using the same paused-filters / restore mechanism — handy for hunting near-duplicates that fuzzy dedup missed:
+
+- **🔍 next to a title** — find every job whose title matches that string, across all statuses.
+- **🔍 next to a salary** — find every job with that identical salary band. An exact-matching comp range with slightly different descriptions is a strong missed-duplicate signal. (Shown only for real salaries — blank and `$0k–$0k` hourly-rate rows are skipped.)
+
+In both cases you can match the duplicate and jump straight back to where you were.
 
 ### Grouping
 

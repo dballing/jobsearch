@@ -111,7 +111,7 @@
             </td>
             <td class="text-nowrap col-salary">
               {% if job.group_salary == group_varied %}<span class="text-muted fst-italic small">{{ group_varied }}</span>
-              {% else %}{{ job.group_salary or '—' }}{% endif %}
+              {% else %}{{ job.group_salary or '—' }}{% if job.group_salary and ((job.salary_min or 0) >= 1000 or (job.salary_max or 0) >= 1000) %}<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('{{ job.salary_min or '' }}', '{{ job.salary_max or '' }}', this)"><i class="bi bi-search"></i></button>{% endif %}{% endif %}
             </td>
             {% if show_viability_filter %}
             <td class="col-viability">
@@ -170,6 +170,7 @@
                 {% if sub.job_url %}<a href="{{ sub.job_url }}" target="_blank" rel="noopener">{{ sub.title or '(no title)' }}</a>
                 {% else %}{{ sub.title or '(no title)' }}{% endif %}
                 {% if sub.refreshed_at %}<span class="text-warning ms-1" title="Description changed — previously skipped, reset to new on {{ sub.refreshed_at[:10] }}"><i class="bi bi-arrow-repeat"></i></span>{% endif %}
+                {% if sub.title %}<button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle({{ sub.title | tojson }}, this)'><i class="bi bi-search"></i></button>{% endif %}
               {% endif %}
             </td>
             <td class="small">{% if job.is_fuzzy_group %}{{ sub.company_display or '—' }}{% if sub.company_actual %}<sup title="Originally listed as: {{ sub.company }}" style="cursor:help">*</sup>{% endif %}{% endif %}</td>
@@ -221,6 +222,7 @@
               <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('{{ job.job_id }}')" title="Preview description"><i class="bi bi-card-text"></i></button>
               {{ link_btn(job.job_id, job.get('canonical_id') or '') }}
               {% endif %}
+              {% if job.title %}<button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle({{ job.title | tojson }}, this)'><i class="bi bi-search"></i></button>{% endif %}
             </td>
             <td>{{ job.company_display or '—' }}{% if job.company_actual %}<sup title="Originally listed as: {{ job.company }}" style="cursor:help">*</sup>{% endif %}</td>
             <td class="col-location"{% if job.locations_all %} title="{{ job.locations_all }}" style="cursor: help;"{% endif %}>
@@ -785,6 +787,17 @@ function searchByComp(min, max, btn) {
   const ret = cur.get('return_to') || (window.location.pathname + window.location.search);
   const p = new URLSearchParams();
   p.set('comp', (min || '') + '-' + (max || ''));
+  p.set('status_filter', 'all');
+  p.set('return_to', ret);
+  window.location.href = '/?' + p.toString();
+}
+
+// Title-cell icon: "Search all" seeded with this exact title string.
+function searchByTitle(title, btn) {
+  const cur = new URLSearchParams(window.location.search);
+  const ret = cur.get('return_to') || (window.location.pathname + window.location.search);
+  const p = new URLSearchParams();
+  p.set('q', title);
   p.set('status_filter', 'all');
   p.set('return_to', ret);
   window.location.href = '/?' + p.toString();
