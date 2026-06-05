@@ -314,7 +314,10 @@
             metaEl.querySelector('div').innerHTML = updatedParts;
             clearBtn.classList.toggle('d-none', !job.company_actual);
             feedbackEl.textContent = 'Saved!';
-            setTimeout(() => { feedbackEl.textContent = ''; }, 2000);
+            // Reflect the override in the table: the company cell + "*" marker, and
+            // — when grouping by employer — the row moving to its new section. These
+            // are recomputed server-side, so refresh once the save has committed.
+            setTimeout(() => location.reload(), 450);
           } else {
             feedbackEl.className = 'text-danger small';
             feedbackEl.textContent = 'Save failed.';
