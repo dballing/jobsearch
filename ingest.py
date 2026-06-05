@@ -434,6 +434,39 @@ def find_canonical(
     return matches
 
 
+# Annualize AI-extracted salary figures by their unit, so hourly/monthly bands
+# are stored and compared on the same scale as the common annual case.
+# Full-time-equivalent assumption: 40h × 52wk = 2080h/yr.
+SALARY_PERIOD_MULTIPLIER = {
+    "HOUR": 2080, "DAY": 260, "WEEK": 52, "MONTH": 12, "YEAR": 1,
+}
+
+
+def _normalize_salary(value: object, unit: object) -> int | None:
+    """Convert one AI-extracted salary figure to an annual amount based on its
+    unit (HOUR/DAY/WEEK/MONTH/YEAR). Unknown or missing units are left as-is
+    (treated as already annual — the prior behaviour)."""
+    if value in (None, "", "null"):
+        return None
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return None
+    mult = SALARY_PERIOD_MULTIPLIER.get(str(unit or "").strip().upper(), 1)
+    return round(amount * mult)
+
+
+def extract_salary(item: dict) -> tuple[int | None, int | None]:
+    """(min, max) annual salary from an Apify item, normalized by its unit text.
+    New/old field-name variants are both checked, matching the value fields."""
+    unit = _scalar(item.get("ai_salary_unit_text") or item.get("ai_salary_unittext"))
+    lo = _normalize_salary(
+        _scalar(item.get("ai_salary_min_value") or item.get("ai_salary_minvalue")), unit)
+    hi = _normalize_salary(
+        _scalar(item.get("ai_salary_max_value") or item.get("ai_salary_maxvalue")), unit)
+    return lo, hi
+
+
 def extract_fields_linkedin(item: dict) -> dict:
     # Field names from fantastic-jobs/advanced-linkedin-job-search-api.
     # `linkedin_id` is the actual LinkedIn job ID used as our PK (type changed to int June 2026;
@@ -443,8 +476,7 @@ def extract_fields_linkedin(item: dict) -> dict:
     # `external_apply_url` was removed June 2026 with no replacement; apply_url will be None.
     # New name checked first with old name as fallback during the transition window.
     # _scalar() guards against fields that are arrays in JSON for multi-value records.
-    salary_min = _scalar(item.get("ai_salary_min_value") or item.get("ai_salary_minvalue"))
-    salary_max = _scalar(item.get("ai_salary_max_value") or item.get("ai_salary_maxvalue"))
+    salary_min, salary_max = extract_salary(item)
     return {
         "job_id": str(_scalar(item.get("linkedin_id")) or "").strip(),
         "title": _scalar(item.get("title")),
@@ -457,8 +489,8 @@ def extract_fields_linkedin(item: dict) -> dict:
             _scalar(item.get("direct_apply") or item.get("directapply") or "") or ""
         ).lower() == "true" else 0,
         "source": "linkedin",
-        "salary_min": int(salary_min) if salary_min not in (None, "", "null") else None,
-        "salary_max": int(salary_max) if salary_max not in (None, "", "null") else None,
+        "salary_min": salary_min,
+        "salary_max": salary_max,
         "salary_currency": _scalar(item.get("ai_salary_currency")) or None,
         "job_description": _scalar(item.get("description_text")),
     }
@@ -470,8 +502,7 @@ def extract_fields_careersite(item: dict) -> dict:
     # any collision with numeric LinkedIn IDs stored in the same table.
     # `url` is both the canonical job page and the apply URL (career sites have no
     # separate apply link). Easy Apply is not applicable.
-    salary_min = _scalar(item.get("ai_salary_min_value") or item.get("ai_salary_minvalue"))
-    salary_max = _scalar(item.get("ai_salary_max_value") or item.get("ai_salary_maxvalue"))
+    salary_min, salary_max = extract_salary(item)
     raw_id  = str(_scalar(item.get("id")) or "").strip()
     job_url = _scalar(item.get("url")) or None
     return {
@@ -484,8 +515,8 @@ def extract_fields_careersite(item: dict) -> dict:
         "apply_url": job_url,
         "easy_apply": 0,
         "source": "careersite",
-        "salary_min": int(salary_min) if salary_min not in (None, "", "null") else None,
-        "salary_max": int(salary_max) if salary_max not in (None, "", "null") else None,
+        "salary_min": salary_min,
+        "salary_max": salary_max,
         "salary_currency": _scalar(item.get("ai_salary_currency")) or None,
         "job_description": _scalar(item.get("description_text")),
     }
