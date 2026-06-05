@@ -135,6 +135,57 @@ GROUPED_COUNT = "SELECT COUNT(*) FROM (SELECT 1 FROM jobs {where} GROUP BY COALE
 FLAT_COUNT    = "SELECT COUNT(*) FROM jobs {where}"
 FLAT_SELECT   = "SELECT * FROM jobs {where} {order} LIMIT ? OFFSET ?"
 
+# ── Employer grouping ──
+# Effective company name: the override (company_actual) wins over the scraped company.
+EMPLOYER_EXPR = "COALESCE(company_actual, company)"
+
+# Page of distinct employers, A–Z. Two variants keep the employer set consistent
+# with how jobs get assigned to an employer below (see scoped fetches in index()):
+#   - flat mode:    one employer per raw posting's effective company.
+#   - grouped mode: each canonical group filed under its MIN(effective company),
+#                   so a fuzzy group spanning two company names belongs to exactly one.
+EMPLOYER_PAGE_FLAT = f"""
+    SELECT {EMPLOYER_EXPR} AS employer
+    FROM jobs {{where}}
+    GROUP BY {EMPLOYER_EXPR} COLLATE NOCASE
+    ORDER BY employer COLLATE NOCASE {{dir}}
+    LIMIT ? OFFSET ?
+"""
+EMPLOYER_COUNT_FLAT = f"""
+    SELECT COUNT(*) FROM (
+        SELECT 1 FROM jobs {{where}}
+        GROUP BY {EMPLOYER_EXPR} COLLATE NOCASE
+    )
+"""
+EMPLOYER_PAGE_GROUPED = f"""
+    SELECT employer FROM (
+        SELECT MIN({EMPLOYER_EXPR}) AS employer
+        FROM jobs {{where}}
+        GROUP BY COALESCE(canonical_id, job_id)
+    )
+    GROUP BY employer COLLATE NOCASE
+    ORDER BY employer COLLATE NOCASE {{dir}}
+    LIMIT ? OFFSET ?
+"""
+EMPLOYER_COUNT_GROUPED = f"""
+    SELECT COUNT(*) FROM (
+        SELECT 1 FROM (
+            SELECT MIN({EMPLOYER_EXPR}) AS employer
+            FROM jobs {{where}}
+            GROUP BY COALESCE(canonical_id, job_id)
+        )
+        GROUP BY employer COLLATE NOCASE
+    )
+"""
+
+# Grouped-header fetch scoped to one employer. The employer predicate lives in
+# HAVING (on the group's MIN effective company), NOT WHERE — so a fuzzy group
+# spanning two companies appears whole under its assigned employer, never split.
+GROUPED_HEADERS_EMP = GROUPED_HEADERS.replace(
+    "GROUP BY COALESCE(canonical_id, job_id)\n    {order}",
+    "GROUP BY COALESCE(canonical_id, job_id)\n    {having}\n    {order}",
+)
+
 
 def get_db() -> sqlite3.Connection:
     if "db" not in g:
@@ -419,6 +470,25 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
     return job
 
 
+def employer_having(employer: str | None) -> tuple[str, list]:
+    """HAVING clause + params filing a canonical group under one employer.
+
+    A group is assigned to MIN(effective company), so a fuzzy group spanning two
+    company names lands under exactly one employer (never split or double-counted).
+    """
+    if employer is None:
+        return f"HAVING MIN({EMPLOYER_EXPR}) IS NULL", []
+    return f"HAVING MIN({EMPLOYER_EXPR}) = ? COLLATE NOCASE", [employer]
+
+
+def employer_where(where: str, params: list, employer: str | None) -> tuple[str, list]:
+    """Append an effective-company predicate to a WHERE clause (flat fetch)."""
+    clause = f"{where} AND " if where else "WHERE "
+    if employer is None:
+        return f"{clause}{EMPLOYER_EXPR} IS NULL", list(params)
+    return f"{clause}{EMPLOYER_EXPR} = ? COLLATE NOCASE", list(params) + [employer]
+
+
 def available_labels(db: sqlite3.Connection) -> list[dict]:
     rows = db.execute(
         "SELECT DISTINCT je.value FROM jobs, json_each(jobs.labels) je ORDER BY je.value"
@@ -445,8 +515,9 @@ def available_sources(db: sqlite3.Connection) -> list[dict]:
 
 
 def sort_url(col: str, current_sort: str, current_dir: str,
-             label: str, view: str, status_filter: str, q: str = "",
-             source: str = "", viability: str = "") -> str:
+             label: str, group_match: bool, group_employer: bool,
+             status_filter: str, q: str = "",
+             source: str = "", viability: str = "", emp_dir: str = "asc") -> str:
     if current_sort != col:
         # Not currently sorted by this column — start ascending.
         new_sort, new_dir = col, "asc"
@@ -457,8 +528,11 @@ def sort_url(col: str, current_sort: str, current_dir: str,
         # Second click already done — clear back to default.
         new_sort, new_dir = DEFAULT_SORT, DEFAULT_DIR
     return url_for("index", sort=new_sort, dir=new_dir,
-                   label=label or None, view=view, source=source or None,
-                   viability=viability or None,
+                   label=label or None,
+                   group_match="1" if group_match else "0",
+                   group_employer="1" if group_employer else "0",
+                   emp_dir=emp_dir if emp_dir != "asc" else None,
+                   source=source or None, viability=viability or None,
                    status_filter=status_filter, q=q or None, page=1)
 
 
@@ -470,18 +544,31 @@ def index():
     q             = request.args.get("q", "").strip()
     sort          = request.args.get("sort", DEFAULT_SORT)
     direction     = request.args.get("dir", DEFAULT_DIR)
-    view          = request.args.get("view", DEFAULT_VIEW)
     status_filter = request.args.get("status_filter", DEFAULT_STATUS_FILTER)
     source        = request.args.get("source", "")
     viability     = request.args.get("viability", "")
     page          = max(1, request.args.get("page", 1, type=int))
 
+    # Two independent grouping axes (replacing the old single `view` toggle):
+    #   group_match    — fuzzy/canonical "matched jobs" grouping (old view=grouped)
+    #   group_employer — outer grouping by effective company name
+    # Backward-compat: honour an old ?view=grouped|flat link when group_match is absent.
+    legacy_view = request.args.get("view")
+    match_default = "0" if legacy_view == "flat" else "1"
+    group_match    = request.args.get("group_match", match_default) == "1"
+    group_employer = request.args.get("group_employer", "0") == "1"
+    # `view` still drives ~6 column-layout conditionals in the template.
+    view = "grouped" if group_match else "flat"
+    # Employer-section order direction (group-by-employer only). Independent of the
+    # within-section column sort, so reversing employers doesn't reset the row sort.
+    emp_dir = request.args.get("emp_dir", "asc")
+    if emp_dir not in ("asc", "desc"):
+        emp_dir = "asc"
+
     if sort not in SORTABLE_COLS:
         sort = DEFAULT_SORT
     if direction not in ("asc", "desc"):
         direction = DEFAULT_DIR
-    if view not in ("grouped", "flat"):
-        view = DEFAULT_VIEW
     if status_filter not in STATUS_FILTERS:
         status_filter = DEFAULT_STATUS_FILTER
     if source not in SOURCE_NAMES and source != "":
@@ -502,7 +589,45 @@ def index():
     order  = f"ORDER BY {sort_expr} {direction.upper()} {nulls}"
     offset = (page - 1) * PER_PAGE
 
-    if view == "grouped":
+    employer_groups = None
+    jobs = None
+
+    if group_employer:
+        # Paginate per employer; each employer is shown whole. The Company column
+        # header re-orders the employer sections (emp_dir, asc/desc) independently
+        # of the within-section column sort, which orders jobs inside each employer.
+        if group_match:
+            page_sql, count_sql = EMPLOYER_PAGE_GROUPED, EMPLOYER_COUNT_GROUPED
+        else:
+            page_sql, count_sql = EMPLOYER_PAGE_FLAT, EMPLOYER_COUNT_FLAT
+        total    = db.execute(count_sql.format(where=where), params).fetchone()[0]
+        emp_rows = db.execute(page_sql.format(where=where, dir=emp_dir.upper()),
+                              params + [PER_PAGE, offset]).fetchall()
+        employer_groups = []
+        for er in emp_rows:
+            employer = er["employer"]
+            if group_match:
+                having, hparams = employer_having(employer)
+                headers = db.execute(
+                    GROUPED_HEADERS_EMP.format(where=where, having=having, order=order),
+                    params + hparams + [-1, 0]).fetchall()
+                emp_jobs = [
+                    build_grouped_job(h, fetch_sub_rows(db, h["group_key"], where, params))
+                    for h in headers
+                ]
+                job_count = sum(j["location_count"] for j in emp_jobs)
+            else:
+                ewhere, eparams = employer_where(where, params, employer)
+                rows = db.execute(FLAT_SELECT.format(where=ewhere, order=order),
+                                  eparams + [-1, 0]).fetchall()
+                emp_jobs = [process_job_row(r) for r in rows]
+                job_count = len(emp_jobs)
+            employer_groups.append({
+                "employer_name": employer or "(no company)",
+                "job_count":     job_count,
+                "jobs":          emp_jobs,
+            })
+    elif group_match:
         total   = db.execute(GROUPED_COUNT.format(where=where), params).fetchone()[0]
         headers = db.execute(GROUPED_HEADERS.format(where=where, order=order),
                              params + [PER_PAGE, offset]).fetchall()
@@ -521,13 +646,23 @@ def index():
     sources              = available_sources(db)
     show_viability_filter = has_viability_scores(db)
     col_urls             = {
-        col: sort_url(col, sort, direction, label, view, status_filter, q, source, viability)
+        col: sort_url(col, sort, direction, label, group_match, group_employer,
+                      status_filter, q, source, viability, emp_dir)
         for col in SORTABLE_COLS
     }
+    # Link on the Company header (employer mode only): flip the employer-section
+    # order without disturbing the within-section column sort.
+    emp_dir_url = url_for("index", sort=sort, dir=direction, label=label or None,
+                          group_match="1" if group_match else "0",
+                          group_employer="1" if group_employer else "0",
+                          emp_dir="desc" if emp_dir == "asc" else "asc",
+                          source=source or None, viability=viability or None,
+                          status_filter=status_filter, q=q or None, page=1)
 
     return render_template(
         "jobs.html",
         jobs=jobs,
+        employer_groups=employer_groups,
         page=page,
         total_pages=total_pages,
         total=total,
@@ -536,6 +671,10 @@ def index():
         sort=sort,
         direction=direction,
         view=view,
+        group_match=group_match,
+        group_employer=group_employer,
+        emp_dir=emp_dir,
+        emp_dir_url=emp_dir_url,
         status_filter=status_filter,
         status_filters=STATUS_FILTERS,
         statuses=STATUSES,

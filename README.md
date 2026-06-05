@@ -129,7 +129,7 @@ Use the absolute path to `ingest.sh`. The script changes into its own directory,
 ## Documentation
 
 - **[Configuration reference](docs/configuration.md)** — all `config.toml` keys, tasks, labels, viability config, auto-ghost, generic tasks with per-schedule labels
-- **[Features](docs/features.md)** — web UI, status reference, fuzzy dedup, manual linking, viability scoring, auto-skip, importing existing applications, known limitations
+- **[Features](docs/features.md)** — web UI, grouping (matched-jobs & employer), status reference, fuzzy dedup, manual linking, viability scoring, auto-skip, importing existing applications, known limitations
 
 ---
 

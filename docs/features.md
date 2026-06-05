@@ -8,11 +8,21 @@
 - **Source** — filter to LinkedIn or career-site results only. Appears automatically when both sources are present.
 - **Status** — see [Status reference](#status-reference) below.
 - **Viability** — filter by AI viability score (High / Medium / Low / Unscored). Appears once any jobs have been scored.
-- **View** — *Grouped* (default): near-duplicate jobs are collapsed into a single expandable row. *Flat*: one row per posting.
+
+### Grouping
+
+Two independent **Group by** toggles in the filter bar control how rows are organised. Either, both, or neither can be active:
+
+- **Matched-Jobs** (default on) — near-duplicate jobs (see [Fuzzy near-duplicate detection](#fuzzy-near-duplicate-detection)) are collapsed into a single expandable row. Click the ▸ chevron in the Location cell to expand the group and see each posting. Turn this off for a flat list of every posting.
+- **Employer** (default off) — postings are grouped under a header row for each employer (the effective company name). Each employer section is collapsible via the ▾ chevron on its header, and the postings inside are indented and shown in a smaller font. With **Matched-Jobs** also on, the two nest: an employer section contains matched-job groups, which themselves expand to individual postings — a double-indent at the deepest level.
+
+When grouping by employer, employer sections are listed alphabetically by default. A near-duplicate group whose postings span two slightly different company names is filed under just one employer (its alphabetically-first effective name) and shown whole.
 
 ### Columns and sorting
 
 Click any column header to sort; click again to reverse; click a third time to return to the default. Sorting is case-insensitive.
+
+When grouping by **Employer**, sorting works on two independent axes: the **Company** header re-orders the employer sections themselves (A→Z / Z→A), while every other column sorts the postings *within* each employer. Changing one does not reset the other.
 
 Use the **⊞ columns** button in the filter bar to show or hide individual columns. Preferences are saved in `localStorage` per browser.
 
@@ -32,7 +42,7 @@ Use the **⊞ columns** button in the filter bar to show or hide individual colu
 | `withdrawn` | You withdrew your application |
 | `closed` | Posting expired or no longer active |
 
-In grouped view, if all postings in a group share the same status, a group-level dropdown updates all of them at once.
+With **Matched-Jobs** grouping on, if all postings in a group share the same status, a group-level dropdown updates all of them at once.
 
 > **Tip:** If a job you've marked `skipped` (or that was auto-set to `autoskipped`) has its description updated by the employer, it is automatically reset to `new` on the next ingest run. These jobs display a ↻ icon next to their title.
 
@@ -90,7 +100,7 @@ No company filter is applied — the same job often appears under different comp
 
 ### UI behavior
 
-Fuzzy-linked jobs are collapsed into a single group row in the Grouped view. Expand to see each posting individually with its own status dropdown and description preview.
+Fuzzy-linked jobs are collapsed into a single group row when **Matched-Jobs** grouping is on. Expand to see each posting individually with its own status dropdown and description preview.
 
 ### Status inheritance
 

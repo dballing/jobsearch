@@ -20,6 +20,17 @@
     /* Sub-rows: use theme-aware indented shade instead of table-secondary's hardcoded light color */
     [data-bs-theme="dark"]  .table .group-child { --bs-table-bg: rgba(255,255,255,0.06); color: var(--bs-body-color); }
     [data-bs-theme="light"] .table .group-child { --bs-table-bg: rgba(0,0,0,0.04); }
+    /* Employer sections collapse independently of the inner match-group collapse. */
+    tbody.employer-section.collapsed > tr:not(.employer-header) { display: none !important; }
+    .employer-header td { cursor: pointer; }
+    /* Subordinate the postings to the employer header: smaller font + indented
+       first column, mirroring how expanded fuzzy-match sub-rows are nested. */
+    tbody.employer-section > tr:not(.employer-header) td { font-size: 0.875rem; }
+    tbody.employer-section > tr:not(.employer-header) > td:first-child { padding-left: 1.5rem; }
+    /* Expanded fuzzy-match sub-rows indent their first column to nest under the group. */
+    .group-child > td:first-child { padding-left: 1.5rem; }
+    /* Under an employer a matched sub-row is nested twice → double indent. */
+    tbody.employer-section > tr.group-child > td:first-child { padding-left: 3rem; }
   </style>
 </head>
 <body>
