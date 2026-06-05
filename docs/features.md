@@ -9,6 +9,12 @@
 - **Status** — see [Status reference](#status-reference) below.
 - **Viability** — filter by AI viability score (High / Medium / Low / Unscored). Appears once any jobs have been scored.
 
+### Searching
+
+The search box matches job title and company. A plain **Search** keeps your current filters applied (search *within* the filtered set).
+
+**Search all** runs the same term against **every** job with a clean slate — all statuses, default grouping and sort — so nothing is hidden behind your filters. This is handy when a job looks familiar and you want to find its potential duplicate to [link manually](#manual-linking), without losing your place. While in this mode a banner shows "your filters are paused"; click the **✕ / Restore filters** button (or run a normal search) to return to exactly the filtered view you came from. Your prior view is remembered in the URL, so linking a job (which reloads the page) doesn't lose it.
+
 ### Grouping
 
 Two independent **Group by** toggles in the filter bar control how rows are organised. Either, both, or neither can be active:

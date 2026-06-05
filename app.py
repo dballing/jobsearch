@@ -517,7 +517,8 @@ def available_sources(db: sqlite3.Connection) -> list[dict]:
 def sort_url(col: str, current_sort: str, current_dir: str,
              label: str, group_match: bool, group_employer: bool,
              status_filter: str, q: str = "",
-             source: str = "", viability: str = "", emp_dir: str = "asc") -> str:
+             source: str = "", viability: str = "", emp_dir: str = "asc",
+             return_to: str = "") -> str:
     if current_sort != col:
         # Not currently sorted by this column — start ascending.
         new_sort, new_dir = col, "asc"
@@ -533,7 +534,8 @@ def sort_url(col: str, current_sort: str, current_dir: str,
                    group_employer="1" if group_employer else "0",
                    emp_dir=emp_dir if emp_dir != "asc" else None,
                    source=source or None, viability=viability or None,
-                   status_filter=status_filter, q=q or None, page=1)
+                   status_filter=status_filter, q=q or None,
+                   return_to=return_to or None, page=1)
 
 
 @app.route("/")
@@ -564,6 +566,11 @@ def index():
     emp_dir = request.args.get("emp_dir", "asc")
     if emp_dir not in ("asc", "desc"):
         emp_dir = "asc"
+    # "Search all" stashes the prior filtered view here so the search ✕ can restore
+    # it. Only accept a local path (no open-redirect via //host or backslashes).
+    return_to = request.args.get("return_to", "")
+    if not return_to.startswith("/") or return_to.startswith("//") or "\\" in return_to:
+        return_to = ""
 
     if sort not in SORTABLE_COLS:
         sort = DEFAULT_SORT
@@ -647,7 +654,7 @@ def index():
     show_viability_filter = has_viability_scores(db)
     col_urls             = {
         col: sort_url(col, sort, direction, label, group_match, group_employer,
-                      status_filter, q, source, viability, emp_dir)
+                      status_filter, q, source, viability, emp_dir, return_to)
         for col in SORTABLE_COLS
     }
     # Link on the Company header (employer mode only): flip the employer-section
@@ -657,7 +664,8 @@ def index():
                           group_employer="1" if group_employer else "0",
                           emp_dir="desc" if emp_dir == "asc" else "asc",
                           source=source or None, viability=viability or None,
-                          status_filter=status_filter, q=q or None, page=1)
+                          status_filter=status_filter, q=q or None,
+                          return_to=return_to or None, page=1)
 
     return render_template(
         "jobs.html",
@@ -675,6 +683,7 @@ def index():
         group_employer=group_employer,
         emp_dir=emp_dir,
         emp_dir_url=emp_dir_url,
+        return_to=return_to,
         status_filter=status_filter,
         status_filters=STATUS_FILTERS,
         statuses=STATUSES,
