@@ -284,9 +284,16 @@ def inject_nav_timestamps() -> dict:
 
 
 def build_where(label: str, status_filter: str, q: str = "", source: str = "",
-                viability: str = "") -> tuple[str, list]:
+                viability: str = "", comp_active: bool = False,
+                comp_min: int | None = None, comp_max: int | None = None) -> tuple[str, list]:
     conditions: list[str] = []
     params: list = []
+    if comp_active:
+        # Exact comp-range match (null-safe via IS) — a strong "missed duplicate"
+        # signal: two postings with the identical salary band but slightly different
+        # descriptions that fuzzy dedup didn't catch.
+        conditions.append("salary_min IS ? AND salary_max IS ?")
+        params.extend([comp_min, comp_max])
     if label:
         conditions.append("labels LIKE ?")
         params.append(f'%"{label}"%')
@@ -451,6 +458,8 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
             "locations_count":  s.get("locations_count", 1),
             "refreshed_at":     s.get("refreshed_at"),
             "salary_display":   s["salary_display"],
+            "salary_min":       s.get("salary_min"),
+            "salary_max":       s.get("salary_max"),
             "labels":           s["labels"],
             "source":           s.get("source", "linkedin"),
             "source_display":   s["source_display"],
@@ -518,7 +527,7 @@ def sort_url(col: str, current_sort: str, current_dir: str,
              label: str, group_match: bool, group_employer: bool,
              status_filter: str, q: str = "",
              source: str = "", viability: str = "", emp_dir: str = "asc",
-             return_to: str = "") -> str:
+             return_to: str = "", comp: str = "") -> str:
     if current_sort != col:
         # Not currently sorted by this column — start ascending.
         new_sort, new_dir = col, "asc"
@@ -535,7 +544,7 @@ def sort_url(col: str, current_sort: str, current_dir: str,
                    emp_dir=emp_dir if emp_dir != "asc" else None,
                    source=source or None, viability=viability or None,
                    status_filter=status_filter, q=q or None,
-                   return_to=return_to or None, page=1)
+                   return_to=return_to or None, comp=comp or None, page=1)
 
 
 @app.route("/")
@@ -571,6 +580,22 @@ def index():
     return_to = request.args.get("return_to", "")
     if not return_to.startswith("/") or return_to.startswith("//") or "\\" in return_to:
         return_to = ""
+    # Exact comp-range search (from the salary-cell icon): comp = "min-max", either
+    # bound optional. Matches the full salary signature, including a null bound.
+    comp = request.args.get("comp", "")
+    comp_min = comp_max = None
+    comp_active = False
+    if comp and "-" in comp:
+        _lo, _, _hi = comp.partition("-")
+        try:
+            comp_min = int(_lo) if _lo else None
+            comp_max = int(_hi) if _hi else None
+            comp_active = comp_min is not None or comp_max is not None
+        except ValueError:
+            comp_active = False
+    if not comp_active:
+        comp = ""
+    comp_display = format_salary({"salary_min": comp_min, "salary_max": comp_max}) if comp_active else ""
 
     if sort not in SORTABLE_COLS:
         sort = DEFAULT_SORT
@@ -585,7 +610,8 @@ def index():
     if view == "grouped" and sort == "location":
         sort = DEFAULT_SORT
 
-    where, params = build_where(label, status_filter, q, source, viability)
+    where, params = build_where(label, status_filter, q, source, viability,
+                                comp_active, comp_min, comp_max)
     _TEXT_COLS = {"title", "company", "location", "status"}
     sort_expr = f"{sort} COLLATE NOCASE" if sort in _TEXT_COLS else sort
     # For applied_at, NULLs sort first when descending so unapplied jobs
@@ -654,7 +680,7 @@ def index():
     show_viability_filter = has_viability_scores(db)
     col_urls             = {
         col: sort_url(col, sort, direction, label, group_match, group_employer,
-                      status_filter, q, source, viability, emp_dir, return_to)
+                      status_filter, q, source, viability, emp_dir, return_to, comp)
         for col in SORTABLE_COLS
     }
     # Link on the Company header (employer mode only): flip the employer-section
@@ -665,7 +691,7 @@ def index():
                           emp_dir="desc" if emp_dir == "asc" else "asc",
                           source=source or None, viability=viability or None,
                           status_filter=status_filter, q=q or None,
-                          return_to=return_to or None, page=1)
+                          return_to=return_to or None, comp=comp or None, page=1)
 
     return render_template(
         "jobs.html",
@@ -684,6 +710,8 @@ def index():
         emp_dir=emp_dir,
         emp_dir_url=emp_dir_url,
         return_to=return_to,
+        comp=comp,
+        comp_display=comp_display,
         status_filter=status_filter,
         status_filters=STATUS_FILTERS,
         statuses=STATUSES,
