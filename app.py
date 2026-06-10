@@ -196,90 +196,110 @@ GROUPED_HEADERS_EMP = GROUPED_HEADERS.replace(
 )
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Idempotent schema/data migrations. Run ONCE at startup (see _init_db), not
+    per request, so that opening a connection never takes a write lock — readers
+    stay lock-free in WAL even while ingestion/scoring holds the write lock.
+
+    On an already-migrated DB this performs no writes: column guards short-circuit,
+    CREATE … IF NOT EXISTS no-ops, and the data fix is gated behind a SELECT.
+    """
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
+    if "regions" in cols and "labels" not in cols:
+        conn.execute("ALTER TABLE jobs RENAME COLUMN regions TO labels")
+    if "linkedin_url" in cols and "job_url" not in cols:
+        conn.execute("ALTER TABLE jobs RENAME COLUMN linkedin_url TO job_url")
+    if "source" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN source TEXT NOT NULL DEFAULT 'linkedin'")
+    state_cols = [row[1] for row in conn.execute("PRAGMA table_info(ingest_state)").fetchall()]
+    if state_cols and "last_synced_at" not in state_cols:
+        conn.execute("ALTER TABLE ingest_state ADD COLUMN last_synced_at TEXT")
+    # One-time data fix: rename 'reviewed' → 'reviewing'. Gated on a read so it
+    # doesn't take a write lock on every startup once the data is clean.
+    if conn.execute("SELECT 1 FROM jobs WHERE status = 'reviewed' LIMIT 1").fetchone():
+        conn.execute("UPDATE jobs SET status = 'reviewing' WHERE status = 'reviewed'")
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
+    if "refreshed_at" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN refreshed_at TIMESTAMP")
+    if "canonical_id" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN canonical_id TEXT")
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
+    if "viability" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN viability TEXT")
+    if "viability_reason" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN viability_reason TEXT")
+    if "viability_prompt_hash" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN viability_prompt_hash TEXT")
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
+    if "applied_at" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN applied_at TEXT")
+        conn.execute(
+            "UPDATE jobs SET applied_at = first_seen "
+            "WHERE status IN ('applied','interviewing','offered','rejected','withdrawn','ghosted') "
+            "AND applied_at IS NULL"
+        )
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
+    needs_history_bootstrap = "history" not in cols
+    if needs_history_bootstrap:
+        conn.execute("ALTER TABLE jobs ADD COLUMN history TEXT NOT NULL DEFAULT '[]'")
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
+    if "company_actual" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN company_actual TEXT")
+    # File attachments: one physical file (attachment_id) linked to N jobs.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS job_attachments (
+               job_id        TEXT NOT NULL,
+               attachment_id TEXT NOT NULL,
+               stored_name   TEXT NOT NULL,
+               original_name TEXT NOT NULL,
+               content_type  TEXT,
+               size          INTEGER,
+               uploaded_at   TEXT NOT NULL,
+               PRIMARY KEY (job_id, attachment_id)
+           )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_attach_aid ON job_attachments(attachment_id)")
+    conn.commit()
+    if needs_history_bootstrap:
+        bootstrap_history(conn)
+        conn.commit()
+
+
+def _init_db() -> None:
+    """Open a dedicated connection and run migrations once, at startup."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        _migrate(conn)
+    finally:
+        conn.close()
+
+
 def get_db() -> sqlite3.Connection:
     if "db" not in g:
         g.db = sqlite3.connect(DB_PATH)
         g.db.row_factory = sqlite3.Row
-        # WAL mode allows concurrent reads/writes with the rescore script.
-        # busy_timeout retries on lock contention instead of raising immediately.
+        # WAL lets reads run concurrently with ingestion/scoring writes; busy_timeout
+        # retries briefly on write-lock contention. Migrations run once at startup
+        # (_init_db), so opening a connection here never takes a write lock.
         g.db.execute("PRAGMA journal_mode=WAL")
         g.db.execute("PRAGMA busy_timeout=5000")
-        # Migrate: rename regions → labels if the old column still exists.
-        cols = [row[1] for row in g.db.execute("PRAGMA table_info(jobs)").fetchall()]
-        if "regions" in cols and "labels" not in cols:
-            g.db.execute("ALTER TABLE jobs RENAME COLUMN regions TO labels")
-            g.db.commit()
-        # Migrate: rename linkedin_url → job_url if old column still exists.
-        if "linkedin_url" in cols and "job_url" not in cols:
-            g.db.execute("ALTER TABLE jobs RENAME COLUMN linkedin_url TO job_url")
-            g.db.commit()
-        # Migrate: add source column if not present (existing rows default to 'linkedin').
-        if "source" not in cols:
-            g.db.execute("ALTER TABLE jobs ADD COLUMN source TEXT NOT NULL DEFAULT 'linkedin'")
-            g.db.commit()
-        # Migrate: add last_synced_at to ingest_state if not present.
-        state_cols = [row[1] for row in g.db.execute("PRAGMA table_info(ingest_state)").fetchall()]
-        if state_cols and "last_synced_at" not in state_cols:
-            g.db.execute("ALTER TABLE ingest_state ADD COLUMN last_synced_at TEXT")
-            g.db.commit()
-        # Migrate: rename 'reviewed' → 'reviewing'.
-        g.db.execute("UPDATE jobs SET status = 'reviewing' WHERE status = 'reviewed'")
-        g.db.commit()
-        # Migrate: add refreshed_at and canonical_id columns if not present.
-        cols = [row[1] for row in g.db.execute("PRAGMA table_info(jobs)").fetchall()]
-        if "refreshed_at" not in cols:
-            g.db.execute("ALTER TABLE jobs ADD COLUMN refreshed_at TIMESTAMP")
-            g.db.commit()
-        if "canonical_id" not in cols:
-            g.db.execute("ALTER TABLE jobs ADD COLUMN canonical_id TEXT")
-            g.db.commit()
-        # Migrate: add viability scoring columns if not present.
-        cols = [row[1] for row in g.db.execute("PRAGMA table_info(jobs)").fetchall()]
-        if "viability" not in cols:
-            g.db.execute("ALTER TABLE jobs ADD COLUMN viability TEXT")
-            g.db.commit()
-        if "viability_reason" not in cols:
-            g.db.execute("ALTER TABLE jobs ADD COLUMN viability_reason TEXT")
-            g.db.commit()
-        if "viability_prompt_hash" not in cols:
-            g.db.execute("ALTER TABLE jobs ADD COLUMN viability_prompt_hash TEXT")
-            g.db.commit()
-        cols = [row[1] for row in g.db.execute("PRAGMA table_info(jobs)").fetchall()]
-        if "applied_at" not in cols:
-            g.db.execute("ALTER TABLE jobs ADD COLUMN applied_at TEXT")
-            g.db.execute(
-                "UPDATE jobs SET applied_at = first_seen "
-                "WHERE status IN ('applied','interviewing','offered','rejected','withdrawn','ghosted') "
-                "AND applied_at IS NULL"
-            )
-            g.db.commit()
-        cols = [row[1] for row in g.db.execute("PRAGMA table_info(jobs)").fetchall()]
-        if "history" not in cols:
-            g.db.execute("ALTER TABLE jobs ADD COLUMN history TEXT NOT NULL DEFAULT '[]'")
-            g.db.commit()
-            bootstrap_history(g.db)
-        cols = [row[1] for row in g.db.execute("PRAGMA table_info(jobs)").fetchall()]
-        if "company_actual" not in cols:
-            g.db.execute("ALTER TABLE jobs ADD COLUMN company_actual TEXT")
-            g.db.commit()
-        # File attachments: one physical file (attachment_id) linked to N jobs.
-        g.db.execute(
-            """CREATE TABLE IF NOT EXISTS job_attachments (
-                   job_id        TEXT NOT NULL,
-                   attachment_id TEXT NOT NULL,
-                   stored_name   TEXT NOT NULL,
-                   original_name TEXT NOT NULL,
-                   content_type  TEXT,
-                   size          INTEGER,
-                   uploaded_at   TEXT NOT NULL,
-                   PRIMARY KEY (job_id, attachment_id)
-               )"""
-        )
-        g.db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_attach_aid ON job_attachments(attachment_id)"
-        )
-        g.db.commit()
     return g.db
+
+
+_init_db()  # run migrations once at import, before serving any request
+
+
+@app.errorhandler(sqlite3.OperationalError)
+def handle_db_busy(e: sqlite3.OperationalError):
+    """A locked DB means ingestion/scoring is mid-write. Reads stay lock-free in
+    WAL, so this only affects writes; surface a clear, retryable message."""
+    if "locked" in str(e).lower() or "busy" in str(e).lower():
+        return ("The database is busy — an ingestion or scoring run is in progress. "
+                "Please try again in a moment.", 503)
+    raise e  # other operational errors fall through to the normal 500 handler
 
 
 @app.teardown_appcontext

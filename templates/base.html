@@ -275,7 +275,14 @@
     bootstrap.Offcanvas.getOrCreateInstance(panel).show();
 
     fetch('/job/' + jobId)
-      .then(r => { if (!r.ok) throw new Error(); return r.json(); })
+      .then(async r => {
+        if (!r.ok) {
+          const err = new Error((await r.text().catch(() => '')) || 'load failed');
+          err.status = r.status;
+          throw err;
+        }
+        return r.json();
+      })
       .then(job => {
         const viabilityColors = {high: 'success', medium: 'warning', low: 'danger'};
         titleEl.textContent = job.title || '(no title)';
@@ -462,9 +469,12 @@
           }).catch(() => alert('Copy failed — your browser may not support clipboard access.'));
         };
       })
-      .catch(() => {
-        titleEl.textContent = 'Error';
-        bodyEl.innerHTML    = '<div class="alert alert-danger m-3">Failed to load job details.</div>';
+      .catch(err => {
+        const busy = err && err.status === 503;
+        titleEl.textContent = busy ? 'Database busy' : 'Error';
+        const msg = busy ? (err.message || 'The database is busy — try again in a moment.')
+                         : 'Failed to load job details.';
+        bodyEl.innerHTML = `<div class="alert ${busy ? 'alert-warning' : 'alert-danger'} m-3">${escHtml(msg)}</div>`;
       });
   }
   </script>
