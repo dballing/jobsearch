@@ -80,6 +80,20 @@ When a job is posted by a third party (e.g. a job board or recruiting firm) rath
 - Viability scoring sends both names to the AI with the same "posted via" note.
 - The override is cleared by deleting the field contents and saving. The original ingested name is always preserved.
 
+### Notes
+
+The preview panel has a **Notes** box for free-text notes about a role (recruiter contacts, follow-ups, impressions). Notes are **shared across the matched group**: saving writes the same text to every current posting in the fuzzy-match group, and editing any posting updates the whole group. Each posting keeps its own copy, so if the group is later split they all retain the note. Every member's History records the edit (the posting you actually typed on reads "Note updated"; siblings read "Note updated (on a grouped posting)").
+
+### Attachments
+
+The preview panel also lets you attach **files** to a job — cover letters, documents shared during interviews, etc. Files are stored on disk under UUID names (in `uploads_dir`, see [Configuration](configuration.md)); the real filename and metadata live in the database, and downloads serve the original filename.
+
+- Attachments are **shared across the matched group** like notes: uploading links the file to every current posting in the group.
+- Each file shows its name (click to download), size, and a **×** to remove it from the current posting.
+- Removal is **reference-counted**: removing a file from one posting only unlinks it there; the physical file is deleted only once no posting references it anymore. So if you attach a file while jobs are grouped, then later split them, removing it from one job leaves the others' copies intact.
+- Max upload size is 25 MB per file.
+- The `uploads/` directory lives outside `jobs.db`, so back it up separately from the database.
+
 ### Bulk-skip low-viability jobs
 
 When any `new` jobs on the current page have a `low` viability score, a **Skip N low & new** button appears in the filter bar. Clicking it confirms and sets all matching jobs on that page to `skipped` in one action.

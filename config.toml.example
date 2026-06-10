@@ -2,6 +2,10 @@ api_token = "apify_api_xxxxxxxxxxxxxxxxxxxx"
 username  = "your-apify-username"
 db_path   = "jobs.db"
 
+# Directory for job file attachments (created if missing). Files are stored under
+# UUID names; the real filename + metadata live in the DB. Default: "uploads".
+uploads_dir = "uploads"
+
 # Viability scoring — uses the Anthropic API to rate each job high/medium/low.
 # Run `rescore_viability.sh` after ingestion to score new/updated jobs (excludes closed).
 # [viability]

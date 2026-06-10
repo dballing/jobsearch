@@ -3,13 +3,16 @@
 
 import json
 import math
+import os
 import shlex
 import sqlite3
 import tomllib
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Flask, g, render_template, request, url_for
+from flask import Flask, abort, g, render_template, request, send_file, url_for
+from werkzeug.utils import secure_filename
 from ingest import append_history, bootstrap_history
 from viability import prompt_hash
 
@@ -23,6 +26,11 @@ with open(_config_path, "rb") as _f:
     _cfg = tomllib.load(_f)
 
 DB_PATH: str = _cfg.get("db_path", "jobs.db")
+
+# Where uploaded attachments live on disk (UUID filenames; real names in the DB).
+UPLOADS_DIR: str = _cfg.get("uploads_dir", "uploads")
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024  # 25 MB per upload
 
 # Viability prompt hash — recomputed whenever config.toml changes on disk.
 # Stored as a module-level mtime cache so a page refresh picks up edits
@@ -254,6 +262,23 @@ def get_db() -> sqlite3.Connection:
         if "company_actual" not in cols:
             g.db.execute("ALTER TABLE jobs ADD COLUMN company_actual TEXT")
             g.db.commit()
+        # File attachments: one physical file (attachment_id) linked to N jobs.
+        g.db.execute(
+            """CREATE TABLE IF NOT EXISTS job_attachments (
+                   job_id        TEXT NOT NULL,
+                   attachment_id TEXT NOT NULL,
+                   stored_name   TEXT NOT NULL,
+                   original_name TEXT NOT NULL,
+                   content_type  TEXT,
+                   size          INTEGER,
+                   uploaded_at   TEXT NOT NULL,
+                   PRIMARY KEY (job_id, attachment_id)
+               )"""
+        )
+        g.db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_attach_aid ON job_attachments(attachment_id)"
+        )
+        g.db.commit()
     return g.db
 
 
@@ -841,6 +866,12 @@ def get_job(job_id: str):
     if not row:
         return "Not found", 404
     job = dict(row)
+    attachments = [
+        dict(a) for a in db.execute(
+            "SELECT attachment_id, original_name, size, content_type, uploaded_at "
+            "FROM job_attachments WHERE job_id = ? ORDER BY uploaded_at", (job_id,)
+        ).fetchall()
+    ]
     return {
         "job_id":           job["job_id"],
         "title":            job["title"],
@@ -857,6 +888,7 @@ def get_job(job_id: str):
         "viability_reason": job.get("viability_reason"),
         "applied_at":       (job.get("applied_at") or "")[:10] or None,
         "notes":            job.get("notes"),
+        "attachments":      attachments,
         "history":          json.loads(job.get("history") or "[]"),
     }
 
@@ -954,6 +986,79 @@ def set_notes(job_id: str):
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     for mid in members:
         append_history(db, mid, {"ts": ts, "event": "notes", "origin": job_id})
+    db.commit()
+    return "", 204
+
+
+@app.route("/job/<job_id>/attachment", methods=["POST"])
+def upload_attachment(job_id: str):
+    db = get_db()
+    if not db.execute("SELECT 1 FROM jobs WHERE job_id = ?", (job_id,)).fetchone():
+        return "Not found", 404
+    file = request.files.get("file")
+    if not file or not file.filename:
+        return "No file", 400
+    original = file.filename[:255]
+    # On-disk name is a UUID (+ a sanitized extension); never the client filename.
+    ext = os.path.splitext(secure_filename(file.filename))[1]
+    attachment_id = uuid.uuid4().hex
+    stored_name = f"{attachment_id}{ext}"
+    file.save(os.path.join(UPLOADS_DIR, stored_name))
+    size = os.path.getsize(os.path.join(UPLOADS_DIR, stored_name))
+    ctype = file.mimetype or None
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Link the one physical file to every current group member (shared metadata).
+    members = group_member_ids(db, job_id)
+    db.executemany(
+        "INSERT INTO job_attachments (job_id, attachment_id, stored_name, original_name, "
+        "content_type, size, uploaded_at) VALUES (?,?,?,?,?,?,?)",
+        [(mid, attachment_id, stored_name, original, ctype, size, ts) for mid in members],
+    )
+    for mid in members:
+        append_history(db, mid, {"ts": ts, "event": "attachment_added", "name": original, "origin": job_id})
+    db.commit()
+    return {"attachment_id": attachment_id, "original_name": original, "size": size,
+            "content_type": ctype, "uploaded_at": ts}, 201
+
+
+@app.route("/job/<job_id>/attachment/<attachment_id>")
+def download_attachment(job_id: str, attachment_id: str):
+    db = get_db()
+    row = db.execute(
+        "SELECT stored_name, original_name, content_type FROM job_attachments "
+        "WHERE job_id = ? AND attachment_id = ?", (job_id, attachment_id),
+    ).fetchone()
+    if not row:
+        abort(404)
+    path = os.path.join(UPLOADS_DIR, os.path.basename(row["stored_name"]))
+    if not os.path.isfile(path):
+        abort(404)
+    return send_file(path, as_attachment=True, download_name=row["original_name"],
+                     mimetype=row["content_type"] or None)
+
+
+@app.route("/job/<job_id>/attachment/<attachment_id>/delete", methods=["POST"])
+def delete_attachment(job_id: str, attachment_id: str):
+    db = get_db()
+    row = db.execute(
+        "SELECT stored_name, original_name FROM job_attachments "
+        "WHERE job_id = ? AND attachment_id = ?", (job_id, attachment_id),
+    ).fetchone()
+    if not row:
+        return "Not found", 404
+    db.execute("DELETE FROM job_attachments WHERE job_id = ? AND attachment_id = ?",
+               (job_id, attachment_id))
+    # Reference count: drop the physical file only once no posting references it.
+    remaining = db.execute(
+        "SELECT COUNT(*) FROM job_attachments WHERE attachment_id = ?", (attachment_id,)
+    ).fetchone()[0]
+    if remaining == 0:
+        try:
+            os.remove(os.path.join(UPLOADS_DIR, os.path.basename(row["stored_name"])))
+        except OSError:
+            pass
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    append_history(db, job_id, {"ts": ts, "event": "attachment_removed", "name": row["original_name"]})
     db.commit()
     return "", 204
 

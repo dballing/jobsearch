@@ -219,6 +219,45 @@
     return html || '<em class="text-muted">No description available.</em>';
   }
 
+  function fmtSize(n) {
+    if (n == null) return '';
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(0) + ' KB';
+    return (n / 1048576).toFixed(1) + ' MB';
+  }
+
+  // Render the attachment list for a job and wire each row's remove button.
+  function renderAttachList(job) {
+    const ul = document.getElementById('jobAttachList');
+    if (!ul) return;
+    const items = job.attachments || [];
+    if (!items.length) {
+      ul.innerHTML = '<li class="list-group-item text-muted py-1">No files attached.</li>';
+      return;
+    }
+    ul.innerHTML = items.map(a =>
+      '<li class="list-group-item d-flex align-items-center justify-content-between py-1">'
+      + `<a href="/job/${encodeURIComponent(job.job_id)}/attachment/${encodeURIComponent(a.attachment_id)}">`
+      + `<i class="bi bi-paperclip"></i> ${escHtml(a.original_name)}</a>`
+      + `<span class="d-flex align-items-center gap-2"><span class="text-muted small">${fmtSize(a.size)}</span>`
+      + `<button class="btn btn-sm btn-link text-danger p-0 attach-remove" data-aid="${escHtml(a.attachment_id)}" title="Remove from this posting">&times;</button></span>`
+      + '</li>'
+    ).join('');
+    ul.querySelectorAll('.attach-remove').forEach(btn =>
+      btn.addEventListener('click', () => removeAttachment(job, btn.dataset.aid)));
+  }
+
+  async function removeAttachment(job, aid) {
+    if (!confirm('Remove this attachment from this posting?')) return;
+    const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/attachment/${encodeURIComponent(aid)}/delete`, {method: 'POST'});
+    if (resp.ok) {
+      job.attachments = (job.attachments || []).filter(a => a.attachment_id !== aid);
+      renderAttachList(job);
+    } else {
+      alert('Remove failed.');
+    }
+  }
+
   function showPreview(jobId) {
     const panel   = document.getElementById('jobPreview');
     const titleEl = document.getElementById('jobPreviewLabel');
@@ -274,6 +313,8 @@
             else if (e.event === 'company_actual')  desc = e.to ? `Company override set: <strong>${escHtml(e.to)}</strong>` : 'Company override cleared';
             else if (e.event === 'closed')     desc = 'Auto-closed (expired)';
             else if (e.event === 'notes')      desc = (e.origin && e.origin !== job.job_id) ? 'Note updated <span class="text-muted fst-italic">(on a grouped posting)</span>' : 'Note updated';
+            else if (e.event === 'attachment_added')   desc = `Attached <strong>${escHtml(e.name||'file')}</strong>` + ((e.origin && e.origin !== job.job_id) ? ' <span class="text-muted fst-italic">(on a grouped posting)</span>' : '');
+            else if (e.event === 'attachment_removed') desc = `Removed attachment <strong>${escHtml(e.name||'file')}</strong>`;
             else desc = escHtml(e.event);
             return `<tr><td class="text-muted small text-nowrap pe-3">${escHtml(ts)}${apx}</td><td class="small">${desc}</td></tr>`;
           }).join('');
@@ -340,6 +381,14 @@
           + '<button id="jobNotesSave" class="btn btn-sm btn-outline-primary">Save note</button>'
           + '<span id="jobNotesFeedback" class="small"></span>'
           + '</div></div>'
+          + '<div class="mb-3">'
+          + '<label class="form-label small fw-semibold mb-1">Attachments <span class="text-muted fw-normal">(shared across the matched group)</span></label>'
+          + '<ul id="jobAttachList" class="list-group small mb-2"></ul>'
+          + '<div class="d-flex align-items-center gap-2">'
+          + '<input type="file" id="jobAttachFile" class="form-control form-control-sm" style="max-width:240px">'
+          + '<button id="jobAttachUpload" class="btn btn-sm btn-outline-primary">Upload</button>'
+          + '<span id="jobAttachFeedback" class="small"></span>'
+          + '</div></div>'
           + '<div class="job-description-text">' + renderDescription(job.job_description) + '</div>';
 
         // Notes editor — value set via property (no HTML injection). Notes are
@@ -358,6 +407,28 @@
           } else {
             notesFb.className = 'text-danger small';
             notesFb.textContent = 'Save failed.';
+          }
+        });
+
+        // Attachments — render the current list and wire upload.
+        renderAttachList(job);
+        document.getElementById('jobAttachUpload').addEventListener('click', async () => {
+          const fileInput = document.getElementById('jobAttachFile');
+          const fb = document.getElementById('jobAttachFeedback');
+          if (!fileInput.files.length) { fb.className = 'text-danger small'; fb.textContent = 'Choose a file first.'; return; }
+          const fd = new FormData(); fd.append('file', fileInput.files[0]);
+          fb.className = 'text-muted small'; fb.textContent = 'Uploading…';
+          const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/attachment`, {method: 'POST', body: fd});
+          if (resp.ok) {
+            const a = await resp.json();
+            (job.attachments = job.attachments || []).push(a);
+            renderAttachList(job);
+            fileInput.value = '';
+            fb.className = 'text-success small'; fb.textContent = 'Uploaded!';
+            setTimeout(() => { fb.textContent = ''; }, 2000);
+          } else {
+            fb.className = 'text-danger small';
+            fb.textContent = resp.status === 413 ? 'File too large (max 25 MB).' : 'Upload failed.';
           }
         });
 

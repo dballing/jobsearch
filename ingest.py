@@ -75,6 +75,20 @@ CREATE TABLE IF NOT EXISTS ingest_history (
     unchanged   INTEGER NOT NULL DEFAULT 0,
     UNIQUE(task_name, run_id)
 );
+
+-- File attachments: one physical file (attachment_id, stored on disk under a
+-- UUID name) linked to N jobs. Refcount = COUNT(*) by attachment_id.
+CREATE TABLE IF NOT EXISTS job_attachments (
+    job_id        TEXT NOT NULL,
+    attachment_id TEXT NOT NULL,
+    stored_name   TEXT NOT NULL,
+    original_name TEXT NOT NULL,
+    content_type  TEXT,
+    size          INTEGER,
+    uploaded_at   TEXT NOT NULL,
+    PRIMARY KEY (job_id, attachment_id)
+);
+CREATE INDEX IF NOT EXISTS idx_attach_aid ON job_attachments(attachment_id);
 """
 
 

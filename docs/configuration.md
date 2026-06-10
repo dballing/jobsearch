@@ -5,9 +5,10 @@ All configuration lives in `config.toml` (gitignored — never committed). Copy 
 ## Top-level keys
 
 ```toml
-api_token = "apify_api_xxxxxxxxxxxxxxxxxxxx"   # Apify API token (required)
-username  = "your-apify-username"              # Apify username (required)
-db_path   = "jobs.db"                          # path to SQLite database (default: jobs.db)
+api_token   = "apify_api_xxxxxxxxxxxxxxxxxxxx" # Apify API token (required)
+username    = "your-apify-username"            # Apify username (required)
+db_path     = "jobs.db"                        # path to SQLite database (default: jobs.db)
+uploads_dir = "uploads"                        # dir for job file attachments (default: uploads)
 ```
 
 ## Labels
