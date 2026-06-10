@@ -686,7 +686,17 @@ def index():
     where, params = build_where(label, status_filter, q, source, viability,
                                 comp_active, comp_min, comp_max)
     _TEXT_COLS = {"title", "company", "location", "status"}
-    sort_expr = f"{sort} COLLATE NOCASE" if sort in _TEXT_COLS else sort
+    if sort == "company":
+        # Sort by the *effective* (override-aware) company so the order matches what
+        # the table shows. A company_actual override otherwise sorts by the hidden
+        # original name. Grouped queries expose it as the company_eff aggregate;
+        # flat rows compute it inline.
+        sort_expr = ("company_eff COLLATE NOCASE" if view == "grouped"
+                     else "COALESCE(company_actual, company) COLLATE NOCASE")
+    elif sort in _TEXT_COLS:
+        sort_expr = f"{sort} COLLATE NOCASE"
+    else:
+        sort_expr = sort
     # For applied_at, NULLs sort first when descending so unapplied jobs
     # bubble to the top — making it easy to find jobs still needing action.
     # All other columns keep NULLs last in both directions.
