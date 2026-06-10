@@ -112,6 +112,7 @@ STATUS_FILTERS = {
     "reviewing": ("Reviewing", "status = 'reviewing'"),
     "active":    ("Active",    "status NOT IN ('skipped', 'autoskipped', 'rejected', 'withdrawn', 'ghosted', 'closed')"),
     "applied":   ("Applied",   "status IN ('applied', 'interviewing', 'offered', 'ghosted')"),
+    "interview": ("Interview Process", "status IN ('interviewing', 'offered')"),
     "rejected":  ("Rejected",  "status = 'rejected'"),
     "all":       ("All",       None),
 }
