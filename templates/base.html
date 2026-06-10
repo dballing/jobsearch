@@ -249,12 +249,16 @@
 
   async function removeAttachment(job, aid) {
     if (!confirm('Remove this attachment from this posting?')) return;
-    const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/attachment/${encodeURIComponent(aid)}/delete`, {method: 'POST'});
-    if (resp.ok) {
-      job.attachments = (job.attachments || []).filter(a => a.attachment_id !== aid);
-      renderAttachList(job);
-    } else {
-      alert('Remove failed.');
+    try {
+      const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/attachment/${encodeURIComponent(aid)}/delete`, {method: 'POST'});
+      if (resp.ok) {
+        job.attachments = (job.attachments || []).filter(a => a.attachment_id !== aid);
+        renderAttachList(job);
+      } else {
+        alert(resp.status === 503 ? 'Database busy — try again in a moment.' : 'Remove failed.');
+      }
+    } catch (e) {
+      alert('Remove failed (network error).');
     }
   }
 
@@ -385,7 +389,7 @@
           + '<label class="form-label small fw-semibold mb-1">Notes <span class="text-muted fw-normal">(shared across the matched group)</span></label>'
           + '<textarea id="jobNotes" class="form-control form-control-sm" rows="3" placeholder="Notes about this role…"></textarea>'
           + '<div class="d-flex align-items-center gap-2 mt-1">'
-          + '<button id="jobNotesSave" class="btn btn-sm btn-outline-primary">Save note</button>'
+          + '<button type="button" id="jobNotesSave" class="btn btn-sm btn-outline-primary">Save note</button>'
           + '<span id="jobNotesFeedback" class="small"></span>'
           + '</div></div>'
           + '<div class="mb-3">'
@@ -393,7 +397,7 @@
           + '<ul id="jobAttachList" class="list-group small mb-2"></ul>'
           + '<div class="d-flex align-items-center gap-2">'
           + '<input type="file" id="jobAttachFile" class="form-control form-control-sm" style="max-width:240px">'
-          + '<button id="jobAttachUpload" class="btn btn-sm btn-outline-primary">Upload</button>'
+          + '<button type="button" id="jobAttachUpload" class="btn btn-sm btn-outline-primary">Upload</button>'
           + '<span id="jobAttachFeedback" class="small"></span>'
           + '</div></div>'
           + '<div class="job-description-text">' + renderDescription(job.job_description) + '</div>';
@@ -404,38 +408,54 @@
         notesEl.value = job.notes || '';
         const notesFb = document.getElementById('jobNotesFeedback');
         document.getElementById('jobNotesSave').addEventListener('click', async () => {
-          const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/notes`,
-            {method: 'POST', body: new URLSearchParams({notes: notesEl.value})});
-          if (resp.ok) {
-            job.notes = notesEl.value.trim() || null;
-            notesFb.className = 'text-success small';
-            notesFb.textContent = 'Saved!';
-            setTimeout(() => { notesFb.textContent = ''; }, 2000);
-          } else {
+          try {
+            const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/notes`,
+              {method: 'POST', body: new URLSearchParams({notes: notesEl.value})});
+            if (resp.ok) {
+              job.notes = notesEl.value.trim() || null;
+              notesFb.className = 'text-success small';
+              notesFb.textContent = 'Saved!';
+              setTimeout(() => { notesFb.textContent = ''; }, 2000);
+            } else {
+              notesFb.className = 'text-danger small';
+              notesFb.textContent = resp.status === 503 ? 'Database busy — try again in a moment.' : 'Save failed.';
+            }
+          } catch (e) {
             notesFb.className = 'text-danger small';
-            notesFb.textContent = 'Save failed.';
+            notesFb.textContent = 'Save failed (network error).';
           }
         });
 
         // Attachments — render the current list and wire upload.
         renderAttachList(job);
-        document.getElementById('jobAttachUpload').addEventListener('click', async () => {
+        const uploadBtn = document.getElementById('jobAttachUpload');
+        uploadBtn.addEventListener('click', async () => {
           const fileInput = document.getElementById('jobAttachFile');
           const fb = document.getElementById('jobAttachFeedback');
           if (!fileInput.files.length) { fb.className = 'text-danger small'; fb.textContent = 'Choose a file first.'; return; }
           const fd = new FormData(); fd.append('file', fileInput.files[0]);
           fb.className = 'text-muted small'; fb.textContent = 'Uploading…';
-          const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/attachment`, {method: 'POST', body: fd});
-          if (resp.ok) {
-            const a = await resp.json();
-            (job.attachments = job.attachments || []).push(a);
-            renderAttachList(job);
-            fileInput.value = '';
-            fb.className = 'text-success small'; fb.textContent = 'Uploaded!';
-            setTimeout(() => { fb.textContent = ''; }, 2000);
-          } else {
+          uploadBtn.disabled = true;
+          try {
+            const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/attachment`, {method: 'POST', body: fd});
+            if (resp.ok) {
+              const a = await resp.json();
+              (job.attachments = job.attachments || []).push(a);
+              renderAttachList(job);
+              fileInput.value = '';
+              fb.className = 'text-success small'; fb.textContent = 'Uploaded!';
+              setTimeout(() => { fb.textContent = ''; }, 2000);
+            } else {
+              fb.className = 'text-danger small';
+              fb.textContent = resp.status === 413 ? 'File too large (max 25 MB).'
+                             : resp.status === 503 ? 'Database busy — try again in a moment.'
+                             : 'Upload failed.';
+            }
+          } catch (e) {
             fb.className = 'text-danger small';
-            fb.textContent = resp.status === 413 ? 'File too large (max 25 MB).' : 'Upload failed.';
+            fb.textContent = 'Upload failed (network error).';
+          } finally {
+            uploadBtn.disabled = false;
           }
         });
 
