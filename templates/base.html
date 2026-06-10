@@ -273,6 +273,7 @@
             else if (e.event === 'unlinked')        desc = 'Unlinked from canonical';
             else if (e.event === 'company_actual')  desc = e.to ? `Company override set: <strong>${escHtml(e.to)}</strong>` : 'Company override cleared';
             else if (e.event === 'closed')     desc = 'Auto-closed (expired)';
+            else if (e.event === 'notes')      desc = (e.origin && e.origin !== job.job_id) ? 'Note updated <span class="text-muted fst-italic">(on a grouped posting)</span>' : 'Note updated';
             else desc = escHtml(e.event);
             return `<tr><td class="text-muted small text-nowrap pe-3">${escHtml(ts)}${apx}</td><td class="small">${desc}</td></tr>`;
           }).join('');
@@ -331,7 +332,35 @@
         editorDiv.append(inputEl, saveBtn, clearBtn, feedbackEl);
         metaEl.insertAdjacentElement('afterend', editorDiv);
 
-        bodyEl.innerHTML = '<div class="job-description-text">' + renderDescription(job.job_description) + '</div>';
+        bodyEl.innerHTML =
+          '<div class="mb-3">'
+          + '<label class="form-label small fw-semibold mb-1">Notes <span class="text-muted fw-normal">(shared across the matched group)</span></label>'
+          + '<textarea id="jobNotes" class="form-control form-control-sm" rows="3" placeholder="Notes about this role…"></textarea>'
+          + '<div class="d-flex align-items-center gap-2 mt-1">'
+          + '<button id="jobNotesSave" class="btn btn-sm btn-outline-primary">Save note</button>'
+          + '<span id="jobNotesFeedback" class="small"></span>'
+          + '</div></div>'
+          + '<div class="job-description-text">' + renderDescription(job.job_description) + '</div>';
+
+        // Notes editor — value set via property (no HTML injection). Notes are
+        // propagated server-side to every current group member.
+        const notesEl = document.getElementById('jobNotes');
+        notesEl.value = job.notes || '';
+        const notesFb = document.getElementById('jobNotesFeedback');
+        document.getElementById('jobNotesSave').addEventListener('click', async () => {
+          const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/notes`,
+            {method: 'POST', body: new URLSearchParams({notes: notesEl.value})});
+          if (resp.ok) {
+            job.notes = notesEl.value.trim() || null;
+            notesFb.className = 'text-success small';
+            notesFb.textContent = 'Saved!';
+            setTimeout(() => { notesFb.textContent = ''; }, 2000);
+          } else {
+            notesFb.className = 'text-danger small';
+            notesFb.textContent = 'Save failed.';
+          }
+        });
+
         if (job.job_url) {
           linkEl.href = job.job_url;
           linkEl.classList.remove('d-none');

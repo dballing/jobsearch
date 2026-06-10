@@ -374,6 +374,24 @@ def _group_field(sub_rows: list[dict], key: str, fmt=None) -> object:
     return first if all(v == first for v in vals) else GROUP_VARIED
 
 
+def group_member_ids(db: sqlite3.Connection, job_id: str) -> list[str]:
+    """All job_ids in this job's current fuzzy-match group (canonical root + members).
+
+    Used to fan out notes and attachments across the group: writes propagate to
+    every current member so each keeps its own copy if the group is later split.
+    Returns just [job_id] if the job doesn't exist.
+    """
+    row = db.execute("SELECT canonical_id FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    if not row:
+        return [job_id]
+    root = row["canonical_id"] or job_id
+    rows = db.execute(
+        "SELECT job_id FROM jobs WHERE canonical_id = ? OR (canonical_id IS NULL AND job_id = ?)",
+        (root, root),
+    ).fetchall()
+    return [r["job_id"] for r in rows] or [job_id]
+
+
 def fetch_sub_rows(db: sqlite3.Connection, group_key: str,
                    where: str, params: list) -> list[dict]:
     """Fetch all jobs belonging to a canonical group.
@@ -838,6 +856,7 @@ def get_job(job_id: str):
         "viability":        job.get("viability"),
         "viability_reason": job.get("viability_reason"),
         "applied_at":       (job.get("applied_at") or "")[:10] or None,
+        "notes":            job.get("notes"),
         "history":          json.loads(job.get("history") or "[]"),
     }
 
@@ -912,6 +931,29 @@ def set_company_actual(job_id: str):
     db.execute("UPDATE jobs SET company_actual = ? WHERE job_id = ?", (value, job_id))
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     append_history(db, job_id, {"ts": ts, "event": "company_actual", "from": old, "to": value})
+    db.commit()
+    return "", 204
+
+
+@app.route("/job/<job_id>/notes", methods=["POST"])
+def set_notes(job_id: str):
+    value = request.form.get("notes", "").strip() or None
+    db = get_db()
+    if not db.execute("SELECT 1 FROM jobs WHERE job_id = ?", (job_id,)).fetchone():
+        return "Not found", 404
+    # Propagate to every current group member so each keeps its own copy if the
+    # group is later split.
+    members = group_member_ids(db, job_id)
+    placeholders = ",".join("?" * len(members))
+    db.execute(
+        f"UPDATE jobs SET notes = ? WHERE job_id IN ({placeholders})",
+        [value, *members],
+    )
+    # Log on every member so the paper trail survives a later de-group. `origin`
+    # marks which posting the edit was actually made on.
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for mid in members:
+        append_history(db, mid, {"ts": ts, "event": "notes", "origin": job_id})
     db.commit()
     return "", 204
 
