@@ -963,9 +963,21 @@ def update_status(job_id: str):
     if new_status not in STATUSES:
         return "Invalid status", 400
     db = get_db()
-    row = db.execute("SELECT status FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
-    old_status = row["status"] if row else None
-    db.execute(
+    if not db.execute("SELECT 1 FROM jobs WHERE job_id = ?", (job_id,)).fetchone():
+        return "Not found", 404
+    # Status belongs to the role, not the individual posting: propagate to every
+    # current group member so applied_at and the history log land on all of them
+    # (and survive a later de-group). applied_at is per-row via the CASE below, so
+    # each member transitions from its own previous status correctly.
+    members = group_member_ids(db, job_id)
+    placeholders = ",".join("?" * len(members))
+    old_statuses = {
+        r["job_id"]: r["status"]
+        for r in db.execute(
+            f"SELECT job_id, status FROM jobs WHERE job_id IN ({placeholders})", members
+        ).fetchall()
+    }
+    db.executemany(
         """UPDATE jobs SET status = ?, refreshed_at = NULL,
            applied_at = CASE
              WHEN ? = 'applied' AND status IN ('new','reviewing','skipped','autoskipped') THEN CURRENT_TIMESTAMP
@@ -973,11 +985,13 @@ def update_status(job_id: str):
              ELSE applied_at
            END
            WHERE job_id = ?""",
-        (new_status, new_status, new_status, job_id),
+        [(new_status, new_status, new_status, mid) for mid in members],
     )
-    if old_status and old_status != new_status:
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        append_history(db, job_id, {"ts": ts, "event": "status", "from": old_status, "to": new_status})
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for mid in members:
+        old = old_statuses.get(mid)
+        if old and old != new_status:
+            append_history(db, mid, {"ts": ts, "event": "status", "from": old, "to": new_status})
     db.commit()
     return "", 204
 
@@ -1163,12 +1177,13 @@ def link_job(job_id: str):
     db.execute("UPDATE jobs SET canonical_id = ? WHERE job_id = ?", (resolved_root, job_id))
     append_history(db, job_id, {"ts": ts, "event": "linked", "canonical_id": resolved_root})
 
-    # Inherit the canonical's status if the job is still in an early state.
+    # Inherit the canonical's status (and applied date) if the job is still early.
     job_row = db.execute("SELECT status FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
     if job_row and job_row["status"] in ("new", "reviewing"):
-        root_row = db.execute("SELECT status FROM jobs WHERE job_id = ?", (resolved_root,)).fetchone()
+        root_row = db.execute("SELECT status, applied_at FROM jobs WHERE job_id = ?", (resolved_root,)).fetchone()
         if root_row and root_row["status"] not in ("new", "reviewing"):
-            db.execute("UPDATE jobs SET status = ? WHERE job_id = ?", (root_row["status"], job_id))
+            db.execute("UPDATE jobs SET status = ?, applied_at = ? WHERE job_id = ?",
+                       (root_row["status"], root_row["applied_at"], job_id))
             append_history(db, job_id, {
                 "ts": ts, "event": "status",
                 "from": job_row["status"], "to": root_row["status"],

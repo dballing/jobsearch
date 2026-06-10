@@ -499,10 +499,13 @@ async function updateGroupStatus(sel) {
   const prev   = sel.dataset.prev;
   const jobIds = JSON.parse(sel.dataset.groupIds);
   const status = sel.value;
-  const body   = new URLSearchParams({status});
-  jobIds.forEach(id => body.append('job_ids', id));
+  if (!jobIds.length) return;
   try {
-    const resp = await fetch('/jobs/status', {method: 'POST', body});
+    // Any member resolves the whole canonical group server-side (including any
+    // members filtered out of the current view), so the status, applied_at, and
+    // history land on every posting in the group.
+    const resp = await fetch('/job/' + encodeURIComponent(jobIds[0]) + '/status',
+      {method: 'POST', body: new URLSearchParams({status})});
     if (!resp.ok) throw new Error();
     sel.dataset.prev = status;
     applySelectColor(sel);
