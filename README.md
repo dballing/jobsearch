@@ -112,7 +112,8 @@ label = "dc"
 ./run_app.sh
 ```
 
-Open [http://127.0.0.1:5000](http://127.0.0.1:5000).
+Open [http://127.0.0.1:5001](http://127.0.0.1:5001). (Defaults to port 5001 — macOS
+AirPlay Receiver occupies 5000. Override with `./run_app.sh --port N`.)
 
 ---
 

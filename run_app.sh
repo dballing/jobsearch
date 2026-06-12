@@ -17,4 +17,9 @@ source .venv/bin/activate
 # Set FLASK_NO_DEBUG=1 to run without it. Extra args ("$@") still pass through.
 DEBUG_FLAG="--debug"
 [ -n "${FLASK_NO_DEBUG:-}" ] && DEBUG_FLAG=""
+
+# Default to port 5001 — macOS Control Center / AirPlay Receiver squats on Flask's
+# default 5000 (returns 403). An explicit `--port N` still overrides this, since the
+# CLI flag takes precedence over FLASK_RUN_PORT.
+export FLASK_RUN_PORT="${FLASK_RUN_PORT:-5001}"
 flask --app app run $DEBUG_FLAG "$@"
