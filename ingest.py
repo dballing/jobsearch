@@ -564,7 +564,9 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
 
         if row is None:
             canonical_id = None
-            initial_status = "closed" if expired else "new"
+            default_status = "closed" if expired else "new"
+            initial_status = default_status
+            initial_applied_at = None
             if fuzzy_dedup and not expired:
                 matches = find_canonical(
                     conn, fields["job_id"], fields["title"], fields["company"],
@@ -574,7 +576,11 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                     canonical = matches[0]
                     canonical_id = canonical["job_id"]
                     if inherit_canonical_status:
+                        # Inherit the canonical's applied date alongside its status,
+                        # so an auto-linked duplicate of an applied role isn't left
+                        # 'applied' with a NULL applied_at.
                         initial_status = canonical["status"]
+                        initial_applied_at = canonical["applied_at"]
                     print(
                         f"  NOTE: fuzzy match: {fields['job_id']} ({fields['title']}) "
                         f"→ canonical {canonical_id} ({canonical['title']}), "
@@ -598,20 +604,27 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                 INSERT INTO jobs
                     (job_id, title, company, location, posted_date,
                      job_url, apply_url, easy_apply, salary_min, salary_max, salary_currency,
-                     labels, source, status, job_description, canonical_id, raw)
+                     labels, source, status, applied_at, job_description, canonical_id, raw)
                 VALUES
                     (:job_id, :title, :company, :location, :posted_date,
                      :job_url, :apply_url, :easy_apply, :salary_min, :salary_max, :salary_currency,
-                     :labels, :source, :status, :job_description, :canonical_id, :raw)
+                     :labels, :source, :status, :applied_at, :job_description, :canonical_id, :raw)
                 """,
                 {**fields, "labels": json.dumps([label]), "status": initial_status,
-                 "canonical_id": canonical_id, "raw": raw},
+                 "applied_at": initial_applied_at, "canonical_id": canonical_id, "raw": raw},
             )
             inserted += 1
             ts = _now_iso()
             append_history(conn, fields["job_id"], {
                 "ts": ts, "event": "ingested", "label": label, "source": actor_type,
             })
+            # Record the inherited status so the paper trail shows when it became e.g.
+            # 'applied', matching the UI link route's behaviour.
+            if initial_status != default_status:
+                append_history(conn, fields["job_id"], {
+                    "ts": ts, "event": "status", "from": default_status,
+                    "to": initial_status, "note": "inherited from canonical on ingest",
+                })
             if initial_status == "closed":
                 append_history(conn, fields["job_id"], {
                     "ts": ts, "event": "status", "from": "new", "to": "closed",
