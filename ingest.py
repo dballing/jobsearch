@@ -16,6 +16,7 @@ import json
 import sqlite3
 import sys
 import tomllib
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -541,12 +542,17 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
            reset_on_change: bool = True,
            fuzzy_dedup: bool = True, fuzzy_desc_threshold: float = 0.85,
            fuzzy_title_threshold: float = 0.6,
-           inherit_canonical_status: bool = True) -> tuple[int, int, int, int, int]:
-    inserted = updated = unchanged = skipped_ats = fuzzy_linked = 0
+           inherit_canonical_status: bool = True) -> Counter:
+    """Process one run's items. Returns a Counter with these keys:
+        inserted_clean / inserted_grouped / inserted_expired  — new postings, by kind
+        updated / unchanged / skipped_ats                     — existing / skipped
+        relinked / orphan_merges / reset_new / auto_closed    — side-ops on existing rows
+    """
+    c: Counter = Counter()
 
     for item in items:
         if exclude_ats_dups and item.get("ats_duplicate") is True:
-            skipped_ats += 1
+            c["skipped_ats"] += 1
             continue
         fields = extract_fields_careersite(item) if actor_type == "careersite" else extract_fields_linkedin(item)
         if not fields["job_id"]:
@@ -586,7 +592,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                         f"→ canonical {canonical_id} ({canonical['title']}), "
                         f"status: {initial_status}"
                     )
-                    fuzzy_linked += 1
+                    # (the new posting itself is tallied as inserted_grouped below)
                     # Also link any other orphaned matches to the same canonical so
                     # future jobs find one group rather than many.
                     for other in matches[1:]:
@@ -598,7 +604,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                             f"  NOTE: also linking orphan {other['job_id']} ({other['title']}) "
                             f"→ canonical {canonical_id}"
                         )
-                        fuzzy_linked += 1
+                        c["orphan_merges"] += 1
             conn.execute(
                 """
                 INSERT INTO jobs
@@ -613,7 +619,12 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                 {**fields, "labels": json.dumps([label]), "status": initial_status,
                  "applied_at": initial_applied_at, "canonical_id": canonical_id, "raw": raw},
             )
-            inserted += 1
+            if initial_status == "closed":
+                c["inserted_expired"] += 1
+            elif canonical_id:
+                c["inserted_grouped"] += 1
+            else:
+                c["inserted_clean"] += 1
             ts = _now_iso()
             append_history(conn, fields["job_id"], {
                 "ts": ts, "event": "ingested", "label": label, "source": actor_type,
@@ -645,9 +656,11 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
 
             if expired and current_status in AUTO_CLOSE_STATUSES:
                 new_status = "closed"
+                c["auto_closed"] += 1
             elif desc_changed and current_status in ("skipped", "autoskipped") and reset_on_change:
                 new_status = "new"
                 refreshed_at = now
+                c["reset_new"] += 1
                 print(f"  NOTE: description changed for job {fields['job_id']} ({fields['title']}), resetting from {current_status} → new")
             else:
                 new_status = current_status
@@ -665,7 +678,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                         f"  NOTE: fuzzy match: {fields['job_id']} ({fields['title']}) "
                         f"→ canonical {canonical_id} ({canonical['title']})"
                     )
-                    fuzzy_linked += 1
+                    c["relinked"] += 1
                     for other in matches[1:]:
                         conn.execute(
                             "UPDATE jobs SET canonical_id = ? WHERE job_id = ?",
@@ -675,7 +688,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                             f"  NOTE: also linking orphan {other['job_id']} ({other['title']}) "
                             f"→ canonical {canonical_id}"
                         )
-                        fuzzy_linked += 1
+                        c["orphan_merges"] += 1
 
             something_changed = (
                 new_labels != existing_labels
@@ -706,7 +719,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                  "refreshed_at": refreshed_at, "canonical_id": canonical_id, "raw": raw},
             )
             if something_changed:
-                updated += 1
+                c["updated"] += 1
                 ts = _now_iso()
                 if new_status != current_status:
                     append_history(conn, fields["job_id"], {
@@ -721,10 +734,59 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                         "ts": ts, "event": "linked", "canonical_id": canonical_id,
                     })
             else:
-                unchanged += 1
+                c["unchanged"] += 1
 
     conn.commit()
-    return inserted, updated, unchanged, skipped_ats, fuzzy_linked
+    return c
+
+
+# ── Run-summary formatting ──────────────────────────────────────────────────
+def _new_total(c: Counter) -> int:
+    return c["inserted_clean"] + c["inserted_grouped"] + c["inserted_expired"]
+
+
+def _seen_total(c: Counter) -> int:
+    """Every item processed: new postings + existing seen-again + ATS skips."""
+    return _new_total(c) + c["updated"] + c["unchanged"] + c["skipped_ats"]
+
+
+def _sideops(c: Counter, ghosted: int = 0) -> str:
+    parts = []
+    for key, lbl in (("relinked", "re-linked"), ("orphan_merges", "orphan merges"),
+                     ("reset_new", "reset→new"), ("auto_closed", "auto-closed")):
+        if c[key]:
+            parts.append(f"{c[key]} {lbl}")
+    if ghosted:
+        parts.append(f"{ghosted} auto-ghosted")
+    return ", ".join(parts)
+
+
+def summary_compact(c: Counter, reset_on_change: bool = True) -> str:
+    """One-line per-run / per-task summary."""
+    reset_note = "" if reset_on_change else " (resets disabled)"
+    line = (f"{c['inserted_clean']} new + {c['inserted_grouped']} grouped, "
+            f"{c['updated']} updated{reset_note}, {c['unchanged']} unchanged")
+    if c["inserted_expired"]:
+        line += f", {c['inserted_expired']} arrived-expired"
+    if c["skipped_ats"]:
+        line += f", {c['skipped_ats']} ATS dupes"
+    side = _sideops(c)
+    if side:
+        line += f" | {side}"
+    return line
+
+
+def summary_detailed(c: Counter, ghosted: int, elapsed: float, dry_run: bool) -> str:
+    """Multi-line grand-total breakdown."""
+    prefix = "[DRY-RUN] " if dry_run else ""
+    exp = f", {c['inserted_expired']} arrived-expired" if c["inserted_expired"] else ""
+    return (
+        f"{prefix}Done in {elapsed:.1f}s. {_seen_total(c)} postings seen.\n"
+        f"  New:      {c['inserted_clean']} standalone, {c['inserted_grouped']} grouped{exp}\n"
+        f"  Existing: {c['updated']} updated, {c['unchanged']} unchanged, "
+        f"{c['skipped_ats']} ATS duplicates skipped\n"
+        f"  Side-ops: {_sideops(c, ghosted) or 'none'}"
+    )
 
 
 def auto_ghost_applied(conn: sqlite3.Connection, days: int) -> int:
@@ -816,7 +878,7 @@ def main() -> None:
     inherit_canonical_status: bool = config.get("inherit_canonical_status", True)
 
     conn = open_db(db_path)
-    total_inserted = total_updated = total_unchanged = total_skipped = total_fuzzy = 0
+    grand_total: Counter = Counter()
     start_time = datetime.now(timezone.utc)
     dry_run_note = " (DRY RUN)" if args.dry_run else ""
     print(f"Starting ingestion at {start_time.strftime('%Y-%m-%d %H:%M:%S %Z')}{dry_run_note}")
@@ -857,7 +919,7 @@ def main() -> None:
             if len(pending) > 1:
                 print(f"  Catching up: {len(pending)} runs to process.")
 
-            task_inserted = task_updated = task_unchanged = task_skipped = task_fuzzy = 0
+            task_total: Counter = Counter()
             for run in pending:
                 run_time = run["startedAt"][:16].replace("T", " ")
                 # Resolve the label for this specific run.
@@ -871,32 +933,19 @@ def main() -> None:
                     label = default_label
                 items = fetch_dataset_items(run["defaultDatasetId"], api_token)
                 print(f"  Run {run_time} [{label}]: {len(items)} items retrieved")
-                ins, upd, unch, skip, fuzzy = ingest(
+                result = ingest(
                     conn, items, label, actor_type, exclude_ats_dups, reset_on_change,
                     fuzzy_dedup, fuzzy_desc_threshold, fuzzy_title_threshold, inherit_canonical_status,
                 )
-                skip_msg    = f", {skip} ATS duplicates skipped" if skip else ""
-                fuzzy_msg   = f", {fuzzy} fuzzy-linked" if fuzzy else ""
-                reset_note  = " (resets disabled)" if not reset_on_change else ""
-                print(f"    {ins} inserted, {upd} updated{reset_note}, {unch} already existed{skip_msg}{fuzzy_msg}")
-                task_inserted += ins
-                task_updated  += upd
-                task_unchanged += unch
-                task_skipped  += skip
-                task_fuzzy    += fuzzy
-                record_state(conn, task_name, run, ins, upd, unch)
+                print(f"    {summary_compact(result, reset_on_change)}")
+                task_total += result
+                record_state(conn, task_name, run,
+                             _new_total(result), result["updated"], result["unchanged"])
 
             if len(pending) > 1:
-                task_skip_msg   = f", {task_skipped} ATS duplicates skipped" if task_skipped else ""
-                task_fuzzy_msg  = f", {task_fuzzy} fuzzy-linked" if task_fuzzy else ""
-                task_reset_note = " (resets disabled)" if not reset_on_change else ""
-                print(f"  Task total: {task_inserted} inserted, {task_updated} updated{task_reset_note}, {task_unchanged} already existed{task_skip_msg}{task_fuzzy_msg}")
+                print(f"  Task total: {summary_compact(task_total, reset_on_change)}")
 
-            total_inserted += task_inserted
-            total_updated  += task_updated
-            total_unchanged += task_unchanged
-            total_skipped  += task_skipped
-            total_fuzzy    += task_fuzzy
+            grand_total += task_total
 
         except requests.HTTPError as exc:
             print(f"  ERROR fetching '{task_name}': {exc}", file=sys.stderr)
@@ -909,10 +958,7 @@ def main() -> None:
 
     conn.close()
     elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
-    total_fuzzy_msg  = f", {total_fuzzy} fuzzy-linked" if total_fuzzy else ""
-    ghost_msg        = f", {ghosted_count} auto-ghosted" if ghosted_count else ""
-    dry_run_prefix   = "[DRY-RUN] " if args.dry_run else ""
-    print(f"{dry_run_prefix}Done in {elapsed:.1f}s. {total_inserted} inserted, {total_updated} updated, {total_unchanged} unchanged, {total_skipped} ATS duplicates skipped{total_fuzzy_msg}{ghost_msg}.\n")
+    print(summary_detailed(grand_total, ghosted_count, elapsed, args.dry_run) + "\n")
 
 
 if __name__ == "__main__":

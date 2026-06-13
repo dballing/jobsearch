@@ -111,6 +111,21 @@ When a job already exists in the database and appears again in a subsequent inge
 - If the description changed and status was `skipped` or `autoskipped`, it resets to `new` (unless `reset_on_change = false` for that task).
 - If `auto_ghost = true` and status is `applied` and `applied_at` is at least `auto_ghost_days` old, it moves to `ghosted`. See [Configuration → auto_ghost](configuration.md#global-keys).
 
+### Run summary
+
+Each ingest run ends with a breakdown so you can see what actually happened (a per-run line uses a compact one-line form; the final grand total is the block below):
+
+```
+Done in 540.6s. 230 postings seen.
+  New:      1 standalone, 8 grouped, 0 arrived-expired
+  Existing: 0 updated, 145 unchanged, 76 ATS duplicates skipped
+  Side-ops: 12 auto-ghosted
+```
+
+- **New** — postings inserted this run: **standalone** (no fuzzy match — a genuinely new role), **grouped** (fuzzy-matched an existing role on arrival — a fresh duplicate posting), **arrived-expired** (inserted straight to `closed`). "Postings seen" is the run total; `standalone` is your count of net-new roles.
+- **Existing** — postings seen again: **updated** (data changed), **unchanged**, and **ATS duplicates skipped**.
+- **Side-ops** — operations on rows that weren't new inserts: **re-linked** (an existing unlinked posting newly grouped), **orphan merges** (existing canonicals merged into one group), **reset→new** (a `skipped` posting whose description changed), **auto-closed** (an existing posting that expired), **auto-ghosted** (the post-ingest aging step). Only non-zero categories are shown.
+
 ---
 
 ## Fuzzy near-duplicate detection
@@ -133,7 +148,7 @@ Fuzzy-linked jobs are collapsed into a single group row when **Matched-Jobs** gr
 
 ### Status inheritance
 
-When `inherit_canonical_status = true` (default), a newly linked duplicate starts with the same status as its canonical. See [Configuration](configuration.md#global-keys).
+When `inherit_canonical_status = true` (default), a newly linked duplicate starts with the same status **and applied date** as its canonical — so an auto-linked duplicate of a role you've already applied to isn't left `applied` without an `applied_at`. See [Configuration](configuration.md#global-keys).
 
 ### Notes
 
