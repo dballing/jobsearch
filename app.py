@@ -122,11 +122,7 @@ STATUS_FILTERS = {
 GROUPED_HEADERS = """
     SELECT COALESCE(canonical_id, job_id) AS group_key,
            MIN(title)           AS title,
-           MAX(title)           AS title_max,
-           MIN(company)         AS company,
-           MAX(company)         AS company_max,
            MIN(COALESCE(company_actual, company)) AS company_eff,
-           MAX(COALESCE(company_actual, company)) AS company_eff_max,
            COUNT(*)             AS location_count,
            MIN(first_seen)      AS first_seen,
            MIN(posted_date)     AS posted_date,
@@ -406,6 +402,18 @@ def process_job_row(row: sqlite3.Row | dict) -> dict:
     return j
 
 
+def _norm_ws(val: object) -> object:
+    """Collapse internal whitespace runs to a single space and strip ends.
+
+    Used when comparing grouped fields (e.g. titles from different sources) so
+    cosmetic whitespace differences — like a stray double space — don't make an
+    otherwise-identical field render as '(varied)'. Non-string values pass through.
+    """
+    if not isinstance(val, str):
+        return val
+    return " ".join(val.split())
+
+
 def _group_field(sub_rows: list[dict], key: str, fmt=None) -> object:
     """Return the uniform value across all sub-rows, or '(varied)' if they differ.
 
@@ -460,9 +468,11 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
     # is_fuzzy_group: more than one job in this canonical group (canonical + ≥1 duplicate)
     is_fuzzy_group = h["location_count"] > 1
     multi          = is_fuzzy_group
-    # Title/company may vary within a fuzzy group (different titles from different sources)
-    title   = h["title"] if h["title"] == h.get("title_max")         else GROUP_VARIED
-    company = h["company_eff"] if h["company_eff"] == h.get("company_eff_max") else GROUP_VARIED
+    # Title/company may vary within a fuzzy group (different titles from different
+    # sources). Compare whitespace-normalized values so a cosmetic difference (e.g.
+    # a stray double space from one source) doesn't render as '(varied)'.
+    title   = _group_field(sub_rows, "title", fmt=_norm_ws)
+    company = _group_field(sub_rows, "company_display", fmt=_norm_ws)
     sub_statuses      = [s.get("status", "new") for s in sub_rows]
     unique_statuses   = set(sub_statuses)
     viability_vals         = [s.get("viability") for s in sub_rows]
