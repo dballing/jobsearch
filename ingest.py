@@ -1013,6 +1013,14 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Show pending run counts without fetching items or writing to the database")
     args = parser.parse_args()
 
+    # Line-buffer stdout so each line is flushed on its newline. When output is
+    # redirected to a file (e.g. cron `>> ingest.log`), Python block-buffers stdout,
+    # which hides progress from a `tail -f` until the buffer fills or the run ends.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
     config_path = Path(args.config)
     if not config_path.exists():
         sys.exit(f"Config file not found: {config_path}")
