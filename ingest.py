@@ -51,6 +51,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     applied_at            TEXT,
     history               TEXT NOT NULL DEFAULT '[]',
     company_actual        TEXT,
+    salary_min_actual     INTEGER,
+    salary_max_actual     INTEGER,
+    needs_rescored        INTEGER NOT NULL DEFAULT 0,
     first_seen      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     raw             TEXT NOT NULL
 );
@@ -160,6 +163,16 @@ def open_db(path: str) -> sqlite3.Connection:
     cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
     if "company_actual" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN company_actual TEXT")
+        conn.commit()
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
+    if "salary_min_actual" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN salary_min_actual INTEGER")
+        conn.commit()
+    if "salary_max_actual" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN salary_max_actual INTEGER")
+        conn.commit()
+    if "needs_rescored" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN needs_rescored INTEGER NOT NULL DEFAULT 0")
         conn.commit()
     return conn
 

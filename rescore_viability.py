@@ -129,6 +129,15 @@ def open_db(path: str) -> sqlite3.Connection:
     if "viability_prompt_hash" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN viability_prompt_hash TEXT")
         conn.commit()
+    if "salary_min_actual" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN salary_min_actual INTEGER")
+        conn.commit()
+    if "salary_max_actual" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN salary_max_actual INTEGER")
+        conn.commit()
+    if "needs_rescored" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN needs_rescored INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
     return conn
 
 
@@ -209,10 +218,12 @@ def main() -> None:
     if not args.force:
         # Always score jobs that have never been scored (viability IS NULL), regardless
         # of status — they may have inherited a status from a canonical without ever
-        # getting their own evaluation.  Jobs that have been scored are filtered by
-        # prompt hash as usual.
+        # getting their own evaluation.  Jobs flagged needs_rescored (a viability-
+        # relevant field changed, e.g. a manual salary/company correction) are always
+        # included too.  Everything else is filtered by prompt hash as usual.
         conditions.append(
-            "(viability IS NULL OR viability_prompt_hash IS NULL OR viability_prompt_hash != ?)"
+            "(viability IS NULL OR viability_prompt_hash IS NULL "
+            "OR viability_prompt_hash != ? OR needs_rescored = 1)"
         )
         params.append(current_hash)
 
@@ -222,11 +233,11 @@ def main() -> None:
         conditions.append("status IN ('new', 'reviewing')")
     else:
         # Default: active jobs only (matches the UI "Active" filter).
-        # NULL-viability jobs are already covered by the hash condition above, so
-        # skipped/closed jobs that have never been scored will still be included.
+        # NULL-viability and needs_rescored jobs are escaped here so a corrected
+        # skipped/closed job gets re-evaluated (and can be un-skipped if it improves).
         conditions.append(
             "(status NOT IN ('skipped', 'autoskipped', 'rejected', 'withdrawn', 'ghosted', 'closed')"
-            " OR viability IS NULL)"
+            " OR viability IS NULL OR needs_rescored = 1)"
         )
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
@@ -287,7 +298,7 @@ def main() -> None:
                 tok_read   += getattr(usage, "cache_read_input_tokens",     0) or 0
             conn.execute(
                 "UPDATE jobs SET viability = ?, viability_reason = ?, "
-                "viability_prompt_hash = ? WHERE job_id = ?",
+                "viability_prompt_hash = ?, needs_rescored = 0 WHERE job_id = ?",
                 (rating, reason, current_hash, row["job_id"]),
             )
             old_rating   = row["viability"]

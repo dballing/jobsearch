@@ -49,7 +49,9 @@ def score_job(
     company_actual = (job.get("company_actual")  or "").strip()
     company        = f"{company_actual} (posted via {company_raw})" if company_actual and company_actual != company_raw else company_raw
     description    = (job.get("job_description") or "").strip()[:4000]
-    sal_min, sal_max = job.get("salary_min"), job.get("salary_max")
+    # Manual salary override (salary_*_actual) wins over the feed value.
+    sal_min = job.get("salary_min_actual") or job.get("salary_min")
+    sal_max = job.get("salary_max_actual") or job.get("salary_max")
     if sal_min and sal_max:
         salary_line = f"Salary: ${sal_min:,} – ${sal_max:,}"
     elif sal_min:

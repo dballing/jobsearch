@@ -80,6 +80,16 @@ When a job is posted by a third party (e.g. a job board or recruiting firm) rath
 - Viability scoring sends both names to the AI with the same "posted via" note.
 - The override is cleared by deleting the field contents and saving. The original ingested name is always preserved.
 
+### Salary override
+
+The upstream feed extracts salary with its own AI, which sometimes misses a figure that is stated in the job description. To fill it in (or correct a wrong value), open the job preview and enter the annual **Salary override** min and/or max below the meta bar, then press Save or Enter. Inputs accept plain numbers, `$`/commas, or a `k` shorthand (e.g. `120k` → 120000).
+
+- The override wins over the feed value everywhere salary is shown, sorted, or matched (table display, the Salary column sort, and the exact comp-range search icon).
+- It is **shared across the matched group** like notes/attachments: the same role across locations shares one salary, so saving fans the value out to every current posting in the group (and each keeps its own copy if the group is later split). Every member's History records the edit.
+- In the main table, an asterisk (<sup>*</sup>) appears next to an overridden salary; hovering shows the feed's original value (or notes the feed had none).
+- Either bound may be left blank (e.g. a minimum-only "$120k+"). The override is cleared by emptying both fields and saving; the feed value then shows again.
+- Setting or clearing an override flags the job for re-scoring (see [Viability scoring](#viability-scoring)), since compensation feeds the candidate evaluation.
+
 ### Notes
 
 The preview panel has a **Notes** box for free-text notes about a role (recruiter contacts, follow-ups, impressions). Notes are **shared across the matched group**: saving writes the same text to every current posting in the fuzzy-match group, and editing any posting updates the whole group. Each posting keeps its own copy, so if the group is later split they all retain the note. Every member's History records the edit (the posting you actually typed on reads "Note updated"; siblings read "Note updated (on a grouped posting)").
@@ -201,6 +211,7 @@ Or chain after ingestion in cron:
 - Each job is scored in one Anthropic API call. Your candidate `prompt` is sent as a cached system prompt, so repeated calls within a session only pay full token cost on the first.
 - A SHA-256 hash of the prompt is stored with each score. On subsequent runs, only jobs with a missing or stale hash are re-scored.
 - Jobs with `NULL` viability are always scored regardless of status (they may have inherited a status from a canonical without ever being evaluated).
+- Jobs are also flagged for re-scoring when a viability-relevant field changes independently of the prompt — currently a manual [salary override](#salary-override) or [company override](#company-name-override). Such a flagged job is re-scored on the next run even if its prompt hash is current and even if it is `skipped`/`closed` (so a correction that improves it can resurface it). The flag clears once the job is successfully re-scored.
 - When a linked (`skipped`/`autoskipped`) job scores strictly better than both its canonical and its own previous score, it is automatically reset to `new` for human review — unless `auto_skip` is enabled and the score is still below the threshold, in which case it updates to `autoskipped` instead.
 
 ### Auto-skip

@@ -112,7 +112,7 @@
             </td>
             <td class="text-nowrap col-salary">
               {% if job.group_salary == group_varied %}<span class="text-muted fst-italic small">{{ group_varied }}</span>
-              {% else %}{{ job.group_salary or '—' }}{% if job.group_salary and ((job.salary_min or 0) >= 1000 or (job.salary_max or 0) >= 1000) %}<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('{{ job.salary_min or '' }}', '{{ job.salary_max or '' }}', this)"><i class="bi bi-search"></i></button>{% endif %}{% endif %}
+              {% else %}{{ job.group_salary or '—' }}{% if job.has_salary_override %}<sup title="Manually entered salary (overrides the data feed)" style="cursor:help">*</sup>{% endif %}{% if job.group_salary and ((job.salary_min or 0) >= 1000 or (job.salary_max or 0) >= 1000) %}<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('{{ job.salary_min or '' }}', '{{ job.salary_max or '' }}', this)"><i class="bi bi-search"></i></button>{% endif %}{% endif %}
             </td>
             {% if show_viability_filter %}
             <td class="col-viability">
@@ -187,7 +187,7 @@
               {{ link_btn(sub.job_id, sub.canonical_id or '') }}
               {% endif %}
             </td>
-            <td class="text-nowrap small col-salary">{{ sub.salary_display or '—' }}{% if (sub.salary_min or 0) >= 1000 or (sub.salary_max or 0) >= 1000 %}<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('{{ sub.salary_min or '' }}', '{{ sub.salary_max or '' }}', this)"><i class="bi bi-search"></i></button>{% endif %}</td>
+            <td class="text-nowrap small col-salary">{{ sub.salary_display or '—' }}{% if sub.has_salary_override %}<sup title="Manually entered{% if sub.salary_feed_display %} — feed listed {{ sub.salary_feed_display }}{% else %} — feed had no salary{% endif %}" style="cursor:help">*</sup>{% endif %}{% if (sub.salary_min or 0) >= 1000 or (sub.salary_max or 0) >= 1000 %}<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('{{ sub.salary_min or '' }}', '{{ sub.salary_max or '' }}', this)"><i class="bi bi-search"></i></button>{% endif %}</td>
             {% if show_viability_filter %}
             <td class="col-viability">
               {% if sub.viability %}
@@ -230,7 +230,7 @@
               {{ job.location_primary if view == 'grouped' else (job.location or '—') }}
               {% if job.locations_count > 1 %}<span class="text-muted" style="text-decoration: underline dotted;">+{{ job.locations_count - 1 }}</span>{% endif %}
             </td>
-            <td class="text-nowrap col-salary">{{ job.salary_display or '—' }}{% if (job.salary_min or 0) >= 1000 or (job.salary_max or 0) >= 1000 %}<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('{{ job.salary_min or '' }}', '{{ job.salary_max or '' }}', this)"><i class="bi bi-search"></i></button>{% endif %}</td>
+            <td class="text-nowrap col-salary">{{ job.salary_display or '—' }}{% if job.has_salary_override %}<sup title="Manually entered{% if job.salary_feed_display %} — feed listed {{ job.salary_feed_display }}{% else %} — feed had no salary{% endif %}" style="cursor:help">*</sup>{% endif %}{% if (job.salary_min or 0) >= 1000 or (job.salary_max or 0) >= 1000 %}<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('{{ job.salary_min or '' }}', '{{ job.salary_max or '' }}', this)"><i class="bi bi-search"></i></button>{% endif %}</td>
             {% if show_viability_filter %}
             <td class="col-viability">
               {% if job.viability %}

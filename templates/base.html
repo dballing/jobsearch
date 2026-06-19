@@ -298,7 +298,12 @@
         let metaHtml = `<div>${metaParts}</div>`;
         if (job.viability) {
           const vColor = viabilityColors[job.viability] || 'secondary';
-          metaHtml += `<div class="mt-1"><span class="badge text-bg-${vColor}">${escHtml(job.viability)}</span>`;
+          const staleCls = job.viability_stale ? ' opacity-50' : '';
+          const staleTitle = job.viability_stale ? ' title="Stale — re-run rescore_viability.sh"' : '';
+          metaHtml += `<div class="mt-1"><span class="badge text-bg-${vColor}${staleCls}"${staleTitle}>${escHtml(job.viability)}</span>`;
+          if (job.viability_stale) {
+            metaHtml += ' <span class="text-muted fst-italic small">(pending rescore)</span>';
+          }
           if (job.viability_reason) {
             metaHtml += ` <span class="fst-italic">${escHtml(job.viability_reason)}</span>`;
           }
@@ -322,6 +327,15 @@
             else if (e.event === 'linked')     desc = `Linked to canonical`;
             else if (e.event === 'unlinked')        desc = 'Unlinked from canonical';
             else if (e.event === 'company_actual')  desc = e.to ? `Company override set: <strong>${escHtml(e.to)}</strong>` : 'Company override cleared';
+            else if (e.event === 'salary_actual') {
+              const fmtSal = a => (a && (a[0] != null || a[1] != null))
+                ? '$' + (a[0] != null ? a[0].toLocaleString() : '?') + '–$' + (a[1] != null ? a[1].toLocaleString() : '?')
+                : 'none';
+              const setOrCleared = (e.to && (e.to[0] != null || e.to[1] != null))
+                ? `Salary override set: <strong>${escHtml(fmtSal(e.to))}</strong>`
+                : 'Salary override cleared';
+              desc = setOrCleared + ((e.origin && e.origin !== job.job_id) ? ' <span class="text-muted fst-italic">(on a grouped posting)</span>' : '');
+            }
             else if (e.event === 'closed')     desc = 'Auto-closed (expired)';
             else if (e.event === 'notes')      desc = (e.origin && e.origin !== job.job_id) ? 'Note updated <span class="text-muted fst-italic">(on a grouped posting)</span>' : 'Note updated';
             else if (e.event === 'attachment_added')   desc = `Attached <strong>${escHtml(e.name||'file')}</strong>` + ((e.origin && e.origin !== job.job_id) ? ' <span class="text-muted fst-italic">(on a grouped posting)</span>' : '');
@@ -383,6 +397,58 @@
 
         editorDiv.append(inputEl, saveBtn, clearBtn, feedbackEl);
         metaEl.insertAdjacentElement('afterend', editorDiv);
+
+        // Salary override editor — for when the feed is missing (or wrong) but the
+        // figure is in the description. Fans out across the matched group server-side.
+        const existingSalEditor = document.getElementById('salaryActualEditor');
+        if (existingSalEditor) existingSalEditor.remove();
+        const salEditor = document.createElement('div');
+        salEditor.id = 'salaryActualEditor';
+        salEditor.className = 'px-3 py-2 border-bottom d-flex align-items-center gap-2 small flex-wrap';
+        const salLabel = document.createElement('span');
+        salLabel.className = 'text-muted';
+        salLabel.textContent = 'Salary override:';
+        const salMin = document.createElement('input');
+        salMin.type = 'text'; salMin.className = 'form-control form-control-sm';
+        salMin.placeholder = 'min'; salMin.style.maxWidth = '110px';
+        salMin.value = job.salary_min_actual != null ? job.salary_min_actual : '';
+        const salDash = document.createElement('span'); salDash.textContent = '–';
+        const salMax = document.createElement('input');
+        salMax.type = 'text'; salMax.className = 'form-control form-control-sm';
+        salMax.placeholder = 'max'; salMax.style.maxWidth = '110px';
+        salMax.value = job.salary_max_actual != null ? job.salary_max_actual : '';
+        const salSave = document.createElement('button');
+        salSave.className = 'btn btn-sm btn-outline-primary'; salSave.textContent = 'Save';
+        const hasSalOverride = job.salary_min_actual != null || job.salary_max_actual != null;
+        const salClear = document.createElement('button');
+        salClear.className = 'btn btn-sm btn-outline-secondary' + (hasSalOverride ? '' : ' d-none');
+        salClear.textContent = 'Clear';
+        const salHint = document.createElement('span');
+        salHint.className = 'text-muted';
+        salHint.textContent = '(annual; applies to the whole matched group)';
+        const salFb = document.createElement('span');
+        salFb.className = 'small';
+
+        async function saveSalaryActual(minV, maxV) {
+          const body = new URLSearchParams({salary_min: minV, salary_max: maxV});
+          const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/salary_actual`, {method: 'POST', body});
+          if (resp.ok) {
+            salFb.className = 'text-success small';
+            salFb.textContent = 'Saved!';
+            // The override fans out and changes the displayed range + marker, and may
+            // move the row under an exact comp-search; recompute server-side.
+            setTimeout(() => location.reload(), 450);
+          } else {
+            salFb.className = 'text-danger small';
+            salFb.textContent = (await resp.text().catch(() => '')) || 'Save failed.';
+          }
+        }
+        salSave.addEventListener('click', () => saveSalaryActual(salMin.value.trim(), salMax.value.trim()));
+        salClear.addEventListener('click', () => { salMin.value = ''; salMax.value = ''; saveSalaryActual('', ''); });
+        salMin.addEventListener('keydown', e => { if (e.key === 'Enter') salSave.click(); });
+        salMax.addEventListener('keydown', e => { if (e.key === 'Enter') salSave.click(); });
+        salEditor.append(salLabel, salMin, salDash, salMax, salSave, salClear, salHint, salFb);
+        editorDiv.insertAdjacentElement('afterend', salEditor);
 
         bodyEl.innerHTML =
           '<div class="mb-3">'

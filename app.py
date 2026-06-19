@@ -126,8 +126,8 @@ GROUPED_HEADERS = """
            COUNT(*)             AS location_count,
            MIN(first_seen)      AS first_seen,
            MIN(posted_date)     AS posted_date,
-           MIN(salary_min)      AS salary_min,
-           MAX(salary_max)      AS salary_max,
+           MIN(COALESCE(salary_min_actual, salary_min)) AS salary_min,
+           MAX(COALESCE(salary_max_actual, salary_max)) AS salary_max,
            MIN(salary_currency) AS salary_currency,
            MIN(status)          AS status,
            MIN(source)          AS source,
@@ -242,6 +242,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
     if "company_actual" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN company_actual TEXT")
+    if "salary_min_actual" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN salary_min_actual INTEGER")
+    if "salary_max_actual" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN salary_max_actual INTEGER")
+    if "needs_rescored" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN needs_rescored INTEGER NOT NULL DEFAULT 0")
     # File attachments: one physical file (attachment_id) linked to N jobs.
     conn.execute(
         """CREATE TABLE IF NOT EXISTS job_attachments (
@@ -335,7 +341,10 @@ def build_where(label: str, status_filter: str, q: str = "", source: str = "",
         # Exact comp-range match (null-safe via IS) — a strong "missed duplicate"
         # signal: two postings with the identical salary band but slightly different
         # descriptions that fuzzy dedup didn't catch.
-        conditions.append("salary_min IS ? AND salary_max IS ?")
+        conditions.append(
+            "COALESCE(salary_min_actual, salary_min) IS ? "
+            "AND COALESCE(salary_max_actual, salary_max) IS ?"
+        )
         params.extend([comp_min, comp_max])
     if label:
         conditions.append("labels LIKE ?")
@@ -359,7 +368,9 @@ def build_where(label: str, status_filter: str, q: str = "", source: str = "",
 
 
 def format_salary(row: dict) -> str:
-    lo, hi = row.get("salary_min"), row.get("salary_max")
+    # Manual override (salary_*_actual) wins over the feed value when present.
+    lo = row.get("salary_min_actual") or row.get("salary_min")
+    hi = row.get("salary_max_actual") or row.get("salary_max")
     if lo and hi:
         return f"${lo // 1000}k – ${hi // 1000}k"
     if lo:
@@ -379,15 +390,32 @@ def process_job_row(row: sqlite3.Row | dict) -> dict:
     j["company_actual"]   = j.get("company_actual")
     j["company_display"]  = j.get("company_actual") or j.get("company") or ""
     j["status_color"]     = STATUS_COLORS.get(j.get("status", "new"), "secondary")
+    # Effective salary: manual override wins over the feed. Preserve the feed values
+    # (salary_*_feed) so the UI can show "originally listed as" on an override.
+    j["salary_min_feed"]  = j.get("salary_min")
+    j["salary_max_feed"]  = j.get("salary_max")
+    j["has_salary_override"] = (
+        j.get("salary_min_actual") is not None or j.get("salary_max_actual") is not None
+    )
+    j["salary_feed_display"] = format_salary(
+        {"salary_min": j.get("salary_min"), "salary_max": j.get("salary_max")}
+    )
     j["salary_display"]   = format_salary(j)
+    j["salary_min"]       = j.get("salary_min_actual") or j.get("salary_min")
+    j["salary_max"]       = j.get("salary_max_actual") or j.get("salary_max")
     j["source_display"]   = SOURCE_NAMES.get(j.get("source", "linkedin"), j.get("source", ""))
     j["applied_at"]       = (j.get("applied_at") or "")[:10] or None
     j["viability_color"]  = VIABILITY_COLORS.get(j.get("viability") or "", "")
     _cur_hash = _current_viability_hash()
+    # A score is "stale" if the prompt changed under it (hash mismatch) OR a
+    # viability-relevant field was edited since (needs_rescored). Either way the
+    # badge is subdued until the next rescore catches it.
     j["viability_stale"]  = bool(
         j.get("viability") is not None
-        and _cur_hash is not None
-        and j.get("viability_prompt_hash") != _cur_hash
+        and (
+            bool(j.get("needs_rescored"))
+            or (_cur_hash is not None and j.get("viability_prompt_hash") != _cur_hash)
+        )
     )
     # Extract full locations list from raw JSON for tooltip display.
     try:
@@ -514,6 +542,7 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
         "group_source_display": SOURCE_NAMES.get(group_source, "") if group_source else None,
         "sub_job_ids":      [s["job_id"] for s in sub_rows if s.get("job_id")],
         "has_company_override":    any(s.get("company_actual") for s in sub_rows),
+        "has_salary_override":     any(s.get("has_salary_override") for s in sub_rows),
         "group_viability":         group_viability,
         "group_viability_color":   group_viability_color,
         "group_viability_stale":   group_viability_stale,
@@ -554,6 +583,10 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
             "company":          s.get("company", ""),
             "company_actual":   s.get("company_actual"),
             "company_display":  s.get("company_display", ""),
+            "salary_min_feed":  s.get("salary_min_feed"),
+            "salary_max_feed":  s.get("salary_max_feed"),
+            "salary_feed_display": s.get("salary_feed_display", ""),
+            "has_salary_override": s.get("has_salary_override", False),
         })
     return job
 
@@ -704,6 +737,11 @@ def index():
         # flat rows compute it inline.
         sort_expr = ("company_eff COLLATE NOCASE" if view == "grouped"
                      else "COALESCE(company_actual, company) COLLATE NOCASE")
+    elif sort == "salary_min":
+        # Sort by effective (override-aware) salary. The grouped query already
+        # aliases salary_min to the COALESCE'd aggregate; flat rows compute it inline.
+        sort_expr = ("salary_min" if view == "grouped"
+                     else "COALESCE(salary_min_actual, salary_min)")
     elif sort in _TEXT_COLS:
         sort_expr = f"{sort} COLLATE NOCASE"
     else:
@@ -861,7 +899,7 @@ def stats():
     _, active_condition = STATUS_FILTERS["active"]
     viability_stale = db.execute(
         f"SELECT COUNT(*) FROM jobs WHERE viability IS NOT NULL "
-        f"AND viability_prompt_hash != ? AND {active_condition}",
+        f"AND (viability_prompt_hash != ? OR needs_rescored = 1) AND {active_condition}",
         (current_hash,),
     ).fetchone()[0] if current_hash else 0
     return {
@@ -923,10 +961,15 @@ def get_job(job_id: str):
         "apply_url":        job["apply_url"],
         "easy_apply":       job["easy_apply"],
         "salary_display":   format_salary(job),
+        "salary_min":       job.get("salary_min"),
+        "salary_max":       job.get("salary_max"),
+        "salary_min_actual": job.get("salary_min_actual"),
+        "salary_max_actual": job.get("salary_max_actual"),
         "posted_date":      (job["posted_date"] or "")[:10],
         "job_description":  job["job_description"],
         "viability":        job.get("viability"),
         "viability_reason": job.get("viability_reason"),
+        "viability_stale":  process_job_row(job).get("viability_stale", False),
         "applied_at":       (job.get("applied_at") or "")[:10] or None,
         "notes":            job.get("notes"),
         "attachments":      attachments,
@@ -1015,9 +1058,65 @@ def set_company_actual(job_id: str):
     if not row:
         return "Not found", 404
     old = row["company_actual"]
-    db.execute("UPDATE jobs SET company_actual = ? WHERE job_id = ?", (value, job_id))
+    # Company feeds the viability prompt, so flag for rescoring on change.
+    db.execute(
+        "UPDATE jobs SET company_actual = ?, needs_rescored = 1 WHERE job_id = ?",
+        (value, job_id),
+    )
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     append_history(db, job_id, {"ts": ts, "event": "company_actual", "from": old, "to": value})
+    db.commit()
+    return "", 204
+
+
+def _parse_salary_field(raw: str) -> int | None:
+    """Parse a salary input into an annual integer, or None if blank.
+
+    Accepts plain numbers with optional $, commas, and a trailing 'k' shorthand
+    (e.g. "120k" → 120000). Raises ValueError on anything else.
+    """
+    s = (raw or "").strip().lower().replace("$", "").replace(",", "")
+    if not s:
+        return None
+    mult = 1
+    if s.endswith("k"):
+        mult, s = 1000, s[:-1]
+    return int(round(float(s) * mult))
+
+
+@app.route("/job/<job_id>/salary_actual", methods=["POST"])
+def set_salary_actual(job_id: str):
+    try:
+        sal_min = _parse_salary_field(request.form.get("salary_min", ""))
+        sal_max = _parse_salary_field(request.form.get("salary_max", ""))
+    except ValueError:
+        return "Salary must be a number", 400
+    if sal_min is not None and sal_max is not None and sal_min > sal_max:
+        return "Minimum salary exceeds maximum", 400
+    db = get_db()
+    if not db.execute("SELECT 1 FROM jobs WHERE job_id = ?", (job_id,)).fetchone():
+        return "Not found", 404
+    # Fan out across the matched group: the same role across locations shares one
+    # salary, and each member keeps its own copy if the group is later split.
+    members = group_member_ids(db, job_id)
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for mid in members:
+        prev = db.execute(
+            "SELECT salary_min_actual, salary_max_actual FROM jobs WHERE job_id = ?", (mid,)
+        ).fetchone()
+        old_min, old_max = prev["salary_min_actual"], prev["salary_max_actual"]
+        if old_min == sal_min and old_max == sal_max:
+            continue
+        db.execute(
+            "UPDATE jobs SET salary_min_actual = ?, salary_max_actual = ?, "
+            "needs_rescored = 1 WHERE job_id = ?",
+            (sal_min, sal_max, mid),
+        )
+        append_history(db, mid, {
+            "ts": ts, "event": "salary_actual",
+            "from": [old_min, old_max], "to": [sal_min, sal_max],
+            "origin": job_id,
+        })
     db.commit()
     return "", 204
 
