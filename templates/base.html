@@ -131,6 +131,13 @@
     if (!raw) return '<em class="text-muted">No description available.</em>';
     const BULLET = /^[•\-\*·–—]\s*(.*)/;
 
+    // Some sources deliver the whole description as one line with bullets embedded
+    // inline as glyphs (e.g. "Desired Background • item • item"). Promote each inline
+    // bullet glyph to the start of its own line so the list logic below can see it.
+    // Only unambiguous bullet glyphs are split on — never -, *, or – which occur in
+    // ordinary prose. A glyph already at line start just gains a harmless blank line.
+    raw = raw.replace(/[ \t]*[•●▪◦‣⁃][ \t]*/g, '\n• ');
+
     let html = '';
     let inList = false;
     let afterHeader = false;
@@ -214,8 +221,30 @@
     }
     flush();
 
+    // Pass 1b — when the whole posting is one line, only the bullets carry a
+    // delimiter, so the last bullet swallows all trailing prose (the closing
+    // pitch, EEO boilerplate, etc.). Such an item shows up far longer than a real
+    // bullet; split it after its first real sentence boundary (". " before a
+    // capital) and demote the remainder to prose. Real bullets stay well under
+    // MAX_BULLET, so well-formed lists are untouched.
+    const MAX_BULLET = 300;
+    const reflowed = [];
+    for (const ln of logical) {
+      const m = ln.match(BULLET);
+      if (m && m[1].length > MAX_BULLET) {
+        const rel = m[1].search(/[.!?]\s+[A-Z]/);
+        if (rel !== -1) {
+          reflowed.push(ln.slice(0, ln.length - m[1].length) + m[1].slice(0, rel + 1));
+          const tail = m[1].slice(rel + 1).trim();
+          if (tail) { reflowed.push(''); reflowed.push(tail); }
+          continue;
+        }
+      }
+      reflowed.push(ln);
+    }
+
     // Pass 2 — apply structure heuristics to the reflowed logical lines.
-    for (const rawLine of logical) {
+    for (const rawLine of reflowed) {
       const line = rawLine.trim();
       if (!line) {
         if (inList) { html += '</ul>'; inList = false; }
