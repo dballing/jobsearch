@@ -248,6 +248,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE jobs ADD COLUMN salary_max_actual INTEGER")
     if "needs_rescored" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN needs_rescored INTEGER NOT NULL DEFAULT 0")
+    if "job_description_formatted" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN job_description_formatted TEXT")
+    if "description_hash" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN description_hash TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_description_hash ON jobs(description_hash)"
+    )
     # File attachments: one physical file (attachment_id) linked to N jobs.
     conn.execute(
         """CREATE TABLE IF NOT EXISTS job_attachments (
@@ -378,6 +385,33 @@ def format_salary(row: dict) -> str:
     if hi:
         return f"up to ${hi // 1000}k"
     return ""
+
+
+# Tags allowed in AI-formatted descriptions. Anything else (script, style, event
+# attributes, etc.) is stripped — this is the XSS boundary, since the client injects
+# the result via innerHTML.
+_DESC_ALLOWED_TAGS = ["p", "br", "strong", "em", "ul", "ol", "li"]
+
+
+def format_description_html(md: str | None) -> str | None:
+    """Render stored AI Markdown to sanitized HTML, or None if unavailable.
+
+    markdown/bleach are imported lazily so users who never enable AI description
+    formatting aren't required to have them installed; any import or render error
+    falls back to None (the caller then uses the heuristic renderer).
+    """
+    if not md:
+        return None
+    try:
+        import bleach
+        import markdown as md_lib
+    except ImportError:
+        return None
+    try:
+        html = md_lib.markdown(md)
+        return bleach.clean(html, tags=_DESC_ALLOWED_TAGS, attributes={}, strip=True)
+    except Exception:
+        return None
 
 
 def decode_labels(raw: str | None) -> list[str]:
@@ -967,6 +1001,7 @@ def get_job(job_id: str):
         "salary_max_actual": job.get("salary_max_actual"),
         "posted_date":      (job["posted_date"] or "")[:10],
         "job_description":  job["job_description"],
+        "job_description_html": format_description_html(job.get("job_description_formatted")),
         "viability":        job.get("viability"),
         "viability_reason": job.get("viability_reason"),
         "viability_stale":  process_job_row(job).get("viability_stale", False),

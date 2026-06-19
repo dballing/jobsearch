@@ -65,6 +65,8 @@ With **Matched-Jobs** grouping on, if all postings in a group share the same sta
 
 Click the &#9783; icon next to any job title to open a side panel with the full description and application history. The **View Job** button links to the original posting.
 
+Descriptions arrive from feeds with inconsistent layout (hard wrapping, inline bullet glyphs, single-line walls). By default the panel applies a built-in heuristic formatter that reflows the text into paragraphs and bullet lists. Optionally, you can enable **AI reformatting** (`[descriptions]`, see [Configuration](configuration.md#ai-description-reformatting-descriptions)): at ingest time the model re-emits each description as clean Markdown, which the panel shows instead. It changes formatting only — a per-job content-integrity check rejects any output that altered the wording, and the panel falls back to the heuristic formatter whenever an AI version isn't available (feature off, API error, integrity failure, or missing libraries).
+
 ### Cover letter prompt
 
 The preview panel also provides a **Cover Letter Prompt** button. Clicking it copies a ready-to-paste prompt to your clipboard containing the job title, company, location, salary (if known), and full description. Paste it directly into whatever AI chat session you use to generate cover letters — no manual copy-paste of the job description required. The button briefly flashes "✓ Copied!" to confirm the clipboard write succeeded.

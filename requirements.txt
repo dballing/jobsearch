@@ -1,3 +1,5 @@
 requests>=2.31
 flask>=3.0
 anthropic>=0.25
+markdown>=3.5
+bleach>=6.0

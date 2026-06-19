@@ -6,12 +6,17 @@ db_path   = "jobs.db"
 # UUID names; the real filename + metadata live in the DB. Default: "uploads".
 uploads_dir = "uploads"
 
+# Shared AI engine settings — used by all AI features (viability scoring and
+# description reformatting). Each feature may override `model` in its own section.
+# [ai]
+# api_key = "sk-ant-xxxxxxxxxxxxxxxxxxxx"   # Anthropic API key (or set ANTHROPIC_API_KEY env var)
+# model   = "claude-haiku-4-5"              # default Anthropic model (default: claude-haiku-4-5)
+
 # Viability scoring — uses the Anthropic API to rate each job high/medium/low.
 # Run `rescore_viability.sh` after ingestion to score new/updated jobs (excludes closed).
+# api_key/model are inherited from [ai] (an api_key/model set here still wins as an override).
 # [viability]
 # enabled = true
-# api_key = "sk-ant-xxxxxxxxxxxxxxxxxxxx"   # Anthropic API key (or set ANTHROPIC_API_KEY env var)
-# model   = "claude-haiku-4-5"              # optional: Anthropic model (default: claude-haiku-4-5)
 # auto_skip            = false              # auto-set low/medium jobs to 'autoskipped' during rescore
 # auto_skip_confidence = "low"             # threshold: "low" (only low) or "medium" (low + medium)
 # prompt  = """
@@ -21,6 +26,16 @@ uploads_dir = "uploads"
 # experience. I want IC or tech-lead roles at Series A–C startups. No Java-only
 # shops, no more than 10% travel."
 # """
+
+# AI description reformatting (optional) — at ingest time, hand each description to
+# the model and store a cleaned Markdown version that the UI shows instead of the
+# regex-based formatter. Formatting only, never content (verified per job); falls
+# back to the regex renderer when off / unavailable / the integrity check fails.
+# Requires the `markdown` and `bleach` packages and an [ai] api_key. Costs tokens
+# (logged in the ingest summary); identical descriptions are formatted once and reused.
+# [descriptions]
+# use_ai_on_descriptions = true
+# model = "claude-haiku-4-5"                # optional per-feature override of [ai].model
 
 # Global defaults — all can be overridden per task.
 # reset_on_change  = true   # reset skipped jobs to new if description changes (default: true)

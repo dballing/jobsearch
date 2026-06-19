@@ -23,6 +23,9 @@ from pathlib import Path
 
 import requests
 
+from ai_config import format_token_summary, resolve_ai_settings
+from reformat import content_preserved, description_hash, reformat_description
+
 APIFY_BASE = "https://api.apify.com/v2"
 
 SCHEMA = """
@@ -54,13 +57,16 @@ CREATE TABLE IF NOT EXISTS jobs (
     salary_min_actual     INTEGER,
     salary_max_actual     INTEGER,
     needs_rescored        INTEGER NOT NULL DEFAULT 0,
+    job_description_formatted TEXT,
+    description_hash          TEXT,
     first_seen      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     raw             TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_jobs_status     ON jobs(status);
-CREATE INDEX IF NOT EXISTS idx_jobs_company    ON jobs(company);
-CREATE INDEX IF NOT EXISTS idx_jobs_first_seen ON jobs(first_seen);
+CREATE INDEX IF NOT EXISTS idx_jobs_status           ON jobs(status);
+CREATE INDEX IF NOT EXISTS idx_jobs_company          ON jobs(company);
+CREATE INDEX IF NOT EXISTS idx_jobs_first_seen       ON jobs(first_seen);
+CREATE INDEX IF NOT EXISTS idx_jobs_description_hash ON jobs(description_hash);
 
 CREATE TABLE IF NOT EXISTS ingest_state (
     task_name      TEXT PRIMARY KEY,
@@ -174,6 +180,16 @@ def open_db(path: str) -> sqlite3.Connection:
     if "needs_rescored" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN needs_rescored INTEGER NOT NULL DEFAULT 0")
         conn.commit()
+    if "job_description_formatted" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN job_description_formatted TEXT")
+        conn.commit()
+    if "description_hash" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN description_hash TEXT")
+        conn.commit()
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_description_hash ON jobs(description_hash)"
+    )
+    conn.commit()
     return conn
 
 
@@ -550,12 +566,108 @@ def extract_fields_careersite(item: dict) -> dict:
     }
 
 
+class DescriptionFormatter:
+    """Optional AI reformatting of descriptions, with an exact-match cache.
+
+    Created once per ingest run. When disabled (no client) ``format()`` returns
+    None so the heuristic renderer is used. The cache skips the AI call for any
+    byte-identical description already formatted — within this run (in-memory) or
+    in a prior run (DB lookup) — which is the common "same posting in N locations"
+    case. Tracks token usage and per-run counts for the summary line.
+    """
+
+    def __init__(self, client=None, model: str = "claude-haiku-4-5"):
+        self.client = client
+        self.model = model
+        self._cache: dict[str, str] = {}
+        self.via_ai = 0
+        self.reused = 0
+        self.discarded = 0   # AI returned text but it failed the integrity check
+        self.failed = 0      # AI call errored / returned nothing
+        self.tok_input = self.tok_output = self.tok_write = self.tok_read = 0
+
+    @property
+    def enabled(self) -> bool:
+        return self.client is not None
+
+    def format(self, conn: sqlite3.Connection, description: str,
+               desc_hash: str | None, label: str = "") -> str | None:
+        """Return formatted Markdown for a description, or None.
+
+        `label` (e.g. "<job_id> (<title>)") is used only in the rejected/failed
+        log lines so it's clear which posting fell back to the heuristic renderer.
+
+        Skips the AI call on an exact-match cache hit (run-local dict, then a
+        cross-run DB lookup keyed on hash + exact text). On a miss, calls the AI
+        and accepts the result only if it passes the content-integrity check.
+        """
+        if not self.enabled or not desc_hash or not (description or "").strip():
+            return None
+        cached = self._cache.get(desc_hash)
+        if cached is not None:
+            self.reused += 1
+            return cached
+        hit = conn.execute(
+            "SELECT job_description_formatted FROM jobs "
+            "WHERE description_hash = ? AND job_description = ? "
+            "AND job_description_formatted IS NOT NULL LIMIT 1",
+            (desc_hash, description),
+        ).fetchone()
+        if hit and hit[0]:
+            self._cache[desc_hash] = hit[0]
+            self.reused += 1
+            return hit[0]
+        md, usage = reformat_description(self.client, description, self.model)
+        if usage is not None:
+            self.tok_input  += getattr(usage, "input_tokens",                0) or 0
+            self.tok_output += getattr(usage, "output_tokens",               0) or 0
+            self.tok_write  += getattr(usage, "cache_creation_input_tokens", 0) or 0
+            self.tok_read   += getattr(usage, "cache_read_input_tokens",     0) or 0
+        if md and content_preserved(description, md):
+            self._cache[desc_hash] = md
+            self.via_ai += 1
+            return md
+        suffix = f" for {label}" if label else ""
+        if md:
+            # The model altered content (not just formatting) — a prompt-quality
+            # signal worth investigating, so flag it loudly and ask for a bug report.
+            self.discarded += 1
+            print(f"  WARNING: AI reformat altered content{suffix} and was rejected "
+                  "(used heuristic formatter). If this recurs, please file a bug so the "
+                  "reformatting prompt can be tightened.", file=sys.stderr)
+        else:
+            # Transient/operational — API error or empty response.
+            self.failed += 1
+            print(f"  NOTE: AI reformat failed{suffix} (API error or empty response; "
+                  "using heuristic formatter)", file=sys.stderr)
+        return None
+
+    def summary(self) -> str | None:
+        """One-line run summary, or None if no formatting work happened."""
+        if not (self.via_ai or self.reused or self.discarded or self.failed):
+            return None
+        parts = [f"{self.via_ai} via AI", f"{self.reused} reused"]
+        if self.discarded:
+            parts.append(f"{self.discarded} discarded")
+        if self.failed:
+            parts.append(f"{self.failed} failed")
+        line = "Description formatting: " + ", ".join(parts)
+        toks = format_token_summary(
+            self.model, input=self.tok_input, output=self.tok_output,
+            cache_write=self.tok_write, cache_read=self.tok_read,
+        )
+        if toks:
+            line += " — " + toks
+        return line
+
+
 def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
            actor_type: str = "linkedin", exclude_ats_dups: bool = False,
            reset_on_change: bool = True,
            fuzzy_dedup: bool = True, fuzzy_desc_threshold: float = 0.85,
            fuzzy_title_threshold: float = 0.6,
-           inherit_canonical_status: bool = True) -> Counter:
+           inherit_canonical_status: bool = True,
+           formatter: "DescriptionFormatter | None" = None) -> Counter:
     """Process one run's items. Returns a Counter with these keys:
         inserted_clean / inserted_grouped / inserted_expired  — new postings, by kind
         updated / unchanged / skipped_ats                     — existing / skipped
@@ -573,6 +685,8 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
             continue
 
         raw = json.dumps(item, ensure_ascii=False)
+        desc = fields["job_description"] or ""
+        desc_hash = description_hash(desc) if desc.strip() else None
 
         row = conn.execute(
             "SELECT * FROM jobs WHERE job_id = ?",
@@ -618,19 +732,27 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                             f"→ canonical {canonical_id}"
                         )
                         c["orphan_merges"] += 1
+            formatted = (
+                formatter.format(conn, desc, desc_hash,
+                                 f"{fields['job_id']} ({fields['title']})")
+                if formatter else None
+            )
             conn.execute(
                 """
                 INSERT INTO jobs
                     (job_id, title, company, location, posted_date,
                      job_url, apply_url, easy_apply, salary_min, salary_max, salary_currency,
-                     labels, source, status, applied_at, job_description, canonical_id, raw)
+                     labels, source, status, applied_at, job_description, canonical_id, raw,
+                     description_hash, job_description_formatted)
                 VALUES
                     (:job_id, :title, :company, :location, :posted_date,
                      :job_url, :apply_url, :easy_apply, :salary_min, :salary_max, :salary_currency,
-                     :labels, :source, :status, :applied_at, :job_description, :canonical_id, :raw)
+                     :labels, :source, :status, :applied_at, :job_description, :canonical_id, :raw,
+                     :description_hash, :job_description_formatted)
                 """,
                 {**fields, "labels": json.dumps([label]), "status": initial_status,
-                 "applied_at": initial_applied_at, "canonical_id": canonical_id, "raw": raw},
+                 "applied_at": initial_applied_at, "canonical_id": canonical_id, "raw": raw,
+                 "description_hash": desc_hash, "job_description_formatted": formatted},
             )
             if initial_status == "closed":
                 c["inserted_expired"] += 1
@@ -715,6 +837,18 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                 or fields["job_description"] != row["job_description"]
             )
 
+            # Regenerate the formatted version only when the description changed; an
+            # unchanged description keeps its existing formatting (no token spend).
+            # When the description changed but AI is off, format() returns None,
+            # clearing a now-stale formatting so the heuristic renderer takes over.
+            if desc_changed:
+                formatted = (
+                    formatter.format(conn, desc, desc_hash,
+                                     f"{fields['job_id']} ({fields['title']})")
+                    if formatter else None
+                )
+            else:
+                formatted = row["job_description_formatted"]
             conn.execute(
                 """
                 UPDATE jobs SET
@@ -725,11 +859,14 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                     salary_currency = :salary_currency,
                     job_description = :job_description,
                     labels = :labels, source = :source, status = :status,
-                    refreshed_at = :refreshed_at, canonical_id = :canonical_id, raw = :raw
+                    refreshed_at = :refreshed_at, canonical_id = :canonical_id, raw = :raw,
+                    description_hash = :description_hash,
+                    job_description_formatted = :job_description_formatted
                 WHERE job_id = :job_id
                 """,
                 {**fields, "labels": json.dumps(new_labels), "status": new_status,
-                 "refreshed_at": refreshed_at, "canonical_id": canonical_id, "raw": raw},
+                 "refreshed_at": refreshed_at, "canonical_id": canonical_id, "raw": raw,
+                 "description_hash": desc_hash, "job_description_formatted": formatted},
             )
             if something_changed:
                 c["updated"] += 1
@@ -890,6 +1027,20 @@ def main() -> None:
     fuzzy_title_threshold: float = config.get("fuzzy_title_threshold", 0.6)
     inherit_canonical_status: bool = config.get("inherit_canonical_status", True)
 
+    # Optional AI description reformatting (engine settings shared via [ai]).
+    descriptions_cfg = config.get("descriptions", {})
+    formatter = DescriptionFormatter()  # disabled by default → heuristic renderer
+    if descriptions_cfg.get("use_ai_on_descriptions", False) and not args.dry_run:
+        api_key, model = resolve_ai_settings(config, "descriptions")
+        if api_key:
+            import anthropic
+            formatter = DescriptionFormatter(anthropic.Anthropic(api_key=api_key), model)
+            print(f"AI description reformatting enabled (model: {model}).")
+        else:
+            print("WARNING: use_ai_on_descriptions is set but no API key resolved "
+                  "(set api_key under [ai] or ANTHROPIC_API_KEY); skipping reformatting.",
+                  file=sys.stderr)
+
     conn = open_db(db_path)
     grand_total: Counter = Counter()
     start_time = datetime.now(timezone.utc)
@@ -949,6 +1100,7 @@ def main() -> None:
                 result = ingest(
                     conn, items, label, actor_type, exclude_ats_dups, reset_on_change,
                     fuzzy_dedup, fuzzy_desc_threshold, fuzzy_title_threshold, inherit_canonical_status,
+                    formatter=formatter,
                 )
                 print(f"    {summary_compact(result, reset_on_change)}")
                 task_total += result
@@ -971,7 +1123,11 @@ def main() -> None:
 
     conn.close()
     elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
-    print(summary_detailed(grand_total, ghosted_count, elapsed, args.dry_run) + "\n")
+    print(summary_detailed(grand_total, ghosted_count, elapsed, args.dry_run))
+    desc_summary = formatter.summary()
+    if desc_summary:
+        print("  " + desc_summary)
+    print()
 
 
 if __name__ == "__main__":

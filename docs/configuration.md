@@ -89,13 +89,32 @@ These sit at the top level of `config.toml` (not inside `[[tasks]]`).
 | `fuzzy_title_threshold` | `0.6` | Minimum title similarity used as a fast pre-filter before the description check. |
 | `inherit_canonical_status` | `true` | When a new job is linked as a duplicate, inherit the canonical's current status. Set `false` to always start duplicates as `new`. |
 
+## AI engine settings (`[ai]`)
+
+The AI-backed features (viability scoring and description reformatting) share one
+engine configuration. Put the Anthropic key and default model here once:
+
+```toml
+[ai]
+api_key = "sk-ant-xxxxxxxxxxxxxxxxxxxx"   # or set ANTHROPIC_API_KEY env var
+model   = "claude-haiku-4-5"              # default model for all AI features
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `api_key` | *(env)* | Anthropic API key. Falls back to `ANTHROPIC_API_KEY`. |
+| `model` | `"claude-haiku-4-5"` | Default model; a feature section may override it. |
+
+**Resolution order** for each feature: a value in the feature's own section wins,
+then `[ai]`, then the built-in default / `ANTHROPIC_API_KEY`. This is backward
+compatible — an `api_key`/`model` left under `[viability]` still works as an override.
+
 ## Viability scoring (`[viability]`)
 
 ```toml
 [viability]
 enabled = true
-api_key = "sk-ant-xxxxxxxxxxxxxxxxxxxx"   # or set ANTHROPIC_API_KEY env var
-model   = "claude-sonnet-4-6"             # optional; default: claude-haiku-4-5
+model   = "claude-sonnet-4-6"   # optional: override [ai].model for scoring
 prompt  = """
 Describe yourself as a candidate…
 """
@@ -108,10 +127,42 @@ auto_skip_confidence = "low"   # "low" (only low) or "medium" (low + medium)
 | Key | Default | Description |
 |-----|---------|-------------|
 | `enabled` | `false` | Enable viability scoring. |
-| `api_key` | *(env)* | Anthropic API key. Falls back to `ANTHROPIC_API_KEY` environment variable. |
-| `model` | `"claude-haiku-4-5"` | Anthropic model to use. |
+| `api_key` | *(from `[ai]`)* | Optional per-feature override of the Anthropic key. |
+| `model` | *(from `[ai]`)* | Optional per-feature override of the model. |
 | `prompt` | *(required)* | Your candidate description. Be specific: background, target roles, deal-breakers. |
 | `auto_skip` | `false` | Automatically set `new`/`reviewing` jobs to `autoskipped` if they score at or below the threshold. |
 | `auto_skip_confidence` | `"low"` | Threshold: `"low"` skips only low-scored jobs; `"medium"` skips low and medium. |
 
 See [Features → Viability scoring](features.md#viability-scoring) for usage details.
+
+## AI description reformatting (`[descriptions]`)
+
+Optional. At ingest time, hand each job description to the model and store a cleaned
+**Markdown** version that the UI renders instead of the built-in regex formatter.
+**Formatting only — never content** (verified per job; see below). Requires the
+`markdown` and `bleach` packages and an `[ai]` key.
+
+```toml
+[descriptions]
+use_ai_on_descriptions = true
+# model = "claude-haiku-4-5"   # optional: override [ai].model for reformatting
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `use_ai_on_descriptions` | `false` | Enable AI reformatting at ingest. |
+| `api_key` / `model` | *(from `[ai]`)* | Optional per-feature overrides. |
+
+Notes:
+- **Scope:** only new jobs and jobs whose description changed are formatted (no
+  backfill of existing rows). Existing rows keep the regex renderer until they change.
+- **Integrity check:** the AI output is accepted only if its text content matches the
+  original (a normalized-token similarity check). On failure — or any API error, or if
+  `markdown`/`bleach` aren't installed — it silently falls back to the regex renderer.
+- **Cost:** spends tokens per formatted description (logged in the ingest run summary,
+  with token counts and an estimated `$`). Byte-identical descriptions are formatted
+  once and reused (within a run and across runs), so the same posting in many locations
+  costs a single call.
+
+See [Features → Description rendering](features.md#previewing-job-descriptions) for
+how the formatted version is displayed.

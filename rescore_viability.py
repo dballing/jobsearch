@@ -17,7 +17,6 @@ Flags:
 """
 
 import argparse
-import os
 import sqlite3
 import sys
 import tomllib
@@ -26,34 +25,12 @@ from pathlib import Path
 
 import anthropic
 
+from ai_config import format_token_summary, resolve_ai_settings
 from ingest import append_history
 from viability import prompt_hash, score_job
 
 # Ranking used to determine whether a new score is strictly better than an old one.
 VIABILITY_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
-
-# Approximate pricing per token (USD). Update if Anthropic changes rates.
-# Source: https://docs.anthropic.com/en/docs/about-claude/models/overview
-MODEL_PRICING: dict[str, dict[str, float]] = {
-    "claude-haiku-4-5": {
-        "input":       1.00 / 1_000_000,
-        "output":      5.00 / 1_000_000,
-        "cache_write": 1.25 / 1_000_000,
-        "cache_read":  0.10 / 1_000_000,
-    },
-    "claude-sonnet-4-5": {
-        "input":       3.00 / 1_000_000,
-        "output":      15.00 / 1_000_000,
-        "cache_write": 3.75 / 1_000_000,
-        "cache_read":  0.30 / 1_000_000,
-    },
-    "claude-sonnet-4-6": {
-        "input":       3.00 / 1_000_000,
-        "output":      15.00 / 1_000_000,
-        "cache_write": 3.75 / 1_000_000,
-        "cache_read":  0.30 / 1_000_000,
-    },
-}
 
 
 def check_model_currency(client: anthropic.Anthropic, configured_model: str) -> None:
@@ -138,6 +115,12 @@ def open_db(path: str) -> sqlite3.Connection:
     if "needs_rescored" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN needs_rescored INTEGER NOT NULL DEFAULT 0")
         conn.commit()
+    if "job_description_formatted" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN job_description_formatted TEXT")
+        conn.commit()
+    if "description_hash" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN description_hash TEXT")
+        conn.commit()
     return conn
 
 
@@ -190,14 +173,14 @@ def main() -> None:
             'Add a [viability] prompt = """...""" section to config.toml.'
         )
 
-    api_key = viability_cfg.get("api_key") or os.environ.get("ANTHROPIC_API_KEY")
+    # api_key/model resolve from [viability] -> [ai] -> ANTHROPIC_API_KEY env.
+    api_key, model = resolve_ai_settings(config, "viability")
     if not api_key:
         sys.exit(
-            "No Anthropic API key found. Set [viability] api_key in config.toml "
-            "or the ANTHROPIC_API_KEY environment variable."
+            "No Anthropic API key found. Set api_key under [ai] (or [viability]) in "
+            "config.toml, or the ANTHROPIC_API_KEY environment variable."
         )
 
-    model              = viability_cfg.get("model", "claude-haiku-4-5")
     auto_skip          = viability_cfg.get("auto_skip", False)
     auto_skip_conf_raw = viability_cfg.get("auto_skip_confidence", "low").lower().strip()
     if auto_skip_conf_raw not in VIABILITY_RANK:
@@ -382,23 +365,12 @@ def main() -> None:
     fail_note      = f", {failed} failed" if failed else ""
     autoskip_note  = f", {auto_skipped} auto-skipped" if auto_skipped else ""
     print(f"Done. {scored} job(s) scored{fail_note}{autoskip_note}." + (f" ({breakdown})" if breakdown else ""))
-    if tok_input or tok_output:
-        tok_total = tok_input + tok_output + tok_write + tok_read
-        detail = (
-            f"{tok_input:,} input, {tok_output:,} output"
-            + (f", {tok_write:,} cache write, {tok_read:,} cache read" if tok_write or tok_read else "")
-        )
-        parts = [f"{tok_total:,} tokens total ({detail})"]
-        pricing = MODEL_PRICING.get(model)
-        if pricing:
-            cost = (
-                tok_input  * pricing["input"]
-              + tok_output * pricing["output"]
-              + tok_write  * pricing["cache_write"]
-              + tok_read   * pricing["cache_read"]
-            )
-            parts.append(f"estimated cost: ${cost:.4f}")
-        print("  " + ", ".join(parts))
+    summary = format_token_summary(
+        model, input=tok_input, output=tok_output,
+        cache_write=tok_write, cache_read=tok_read,
+    )
+    if summary:
+        print("  " + summary)
     print()
 
 
