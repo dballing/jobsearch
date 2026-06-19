@@ -97,7 +97,7 @@
               <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('{{ job.preview_job_id }}')" title="Preview description"><i class="bi bi-card-text"></i></button>
               {% endif %}
             </td>
-            <td>{{ job.company_display or '—' }}{% if job.has_company_override %}<sup title="One or more postings have a company name override" style="cursor:help">*</sup>{% endif %}</td>
+            <td>{{ job.company_display or '—' }}{% if job.has_company_override %}<sup title="One or more postings have a company name override" style="cursor:help">*</sup>{% endif %}{% if job.company_display and job.company_display != group_varied %}<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany({{ job.company_display | tojson }}, this)'><i class="bi bi-search"></i></button>{% endif %}</td>
             <td class="col-location">
               <button class="btn btn-sm btn-link p-0 me-1 expand-toggle"
                       onclick="toggleGroup({{ gindex }}, this)"
@@ -174,7 +174,7 @@
                 {% if sub.title %}<button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle({{ sub.title | tojson }}, this)'><i class="bi bi-search"></i></button>{% endif %}
               {% endif %}
             </td>
-            <td class="small">{% if job.is_fuzzy_group %}{{ sub.company_display or '—' }}{% if sub.company_actual %}<sup title="Originally listed as: {{ sub.company }}" style="cursor:help">*</sup>{% endif %}{% endif %}</td>
+            <td class="small">{% if job.is_fuzzy_group %}{{ sub.company_display or '—' }}{% if sub.company_actual %}<sup title="Originally listed as: {{ sub.company }}" style="cursor:help">*</sup>{% endif %}{% if sub.company_display %}<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany({{ sub.company_display | tojson }}, this)'><i class="bi bi-search"></i></button>{% endif %}{% endif %}</td>
             <td class="ps-3 small col-location"{% if sub.locations_all %} title="{{ sub.locations_all }}" style="cursor: help;"{% endif %}>
               {% if sub.job_url %}
                 <a href="{{ sub.job_url }}" target="_blank" rel="noopener">{{ sub.location or '—' }}</a>
@@ -225,7 +225,7 @@
               {% endif %}
               {% if job.title %}<button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle({{ job.title | tojson }}, this)'><i class="bi bi-search"></i></button>{% endif %}
             </td>
-            <td>{{ job.company_display or '—' }}{% if job.company_actual %}<sup title="Originally listed as: {{ job.company }}" style="cursor:help">*</sup>{% endif %}</td>
+            <td>{{ job.company_display or '—' }}{% if job.company_actual %}<sup title="Originally listed as: {{ job.company }}" style="cursor:help">*</sup>{% endif %}{% if job.company_display %}<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany({{ job.company_display | tojson }}, this)'><i class="bi bi-search"></i></button>{% endif %}</td>
             <td class="col-location"{% if job.locations_all %} title="{{ job.locations_all }}" style="cursor: help;"{% endif %}>
               {{ job.location_primary if view == 'grouped' else (job.location or '—') }}
               {% if job.locations_count > 1 %}<span class="text-muted" style="text-decoration: underline dotted;">+{{ job.locations_count - 1 }}</span>{% endif %}
@@ -814,15 +814,23 @@ function setPerPage(value) {
   window.location.search = p.toString();
 }
 
-// Title-cell icon: "Search all" seeded with this exact title string.
-function searchByTitle(title, btn) {
+// "Search all" seeded with an arbitrary query string (clean slate + restore),
+// shared by the title- and company-cell search icons. The q search matches title,
+// company, and company_actual via LIKE, so a company name catches similar employers.
+function searchAllByQuery(q) {
   const cur = new URLSearchParams(window.location.search);
   const ret = cur.get('return_to') || (window.location.pathname + window.location.search);
   const p = new URLSearchParams();
-  p.set('q', title);
+  p.set('q', q);
   p.set('status_filter', 'all');
   p.set('return_to', ret);
   window.location.href = '/?' + p.toString();
 }
+
+// Title-cell icon: find all jobs with this exact title (possible missed match).
+function searchByTitle(title, btn) { searchAllByQuery(title); }
+
+// Company-cell icon: find all jobs at this employer (possible missed match).
+function searchByCompany(company, btn) { searchAllByQuery(company); }
 </script>
 {% endblock %}
