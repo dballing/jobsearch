@@ -467,8 +467,13 @@ def find_canonical(
             continue
         if title_m.ratio() < title_threshold:
             continue
-        # Description check
-        desc_m = SequenceMatcher(None, description, candidate["job_description"])
+        # Description check. autojunk=False disables difflib's default junk heuristic,
+        # which (on sequences >200 long) ignores any element occurring more than ~1% of
+        # the time in the *second* sequence — i.e. nearly every common character in a job
+        # description. That both deflates the similarity score and makes ratio() asymmetric,
+        # so whether two cross-source duplicates grouped could depend on ingest order.
+        # Disabling it yields a true, order-stable similarity.
+        desc_m = SequenceMatcher(None, description, candidate["job_description"], autojunk=False)
         if desc_m.quick_ratio() < threshold:
             continue
         if desc_m.ratio() >= threshold:
