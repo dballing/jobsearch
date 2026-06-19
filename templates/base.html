@@ -176,7 +176,46 @@
       proseStartedAfterBlank = false;
     }
 
+    // Pass 1 — un-hard-wrap. Many sources wrap body text at a fixed column
+    // (~72–80), so a single paragraph arrives as several short lines. Left as-is,
+    // the structure heuristics below mistake each wrapped fragment for a list item
+    // and bullet flowing prose. Rejoin a line to the previous one when the previous
+    // physical line was "full" (>= WRAP_MIN) — i.e. it wrapped rather than ended a
+    // thought. Blank lines, bullet markers, and "Header:" lines always start fresh.
+    // This also reassembles multi-line bullets into a single item.
+    const WRAP_MIN = 60;
+    const logical = [];   // complete logical lines; '' marks a blank separator
+    let buf = '';
+    let prevLen = 0;      // length of the previous physical (non-blank) line
+    const flush = () => { if (buf) { logical.push(buf); buf = ''; } };
     for (const rawLine of raw.split('\n')) {
+      const line = rawLine.trim();
+      if (!line) {
+        flush();
+        if (logical.length && logical[logical.length - 1] !== '') logical.push('');
+        prevLen = 0;
+        continue;
+      }
+      if (BULLET.test(line)) {
+        flush();
+        buf = line;                       // keep marker; continuations join below
+      } else if (line.endsWith(':') && line.length <= 80) {
+        flush();
+        logical.push(line);               // standalone header line
+        prevLen = 0;
+        continue;
+      } else if (buf && prevLen >= WRAP_MIN) {
+        buf += ' ' + line;                // soft-wrap continuation
+      } else {
+        flush();
+        buf = line;
+      }
+      prevLen = line.length;
+    }
+    flush();
+
+    // Pass 2 — apply structure heuristics to the reflowed logical lines.
+    for (const rawLine of logical) {
       const line = rawLine.trim();
       if (!line) {
         if (inList) { html += '</ul>'; inList = false; }
