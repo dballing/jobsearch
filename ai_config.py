@@ -12,26 +12,30 @@ import os
 DEFAULT_MODEL = "claude-haiku-4-5"
 
 # Approximate pricing per token (USD). Update if Anthropic changes rates.
-# Source: https://docs.anthropic.com/en/docs/about-claude/models/overview
+# Source: https://platform.claude.com/docs/en/about-claude/models/overview (2026-06-04).
+# Per-model entries list only input/output $/1M; cache_write is 1.25x input (5-min TTL)
+# and cache_read is 0.1x input, so they're derived rather than hand-typed.
+def _pricing(input_per_m: float, output_per_m: float) -> dict[str, float]:
+    return {
+        "input":       input_per_m / 1_000_000,
+        "output":      output_per_m / 1_000_000,
+        "cache_write": input_per_m * 1.25 / 1_000_000,
+        "cache_read":  input_per_m * 0.10 / 1_000_000,
+    }
+
+
 MODEL_PRICING: dict[str, dict[str, float]] = {
-    "claude-haiku-4-5": {
-        "input":       1.00 / 1_000_000,
-        "output":      5.00 / 1_000_000,
-        "cache_write": 1.25 / 1_000_000,
-        "cache_read":  0.10 / 1_000_000,
-    },
-    "claude-sonnet-4-5": {
-        "input":       3.00 / 1_000_000,
-        "output":      15.00 / 1_000_000,
-        "cache_write": 3.75 / 1_000_000,
-        "cache_read":  0.30 / 1_000_000,
-    },
-    "claude-sonnet-4-6": {
-        "input":       3.00 / 1_000_000,
-        "output":      15.00 / 1_000_000,
-        "cache_write": 3.75 / 1_000_000,
-        "cache_read":  0.30 / 1_000_000,
-    },
+    # Current models
+    "claude-fable-5":    _pricing(10.00, 50.00),
+    "claude-mythos-5":   _pricing(10.00, 50.00),
+    "claude-opus-4-8":   _pricing(5.00, 25.00),
+    "claude-opus-4-7":   _pricing(5.00, 25.00),
+    "claude-opus-4-6":   _pricing(5.00, 25.00),
+    "claude-sonnet-4-6": _pricing(3.00, 15.00),
+    "claude-haiku-4-5":  _pricing(1.00, 5.00),
+    # Legacy (still active)
+    "claude-opus-4-5":   _pricing(5.00, 25.00),
+    "claude-sonnet-4-5": _pricing(3.00, 15.00),
 }
 
 
