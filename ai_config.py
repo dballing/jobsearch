@@ -9,6 +9,9 @@ for both so the two features stay consistent.
 
 import os
 
+# Fallback model when neither the feature section nor [ai] specifies one. Haiku is the
+# cheapest current model — a sane default for high-volume, low-complexity AI calls
+# (description reformatting, viability scoring) where cost matters more than peak quality.
 DEFAULT_MODEL = "claude-haiku-4-5"
 
 # Approximate pricing per token (USD). Update if Anthropic changes rates.
@@ -57,7 +60,13 @@ def resolve_ai_settings(config: dict, section: str) -> tuple[str | None, str]:
 
 def estimate_cost(model: str, *, input: int = 0, output: int = 0,
                   cache_write: int = 0, cache_read: int = 0) -> float | None:
-    """Estimated USD cost for a token tally, or None if the model is unpriced."""
+    """Estimated USD cost for a token tally, or None if the model is unpriced.
+
+    The keyword-only param names (input/output/cache_write/cache_read) deliberately
+    mirror the Anthropic ``usage`` fields so callers can pass tallies through directly.
+    Returns None (rather than 0) for an unknown model so the caller can distinguish
+    "no pricing data" from "genuinely free" and omit the cost line entirely.
+    """
     pricing = MODEL_PRICING.get(model)
     if not pricing:
         return None
