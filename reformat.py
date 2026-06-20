@@ -41,7 +41,10 @@ REFORMAT_SYSTEM = (
 # somehow exceeds this is detected via stop_reason and discarded (see below).
 MAX_TOKENS = 16000
 
-# Minimum content-similarity ratio for an AI reformat to be accepted.
+# Minimum content-similarity ratio for an AI reformat to be accepted. Not 1.0: a
+# faithful reformat can still shift a few word-tokens (e.g. a hyphenated compound split
+# differently, or an inline separator), so a small tolerance avoids false rejections
+# while a real content change (dropped sentence, invented heading) drops well below this.
 CONTENT_THRESHOLD = 0.97
 
 
@@ -80,9 +83,12 @@ def content_preserved(original: str, markdown: str) -> bool:
 def reformat_description(client, text: str, model: str = "claude-haiku-4-5"):
     """Reformat one description to Markdown.
 
-    Returns (markdown, usage) on success, or (None, None) on any failure. The
-    system prompt is marked for ephemeral prompt caching so repeated calls within
-    one ingest run only pay full system-token cost once.
+    `client` is an anthropic.Anthropic instance injected by the caller (ingest.py),
+    so this module never imports the SDK and stays cheap to import for callers that
+    don't use AI. Returns (markdown, usage) on success, or (None, None) on failure.
+    The system prompt is marked for ephemeral prompt caching so repeated calls within
+    one ingest run only pay full system-token cost once (the per-description user
+    message is the only uncached part).
     """
     text = (text or "").strip()
     if not text:
@@ -110,6 +116,8 @@ def reformat_description(client, text: str, model: str = "claude-haiku-4-5"):
         # then misreport as "altered content"). Surface usage so the tokens still tally.
         if message.stop_reason == "max_tokens":
             return None, message.usage
+        # Concatenate the text blocks (a normal reply is a single text block; this is
+        # just defensive against the content list shape).
         md = "".join(
             block.text for block in message.content if getattr(block, "type", "") == "text"
         ).strip()
@@ -117,4 +125,6 @@ def reformat_description(client, text: str, model: str = "claude-haiku-4-5"):
             return None, getattr(message, "usage", None)
         return md, message.usage
     except Exception:
+        # Any failure (network, rate limit, malformed response) degrades to no-reformat;
+        # the caller falls back to the heuristic renderer, so a broad catch is correct here.
         return None, None
