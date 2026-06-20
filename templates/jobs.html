@@ -4,6 +4,13 @@
 
 {% block content %}
 
+{# jobs.html — the main listing page (extends base.html). Renders the filter/search/
+   sort/paginate controls, the column picker, the bulk-skip action, and the jobs table
+   in any of three shapes (flat, matched-jobs groups, or employer sections), plus the
+   link-to-canonical modal. Reusable row markup lives in the macros below; the
+   block scripts at the bottom drive status changes, grouping toggles, the column
+   picker, the link modal, and the search shortcuts. #}
+
 {# Shorthands threaded through every link below. emp_dir is omitted when at its
    default ('asc') to keep URLs clean; it only matters in group-by-employer mode. #}
 {% set gm = '1' if group_match else '0' %}
@@ -49,6 +56,8 @@
   </div>
 </div>
 
+{# Per-row "link to canonical" button — info-colored when already linked, muted when
+   not. Opens the link modal (openLinkModal) for manual fuzzy-group editing. #}
 {% macro link_btn(job_id, canonical_id='') %}
 <button class="btn btn-sm btn-link p-0 ms-1 {{ 'text-info' if canonical_id else 'text-muted' }}"
         title="{{ 'Linked — click to change or unlink' if canonical_id else 'Link to canonical…' }}"
@@ -56,6 +65,8 @@
         ><i class="bi bi-link-45deg"></i></button>
 {% endmacro %}
 
+{# Status dropdown for a single job. data-prev/data-viability let the JS animate the
+   left-border color and confirm risky transitions; onchange POSTs to /job/<id>/status. #}
 {% macro status_select(job_id, current_status, viability='') %}
 <select class="form-select form-select-sm status-select"
         style="width:auto"
@@ -70,6 +81,8 @@
 </select>
 {% endmacro %}
 
+{# Status dropdown for a matched-jobs group header: carries every sub-row's job_id
+   (data-group-ids) so updateGroupStatus can set the status on the whole group at once. #}
 {% macro group_status_select(sub_job_ids, current_status, viability='') %}
 <select class="form-select form-select-sm status-select"
         style="width:auto"
@@ -396,6 +409,9 @@
   <table class="table table-striped table-hover table-sm align-middle">
     <thead class="table-dark">
       <tr>
+        {# Sortable column header: links to the precomputed col_urls[col] (which toggles
+           asc/desc when already sorting on this column) and shows ↑/↓ for the active
+           sort or a faint ⇅ otherwise. #}
         {% macro sort_th(col, label, cls='') %}
           <th{% if cls %} class="{{ cls }}"{% endif %}>
             <a href="{{ col_urls[col] }}" class="text-white text-decoration-none text-nowrap">
@@ -427,7 +443,13 @@
         {{ sort_th('first_seen', 'First Seen', 'col-firstseen') }}
       </tr>
     </thead>
+    {# ncols: column count for the "No jobs" / employer-header colspan (9 fixed + the
+       optional Source and Viability columns). #}
     {% set ncols = 9 + (1 if sources|length > 1 else 0) + (1 if show_viability_filter else 0) %}
+    {# ns.gi: a mutable counter (Jinja loop vars can't be reassigned, hence namespace())
+       handing each rendered group a unique gindex so expand/collapse stays scoped even
+       across employer sections. Two table shapes follow: employer sections, or a single
+       flat/grouped tbody. #}
     {% set ns = namespace(gi=0) %}
     {% if group_employer %}
       {% for emp in employer_groups %}
@@ -521,6 +543,8 @@ async function updateGroupStatus(sel) {
   }
 }
 
+// POST one job's new status (the per-row / preview dropdown); revert the select on
+// failure. The server propagates to the whole matched group, so no client fan-out here.
 async function updateStatus(jobId, sel) {
   const prev = sel.dataset.prev;
   try {
@@ -538,6 +562,9 @@ async function updateStatus(jobId, sel) {
   }
 }
 
+// Collect job_ids eligible for one-click bulk-skip: status 'new' AND viability 'low'.
+// Group-header selects contribute all their members; sub-row selects are ignored (their
+// group select already covers them).
 function getSkippableIds() {
   const ids = new Set();
   document.querySelectorAll('.status-select').forEach(sel => {
@@ -561,6 +588,8 @@ function updateBulkSkipButton() {
   btn.classList.toggle('d-none', ids.length === 0);
 }
 
+// Confirm, then bulk-skip every new+low job on the page in one POST to /jobs/status,
+// and reload to reflect the change.
 async function bulkSkipLow() {
   const ids = getSkippableIds();
   if (!ids.length) return;
@@ -604,6 +633,8 @@ document.getElementById('bulk-skip-btn')?.addEventListener('click', bulkSkipLow)
 })();
 
 // ── Column visibility ──
+// User-togglable optional columns, persisted per-browser in localStorage (not the
+// server). `def` is the default visibility — everything on except "First Seen".
 const COL_DEFS = [
   { cls: 'col-location',  label: 'Location',   def: true  },
   { cls: 'col-salary',    label: 'Salary',      def: true  },
@@ -663,6 +694,9 @@ let _linkJobId       = null;
 let _linkSelectedId  = null;
 let _linkDebounce    = null;
 
+// Open the link-to-canonical modal for one job: seed state, show its current group (if
+// any) with an Unlink option, and reset the search box. The actual search/select/confirm
+// is handled by fetchLinkResults / selectLinkResult and the confirm handler below.
 function openLinkModal(jobId, canonicalId, btn) {
   _linkJobId      = jobId;
   _linkSelectedId = null;
@@ -690,6 +724,8 @@ document.addEventListener('DOMContentLoaded', () => {
     _linkDebounce = setTimeout(() => fetchLinkResults(this.value.trim()), 300);
   });
 
+// Search /jobs/autocomplete (debounced by the input handler above) and render clickable
+// candidate rows, flagging any that already belong to a group.
 async function fetchLinkResults(q) {
   if (!q) { document.getElementById('linkResults').innerHTML = ''; return; }
   const resp = await fetch(`/jobs/autocomplete?q=${encodeURIComponent(q)}&exclude=${encodeURIComponent(_linkJobId)}`);
@@ -712,6 +748,8 @@ async function fetchLinkResults(q) {
   list.querySelectorAll('.link-result').forEach(btn => btn.addEventListener('click', selectLinkResult));
 }
 
+// Mark a candidate selected and enable Confirm; if the candidate is itself already in a
+// group, warn that the link will attach to that group's root (the server resolves one hop).
 function selectLinkResult(e) {
   document.querySelectorAll('.link-result').forEach(b => b.classList.remove('active'));
   e.currentTarget.classList.add('active');
@@ -755,6 +793,8 @@ function selectLinkResult(e) {
   });
 });
 
+// Expand/collapse one matched-jobs group's sub-rows (the per-location detail under a
+// grouped header), flipping the chevron. Scoped by the unique gindex group key.
 function toggleGroup(groupKey, btn) {
   const children = document.querySelectorAll('.group-child-' + groupKey);
   const icon = btn.querySelector('i');
