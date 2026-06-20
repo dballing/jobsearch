@@ -28,6 +28,22 @@ from reformat import content_preserved, description_hash, reformat_description
 
 APIFY_BASE = "https://api.apify.com/v2"
 
+# ── Database schema ───────────────────────────────────────────────────────────
+# The `jobs` table is the heart of the app — one row per posting (PK job_id; career-
+# site IDs are prefixed "cs_" to avoid collision with numeric LinkedIn IDs). Columns
+# worth calling out:
+#   canonical_id              NULL for a canonical/standalone job; otherwise the job_id
+#                             of the canonical this is a fuzzy duplicate of (one hop only).
+#   company_actual/salary_*_actual  manual UI overrides that win over scraped values.
+#   needs_rescored            set when a viability-relevant field changed, so the next
+#                             rescore re-evaluates even if the prompt itself is unchanged.
+#   job_description_formatted optional AI-cleaned Markdown; NULL → heuristic renderer.
+#   description_hash          sha256 of job_description; powers the reformat cache.
+#   first_seen vs applied_at  first_seen = when WE ingested it; applied_at = when the
+#                             user applied (drives auto-ghost).
+#   raw                       full Apify item JSON, kept for reprocessing/debugging.
+# ingest_state tracks the last-processed run per task; ingest_history feeds the stats
+# charts; job_attachments links one uploaded file to N jobs (refcounted on delete).
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
     job_id          TEXT PRIMARY KEY,
@@ -103,6 +119,14 @@ CREATE INDEX IF NOT EXISTS idx_attach_aid ON job_attachments(attachment_id);
 
 
 def open_db(path: str) -> sqlite3.Connection:
+    """Open the DB (WAL + busy_timeout), create the schema if missing, and run the
+    idempotent migrations that bring an older DB up to the current column set.
+
+    Every migration below is guarded by a PRAGMA table_info check, so it ALTERs only
+    when the column/rename is actually missing — safe to call on every startup, on a
+    fresh DB, or on an already-current one. (app.py and rescore_viability.py re-declare
+    the columns they touch so they can run standalone against an untouched DB.)
+    """
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     # WAL mode allows concurrent reads/writes with the Flask app and rescore script.
@@ -110,6 +134,8 @@ def open_db(path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(SCHEMA)
+    # ── Idempotent migrations (oldest → newest). Re-reads `cols` between groups
+    # because earlier ALTERs change the table. ──
     # Migrate: rename regions → labels if the old column still exists.
     cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
     if "regions" in cols and "labels" not in cols:
@@ -415,10 +441,19 @@ def bootstrap_history(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+# Statuses safe to auto-close when a posting expires: only jobs the user hasn't acted
+# on. An applied/interviewing/etc. job is left as-is — the application outcome still
+# matters even after the listing comes down.
 AUTO_CLOSE_STATUSES = {"new", "reviewing"}
 
 
 def is_expired(item: dict) -> bool:
+    """True if the posting's validity date is in the past.
+
+    Reads date_valid_through (old + new field spellings). Used to insert an
+    arrived-expired posting straight as 'closed', and to auto-close an active job whose
+    listing has since lapsed.
+    """
     val = _scalar(item.get("date_valid_through") or item.get("date_validthrough"))
     if not val:
         return False
@@ -521,6 +556,7 @@ def extract_salary(item: dict) -> tuple[int | None, int | None]:
 
 
 def extract_fields_linkedin(item: dict) -> dict:
+    """Map one fantastic-jobs LinkedIn actor item to our jobs-table field dict."""
     # Field names from fantastic-jobs/advanced-linkedin-job-search-api.
     # `linkedin_id` is the actual LinkedIn job ID used as our PK (type changed to int June 2026;
     #   str() conversion handles both old string and new integer values).
@@ -550,6 +586,7 @@ def extract_fields_linkedin(item: dict) -> dict:
 
 
 def extract_fields_careersite(item: dict) -> dict:
+    """Map one fantastic-jobs career-site actor item to our jobs-table field dict."""
     # Field names from fantastic-jobs/career-site-job-listing-api.
     # `id` is the actor's internal job ID; we prefix it with "cs_" to avoid
     # any collision with numeric LinkedIn IDs stored in the same table.
@@ -684,6 +721,10 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
     """
     c: Counter = Counter()
 
+    # Upsert each item. For each: skip ATS dupes; extract our field dict; then branch on
+    # whether the job_id already exists — new rows go through fuzzy-dedup + INSERT, existing
+    # rows go through a change check + UPDATE. The existence check happens BEFORE any AI
+    # reformat call, so reformatting only runs for genuinely new/changed descriptions.
     for item in items:
         if exclude_ats_dups and item.get("ats_duplicate") is True:
             c["skipped_ats"] += 1
