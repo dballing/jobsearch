@@ -2,8 +2,12 @@
 # requires Python 3.11+
 """Import LinkedIn job listings by URL into the job tracker database.
 
-Fetches job details via the apimaestro/linkedin-job-detail Apify actor
-and inserts them as if they had been ingested normally.
+A manual, one-off tool — distinct from the scheduled ingest.py pipeline. Use it to
+pull in jobs you found/applied to outside the normal searches (so they're tracked,
+typically with status 'applied'). It hits a different Apify actor than ingest
+(apimaestro/linkedin-job-detail, which fetches one posting's full detail by ID) and
+reuses ingest's helpers (open_db, find_canonical, append_history) so imported rows
+look exactly like normally-ingested ones, including fuzzy-dedup grouping.
 
 Usage:
     python3 import_linkedin.py [--status STATUS] [--label LABEL] [--config PATH]
@@ -85,34 +89,6 @@ def parse_job_id(url: str) -> str | None:
         return url
     m = JOB_URL_RE.search(url)
     return m.group(1) if m else None
-
-
-def _parse_salary_string(s: str) -> tuple[int | None, int | None, str | None]:
-    """Parse a salary range string like '$120,000 – $150,000' or '$85K/yr'.
-
-    Returns (salary_min, salary_max, currency).  Hourly values (< $1,000)
-    are converted to annual by multiplying by 2,080.
-    """
-    currency = "USD" if "$" in s else None
-    numbers: list[int] = []
-    for m in re.finditer(r"[\d,]+(?:\.\d*)?[Kk]?", s):
-        raw = m.group().replace(",", "")
-        try:
-            if raw.lower().endswith("k"):
-                val = int(float(raw[:-1]) * 1_000)
-            else:
-                val = int(float(raw))
-        except ValueError:
-            continue
-        if val > 0:
-            numbers.append(val)
-    if not numbers:
-        return None, None, currency
-    lo, hi = min(numbers), max(numbers)
-    # Treat as hourly if values look hourly (< $1,000)
-    if hi < 1_000:
-        lo, hi = lo * 2_080, hi * 2_080
-    return lo, (hi if hi != lo else None), currency
 
 
 def extract_fields_import(item: dict, job_id: str) -> dict:
@@ -360,6 +336,11 @@ def main() -> None:
     conn = open_db(db_path)
     inserted = updated = stubbed = failed = 0
 
+    # Process each requested URL. Three cases per job: (1) already in the DB → just
+    # update its status (don't clobber the existing record); (2) requested but the
+    # actor returned no data → insert a minimal stub so the application is still
+    # tracked even though the posting is gone; (3) new with data → extract fields,
+    # fuzzy-dedup against existing canonicals, and insert.
     for url, job_id in url_to_id.items():
         item     = id_to_item.get(job_id)
         existing = conn.execute(
