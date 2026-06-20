@@ -2,8 +2,24 @@
 # requires Python 3.11+
 """Re-score job postings for viability using the Anthropic API.
 
-Reads the [viability] section from config.toml. Requires ANTHROPIC_API_KEY
-to be set in the environment.
+Typically run on a schedule right after ingest (see README's cron line). Engine
+settings come from the shared [ai] stanza (api_key/model), overridable per-feature
+under [viability]; the candidate profile and on/off toggle live under [viability].
+Falls back to the ANTHROPIC_API_KEY env var if no key is configured.
+
+A score is "current" while its stored prompt_hash matches the current prompt — a hash
+covering BOTH the config candidate prompt AND the fixed system boilerplate in
+viability.py (see viability.prompt_hash), so editing either marks existing scores stale.
+
+Which jobs actually get re-scored is narrower than "everything stale", though. By
+DEFAULT only ACTIVE jobs (the UI's Active set) are eligible, and among those only the
+ones that are stale, never scored, or flagged needs_rescored — so editing the prompt
+does NOT re-score the whole table; a stale score on a skipped/closed/rejected job is
+left as-is unless you pass --all. Two cases always override the status filter,
+regardless of flags: jobs never scored (viability IS NULL) and jobs flagged
+needs_rescored (a viability-relevant field — salary/company override — changed since
+the last score). --all scores every status, --early-stage narrows to new/reviewing,
+and --force re-scores eligible jobs even when their hash is already current.
 
 Usage:
     python3 rescore_viability.py [--config PATH] [--dry-run] [--force] [--all]
@@ -29,7 +45,9 @@ from ai_config import format_token_summary, resolve_ai_settings
 from ingest import append_history
 from viability import prompt_hash, score_job
 
-# Ranking used to determine whether a new score is strictly better than an old one.
+# Numeric ranking of ratings. Used two ways: to compare a score against the auto-skip
+# threshold, and to decide whether a re-evaluated duplicate scored *strictly better*
+# than both its prior score and its canonical (the promotion logic below).
 VIABILITY_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
 
 
@@ -95,7 +113,9 @@ def open_db(path: str) -> sqlite3.Connection:
     # busy_timeout retries on lock contention instead of raising immediately.
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
-    # Ensure viability columns exist (ingest.py adds them too, but be safe here).
+    # Defensive idempotent migrations: ingest.py owns the schema, but this script can be
+    # run standalone against a DB ingest hasn't touched yet, so ensure every column we
+    # read/write exists. Each ALTER is a no-op once the column is present.
     cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
     if "viability" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN viability TEXT")
@@ -194,7 +214,10 @@ def main() -> None:
     current_hash = prompt_hash(viability_prompt)
     conn = open_db(db_path)
 
-    # Build WHERE clause.
+    # Build the selection WHERE clause: which jobs need (re)scoring this run. Two
+    # independent filters are AND-ed — a staleness/force filter (unless --force) and a
+    # status filter (unless --all / --early-stage) — each with escapes so never-scored
+    # and needs_rescored jobs are always included regardless of status.
     conditions: list[str] = []
     params: list = []
 
@@ -254,6 +277,9 @@ def main() -> None:
     tok_read    = 0
     interactive = not args.verbose and sys.stdout.isatty()
 
+    # Score each selected job, then for each success: persist the rating, record a
+    # history entry, apply auto-skip / canonical-promotion side-effects, and tally
+    # tokens. One commit per job so a mid-run interruption keeps completed work.
     for i, row in enumerate(rows, 1):
         title   = (row["title"]   or "(no title)").strip()
         company = (row["company"] or "(unknown company)").strip()
@@ -313,9 +339,12 @@ def main() -> None:
                 auto_skipped += 1
                 did_autoskip  = True
 
-            # Canonical promotion: if this linked job scores strictly better than
-            # both its canonical and its own previous score, decide whether to
-            # surface it for human review or keep it auto-skipped.
+            # Canonical promotion. A skipped/autoskipped duplicate normally stays
+            # hidden, but if a rescore makes it score strictly better than BOTH its
+            # canonical and its own prior score, it may be the better representative of
+            # the group and worth a fresh look. Surface it (→ new) unless auto-skip is
+            # on and it's still at/below threshold (then just re-record it). The
+            # `elif` means this never runs for a job already auto-skipped above.
             elif row["canonical_id"] and current_status in ("skipped", "autoskipped"):
                 canonical = conn.execute(
                     "SELECT viability FROM jobs WHERE job_id = ?",
