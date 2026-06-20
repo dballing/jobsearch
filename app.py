@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Flask web UI for browsing ingested LinkedIn jobs."""
+"""Flask web UI for browsing, filtering, and tracking ingested jobs.
+
+Read-mostly companion to ingest.py. It serves the jobs table (filter / search / sort /
+paginate), two grouping modes (matched-jobs via canonical_id, and by employer), the
+per-job preview with status / notes / attachments, manual company & salary overrides,
+manual fuzzy-link editing, and a stats dashboard. The SQLite DB is shared with ingest
+and the rescore script via WAL: this process migrates once at startup (_init_db) and is
+otherwise read-mostly, with a handful of small write endpoints for user actions.
+"""
 
 import json
 import math
@@ -331,6 +339,7 @@ def handle_db_busy(e: sqlite3.OperationalError):
 
 @app.teardown_appcontext
 def close_db(e=None) -> None:
+    """Close the per-request DB connection (opened lazily by get_db) at request end."""
     db = g.pop("db", None)
     if db is not None:
         db.close()
@@ -338,6 +347,8 @@ def close_db(e=None) -> None:
 
 @app.context_processor
 def inject_nav_timestamps() -> dict:
+    """Expose the latest ingest data/sync timestamps to every template (the navbar
+    shows when the data was last fetched vs. last reconciled with Apify)."""
     try:
         row = get_db().execute(
             "SELECT MAX(last_run_at) AS data_at, MAX(last_synced_at) AS synced_at FROM ingest_state"
@@ -359,6 +370,13 @@ def inject_nav_timestamps() -> dict:
 def build_where(label: str, status_filter: str, q: str = "", source: str = "",
                 viability: str = "", comp_active: bool = False,
                 comp_min: int | None = None, comp_max: int | None = None) -> tuple[str, list]:
+    """Build the shared ``WHERE`` clause + bound-params for the listing queries.
+
+    Combines all active filters (label, status, free-text search, source, viability,
+    exact comp-range) into one parameterized clause reused by the flat, grouped, and
+    employer query variants so every view filters identically. Returns ("", []) when
+    no filters are active.
+    """
     conditions: list[str] = []
     params: list = []
     if comp_active:
@@ -389,6 +407,8 @@ def build_where(label: str, status_filter: str, q: str = "", source: str = "",
 
 
 def format_salary(row: dict) -> str:
+    """Compact "$120k – $150k" / "$120k+" / "up to $150k" string for a row's effective
+    salary (override-aware), or "" when neither bound is known. Rounds to whole $k."""
     lo, hi = effective_salary(row)
     if lo and hi:
         return f"${lo // 1000}k – ${hi // 1000}k"
@@ -427,10 +447,19 @@ def format_description_html(md: str | None) -> str | None:
 
 
 def decode_labels(raw: str | None) -> list[str]:
+    """Turn the stored labels JSON array (e.g. '["dc","nc"]') into display names via
+    LABEL_NAMES, falling back to the uppercased key for any label without a mapping."""
     return [LABEL_NAMES.get(r, r.upper()) for r in json.loads(raw or "[]")]
 
 
 def process_job_row(row: sqlite3.Row | dict) -> dict:
+    """Decorate a raw jobs row with everything the templates need for display.
+
+    Adds decoded labels, effective + feed salary (with display strings and an override
+    flag), status/source/viability colors, a "stale score" flag, a trimmed applied_at
+    date, and the parsed locations list (for the "+N" tooltip). Used both for flat rows
+    and as the per-sub-row builder inside grouped views.
+    """
     j = dict(row)
     j["labels"]           = decode_labels(j.get("labels"))
     j["company_actual"]   = j.get("company_actual")
@@ -537,6 +566,14 @@ def fetch_sub_rows(db: sqlite3.Connection, group_key: str,
 
 
 def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
+    """Assemble the display dict for one grouped (matched-jobs) header row.
+
+    Combines the aggregate header with its processed sub-rows: a single title/company
+    (or '(varied)' when sub-rows disagree), collapsed status/viability/salary/labels/
+    applied/posted (each the shared value or '(varied)'), override flags, and the
+    sub_rows for the expandable detail. A single-job "group" is flattened to behave like
+    an ordinary flat row.
+    """
     h             = dict(header)
     # is_fuzzy_group: more than one job in this canonical group (canonical + ≥1 duplicate)
     is_fuzzy_group = h["location_count"] > 1
@@ -707,6 +744,13 @@ def sort_url(col: str, current_sort: str, current_dir: str,
 
 @app.route("/")
 def index():
+    """The main jobs table. Reads all view state from query params (filters, sort,
+    paging, the two grouping axes, free-text/comp search, and the search-all return
+    target), builds the shared WHERE + ORDER, then renders jobs.html via one of three
+    paths: flat rows, matched-jobs grouping (per canonical group), or employer grouping
+    (sections keyed on effective company, each containing flat or grouped rows). All
+    branches reuse build_where/process_job_row/build_grouped_job so they stay consistent.
+    """
     db = get_db()
 
     label         = request.args.get("label", "")
@@ -912,6 +956,8 @@ def index():
 
 @app.route("/stats")
 def stats():
+    """JSON for the stats modal: total jobs, counts by status, new-in-last-7-days,
+    counts by label and by viability, and a stale-score count (active jobs only)."""
     db = get_db()
     total = db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
     by_status = {
@@ -958,6 +1004,8 @@ def stats():
 
 @app.route("/stats/history")
 def stats_history():
+    """JSON time series (last 7 days) of ingest_history inserted/updated/unchanged per
+    day, for the activity chart. Returns empty arrays if the table doesn't exist yet."""
     db = get_db()
     try:
         rows = db.execute(
@@ -984,6 +1032,9 @@ def stats_history():
 
 @app.route("/job/<job_id>")
 def get_job(job_id: str):
+    """Return one job as JSON for the preview panel: meta, salary (display + override
+    fields), the raw description and the sanitized AI-formatted HTML, viability + its
+    staleness, notes, attachments, and the history timeline."""
     db = get_db()
     row = db.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
     if not row:
@@ -1024,6 +1075,9 @@ def get_job(job_id: str):
 
 @app.route("/jobs/status", methods=["POST"])
 def update_jobs_status():
+    """Bulk-set status for many jobs (checkbox selection). Logs a from→to history entry
+    per changed job and auto-manages applied_at: stamp it when moving into 'applied'
+    from an early status, clear it when moving back to an early status."""
     new_status = request.form.get("status", "")
     job_ids    = request.form.getlist("job_ids")
     if new_status not in STATUSES or not job_ids:
@@ -1058,6 +1112,9 @@ def update_jobs_status():
 
 @app.route("/job/<job_id>/status", methods=["POST"])
 def update_status(job_id: str):
+    """Set status for one job from the preview panel / row dropdown. Status is a
+    property of the role, so it's propagated to every current matched-group member
+    (with per-row applied_at + history), the same way notes/attachments fan out."""
     new_status = request.form.get("status", "")
     if new_status not in STATUSES:
         return "Invalid status", 400
@@ -1168,6 +1225,8 @@ def set_salary_actual(job_id: str):
 
 @app.route("/job/<job_id>/notes", methods=["POST"])
 def set_notes(job_id: str):
+    """Save free-text notes for a job, fanned out to every matched-group member (each
+    keeps its own copy if the group is later split). Empty input clears the note."""
     value = request.form.get("notes", "").strip() or None
     db = get_db()
     if not db.execute("SELECT 1 FROM jobs WHERE job_id = ?", (job_id,)).fetchone():
@@ -1191,6 +1250,9 @@ def set_notes(job_id: str):
 
 @app.route("/job/<job_id>/attachment", methods=["POST"])
 def upload_attachment(job_id: str):
+    """Store an uploaded file under a UUID name on disk and link it to every current
+    matched-group member (one physical file, shared metadata; refcounted on delete).
+    The client filename is never used on disk — only a UUID + sanitized extension."""
     db = get_db()
     if not db.execute("SELECT 1 FROM jobs WHERE job_id = ?", (job_id,)).fetchone():
         return "Not found", 404
@@ -1222,6 +1284,8 @@ def upload_attachment(job_id: str):
 
 @app.route("/job/<job_id>/attachment/<attachment_id>")
 def download_attachment(job_id: str, attachment_id: str):
+    """Stream an attachment back under its original filename (404 if the link or the
+    on-disk file is missing). basename() guards against path traversal via stored_name."""
     db = get_db()
     row = db.execute(
         "SELECT stored_name, original_name, content_type FROM job_attachments "
@@ -1238,6 +1302,8 @@ def download_attachment(job_id: str, attachment_id: str):
 
 @app.route("/job/<job_id>/attachment/<attachment_id>/delete", methods=["POST"])
 def delete_attachment(job_id: str, attachment_id: str):
+    """Unlink an attachment from this job; delete the physical file only once no posting
+    references it anymore (reference-counted, so de-grouping doesn't orphan others)."""
     db = get_db()
     row = db.execute(
         "SELECT stored_name, original_name FROM job_attachments "
@@ -1264,6 +1330,9 @@ def delete_attachment(job_id: str, attachment_id: str):
 
 @app.route("/jobs/autocomplete")
 def jobs_autocomplete():
+    """Title/company suggestions for the manual "link to canonical" picker. Quoted
+    phrases count as one token; every token must match title OR company (AND across
+    tokens); the in-progress job (exclude) is omitted from results."""
     q       = request.args.get("q", "").strip()
     exclude = request.args.get("exclude", "")
     if not q:
