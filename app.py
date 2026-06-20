@@ -117,24 +117,41 @@ STATUS_FILTERS = {
     "all":       ("All",       None),
 }
 
+# Effective salary range. When a manual override (salary_*_actual) is set, that pair
+# IS the salary — a blank bound is open-ended (e.g. "$175k+"). Coalescing each bound
+# independently with the feed would mix an overridden min with a stale feed max (e.g.
+# "$175k – $120k"), so resolve the override as an all-or-nothing pair.
+_SAL_OVERRIDDEN = "(salary_min_actual IS NOT NULL OR salary_max_actual IS NOT NULL)"
+EFF_SALARY_MIN = f"(CASE WHEN {_SAL_OVERRIDDEN} THEN salary_min_actual ELSE salary_min END)"
+EFF_SALARY_MAX = f"(CASE WHEN {_SAL_OVERRIDDEN} THEN salary_max_actual ELSE salary_max END)"
+
+
+def effective_salary(row: dict) -> tuple[int | None, int | None]:
+    """(min, max) after applying any manual override (the Python counterpart of
+    EFF_SALARY_MIN/MAX). The override pair wins whole when either bound is set."""
+    if row.get("salary_min_actual") is not None or row.get("salary_max_actual") is not None:
+        return row.get("salary_min_actual"), row.get("salary_max_actual")
+    return row.get("salary_min"), row.get("salary_max")
+
+
 # Grouped header query — one row per canonical group.
 # Jobs linked via canonical_id are grouped together; others are their own group.
-GROUPED_HEADERS = """
+GROUPED_HEADERS = f"""
     SELECT COALESCE(canonical_id, job_id) AS group_key,
            MIN(title)           AS title,
            MIN(COALESCE(company_actual, company)) AS company_eff,
            COUNT(*)             AS location_count,
            MIN(first_seen)      AS first_seen,
            MIN(posted_date)     AS posted_date,
-           MIN(COALESCE(salary_min_actual, salary_min)) AS salary_min,
-           MAX(COALESCE(salary_max_actual, salary_max)) AS salary_max,
+           MIN({EFF_SALARY_MIN}) AS salary_min,
+           MAX({EFF_SALARY_MAX}) AS salary_max,
            MIN(salary_currency) AS salary_currency,
            MIN(status)          AS status,
            MIN(source)          AS source,
            MAX(source)          AS source_max
-    FROM jobs {where}
+    FROM jobs {{where}}
     GROUP BY COALESCE(canonical_id, job_id)
-    {order}
+    {{order}}
     LIMIT ? OFFSET ?
 """
 GROUPED_COUNT = "SELECT COUNT(*) FROM (SELECT 1 FROM jobs {where} GROUP BY COALESCE(canonical_id, job_id))"
@@ -348,10 +365,7 @@ def build_where(label: str, status_filter: str, q: str = "", source: str = "",
         # Exact comp-range match (null-safe via IS) — a strong "missed duplicate"
         # signal: two postings with the identical salary band but slightly different
         # descriptions that fuzzy dedup didn't catch.
-        conditions.append(
-            "COALESCE(salary_min_actual, salary_min) IS ? "
-            "AND COALESCE(salary_max_actual, salary_max) IS ?"
-        )
+        conditions.append(f"{EFF_SALARY_MIN} IS ? AND {EFF_SALARY_MAX} IS ?")
         params.extend([comp_min, comp_max])
     if label:
         conditions.append("labels LIKE ?")
@@ -375,9 +389,7 @@ def build_where(label: str, status_filter: str, q: str = "", source: str = "",
 
 
 def format_salary(row: dict) -> str:
-    # Manual override (salary_*_actual) wins over the feed value when present.
-    lo = row.get("salary_min_actual") or row.get("salary_min")
-    hi = row.get("salary_max_actual") or row.get("salary_max")
+    lo, hi = effective_salary(row)
     if lo and hi:
         return f"${lo // 1000}k – ${hi // 1000}k"
     if lo:
@@ -435,8 +447,7 @@ def process_job_row(row: sqlite3.Row | dict) -> dict:
         {"salary_min": j.get("salary_min"), "salary_max": j.get("salary_max")}
     )
     j["salary_display"]   = format_salary(j)
-    j["salary_min"]       = j.get("salary_min_actual") or j.get("salary_min")
-    j["salary_max"]       = j.get("salary_max_actual") or j.get("salary_max")
+    j["salary_min"], j["salary_max"] = effective_salary(j)
     j["source_display"]   = SOURCE_NAMES.get(j.get("source", "linkedin"), j.get("source", ""))
     j["applied_at"]       = (j.get("applied_at") or "")[:10] or None
     j["viability_color"]  = VIABILITY_COLORS.get(j.get("viability") or "", "")
@@ -773,9 +784,8 @@ def index():
                      else "COALESCE(company_actual, company) COLLATE NOCASE")
     elif sort == "salary_min":
         # Sort by effective (override-aware) salary. The grouped query already
-        # aliases salary_min to the COALESCE'd aggregate; flat rows compute it inline.
-        sort_expr = ("salary_min" if view == "grouped"
-                     else "COALESCE(salary_min_actual, salary_min)")
+        # aliases salary_min to the effective aggregate; flat rows compute it inline.
+        sort_expr = ("salary_min" if view == "grouped" else EFF_SALARY_MIN)
     elif sort in _TEXT_COLS:
         sort_expr = f"{sort} COLLATE NOCASE"
     else:
