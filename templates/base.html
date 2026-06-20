@@ -1,13 +1,13 @@
+{# base.html — shared page layout for the job tracker.
+   Provides the chrome (navbar with data/synced timestamps, dark-mode toggle, stats
+   button), the slide-in job preview panel (#jobPreview offcanvas) with its
+   company/salary/notes/attachments editors, the stats modal, and all the shared
+   client-side JS. jobs.html extends this and fills {% block content %}. #}
 <!doctype html>
-<!-- base.html — shared page layout for the job tracker.
-     Provides the chrome (navbar with data/synced timestamps, dark-mode toggle, stats
-     button), the slide-in job preview panel (#jobPreview offcanvas) with its
-     company/salary/notes/attachments editors, the stats modal, and all the shared
-     client-side JS. jobs.html extends this and fills the content block. -->
 <html lang="en">
 <head>
-  <!-- Apply the saved theme to <html> before any CSS loads, so the page never flashes
-       the default (light) theme before JS runs. Must stay inline and first in <head>. -->
+  {# Apply the saved theme to <html> before any CSS loads, so the page never flashes
+     the default (light) theme before JS runs. Must stay inline and first in <head>. #}
   <script>(function(){document.documentElement.setAttribute('data-bs-theme',localStorage.getItem('theme')||'light');})();</script>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -76,8 +76,8 @@
     </div>
   </nav>
 
-  <!-- Stats modal: populated on demand by showStats() (GET /stats + /stats/history);
-       the footer holds the 7-day ingest-activity Chart.js canvas. -->
+  {# Stats modal: populated on demand by showStats() (GET /stats + /stats/history);
+     the footer holds the 7-day ingest-activity Chart.js canvas. #}
   <div class="modal fade" id="statsModal" tabindex="-1" aria-labelledby="statsModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered modal-lg">
       <div class="modal-content">
@@ -100,8 +100,8 @@
   <div class="container-fluid px-4">
     {% block content %}{% endblock %}
   </div>
-  <!-- Job preview panel: a right-side slide-in filled by showPreview(jobId) from
-       GET /job/<id>. Meta bar + description body + footer (View Job / Cover Letter). -->
+  {# Job preview panel: a right-side slide-in filled by showPreview(jobId) from
+     GET /job/<id>. Meta bar + description body + footer (View Job / Cover Letter). #}
   <div class="offcanvas offcanvas-end" tabindex="-1" id="jobPreview" aria-labelledby="jobPreviewLabel">
     <div class="offcanvas-header border-bottom">
       <h6 class="offcanvas-title fw-semibold" id="jobPreviewLabel">Loading…</h6>
@@ -123,8 +123,8 @@
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-  <!-- Localize the navbar timestamps: the server emits UTC; convert to the viewer's
-       local timezone in-browser (the raw ISO is stashed in data-ts). -->
+  {# Localize the navbar timestamps: the server emits UTC; convert to the viewer's
+     local timezone in-browser (the raw ISO is stashed in data-ts). #}
   <script>
   document.addEventListener('DOMContentLoaded', () => {
     const fmtOpts = {year:'numeric', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'};
@@ -136,8 +136,8 @@
     });
   });
   </script>
-  <!-- Shared client JS: description rendering, the preview panel + its editors,
-       attachments, stats, and theme toggle. -->
+  {# Shared client JS: description rendering, the preview panel + its editors,
+     attachments, stats, and theme toggle. #}
   <script>
   // Escape text before inserting it into innerHTML. Used everywhere user/feed-derived
   // strings are concatenated into markup (titles, companies, notes, filenames, ...).
@@ -754,8 +754,8 @@
       });
   }
   </script>
-  <!-- Dark-mode toggle: persists the choice in localStorage (read by the inline
-       pre-paint script at the top of <head> on the next load) and swaps the icon. -->
+  {# Dark-mode toggle: persists the choice in localStorage (read by the inline
+     pre-paint script at the top of <head> on the next load) and swaps the icon. #}
   <script>
   (function() {
     const btn  = document.getElementById('themeToggle');
