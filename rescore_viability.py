@@ -43,6 +43,7 @@ import anthropic
 
 from ai_config import format_token_summary, resolve_ai_settings
 from ingest import append_history
+from runlock import acquire_run_lock
 from viability import prompt_hash, score_job
 
 # Numeric ranking of ratings. Used two ways: to compare a score against the auto-skip
@@ -261,6 +262,14 @@ def main() -> None:
         print("No jobs need scoring.")
         conn.close()
         return
+
+    # We have real scoring work to do, so claim the shared writer lock now (after the
+    # dry-run and count==0 early returns, which write nothing). This makes us mutually
+    # exclusive with ingest and with any other rescore: if one is already running we
+    # skip rather than (a) crash on the write lock waiting out an ingest's long
+    # transaction, or (b) duplicate-score the same needs_rescored jobs as a sibling
+    # rescore and waste tokens. Held until the process exits.
+    _run_lock = acquire_run_lock(db_path, label="rescore")  # noqa: F841 (held for lifetime)
 
     print(f"Scoring {count} job(s) with model {model}...")
 

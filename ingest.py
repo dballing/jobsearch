@@ -25,6 +25,7 @@ import requests
 
 from ai_config import format_token_summary, resolve_ai_settings
 from reformat import content_preserved, description_hash, reformat_description
+from runlock import acquire_run_lock
 
 APIFY_BASE = "https://api.apify.com/v2"
 
@@ -936,7 +937,20 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
             else:
                 c["unchanged"] += 1
 
-    conn.commit()
+        # Commit after each item rather than once per run. SQLite holds the write lock
+        # from a row's INSERT/UPDATE until commit; a single per-run commit kept that lock
+        # for the ENTIRE run — including every item's AI reformat call (1-2s each) — which
+        # starved the web UI's writes (→ 503s) and any concurrent ingest/rescore. Per-item
+        # commit releases the lock between items, so it's held only for the brief
+        # INSERT/UPDATE + history writes of one row; the AI call for the next item happens
+        # with no lock held. Safe: find_canonical reads over this same connection, which
+        # sees this run's earlier writes regardless of commit, so cross-source grouping is
+        # unchanged. A mid-run crash now leaves already-processed items persisted, which is
+        # harmless and idempotent — the Apify run isn't marked consumed (record_state) until
+        # ingest() returns cleanly, so a reprocess simply re-UPSERTs the same rows.
+        conn.commit()
+
+    conn.commit()  # Final flush for the empty-items / all-skipped case (otherwise a no-op).
     return c
 
 
@@ -1098,6 +1112,13 @@ def main() -> None:
             print("WARNING: use_ai_on_descriptions is set but no API key resolved "
                   "(set api_key under [ai] or ANTHROPIC_API_KEY); skipping reformatting.",
                   file=sys.stderr)
+
+    # Serialize against any concurrent ingest/rescore: ingest holds the SQLite write
+    # lock for the whole run (across the AI reformat calls), so an overlapping writer
+    # would crash on the busy_timeout. A dry run writes nothing, so it needn't lock —
+    # and shouldn't be blocked by (or block) a real run. Held until the process exits.
+    if not args.dry_run:
+        _run_lock = acquire_run_lock(db_path, label="ingest")  # noqa: F841 (held for lifetime)
 
     conn = open_db(db_path)
     grand_total: Counter = Counter()
