@@ -693,6 +693,7 @@ buildColPicker();
 let _linkJobId       = null;
 let _linkSelectedId  = null;
 let _linkDebounce    = null;
+let _linkJobTitle    = '';   // title of the job being linked, for the "search this title" shortcut
 
 // Open the link-to-canonical modal for one job: seed state, show its current group (if
 // any) with an Unlink option, and reset the search box. The actual search/select/confirm
@@ -701,7 +702,12 @@ function openLinkModal(jobId, canonicalId, btn) {
   _linkJobId      = jobId;
   _linkSelectedId = null;
   const title   = btn.closest('tr').querySelector('.job-title, td:first-child')?.textContent?.trim() || jobId;
-  document.getElementById('linkModalContext').textContent = `Linking: ${title}`;
+  _linkJobTitle = title;
+  // Render the title with a search icon that drops it into the box below and runs the
+  // search — saves copy-pasting the title to hunt for its likely canonical group.
+  document.getElementById('linkModalContext').innerHTML =
+    `Linking: ${escHtml(title)} <button type="button" class="btn btn-sm btn-link p-0 ms-1 text-muted"`
+    + ` title="Search for this title below" onclick="searchLinkByTitle()"><i class="bi bi-search"></i></button>`;
   document.getElementById('linkSearchInput').value = '';
   document.getElementById('linkResults').innerHTML  = '';
   document.getElementById('linkWarning').classList.add('d-none');
@@ -716,6 +722,17 @@ function openLinkModal(jobId, canonicalId, btn) {
   }
   bootstrap.Modal.getOrCreateInstance(document.getElementById('linkModal')).show();
   document.getElementById('linkSearchInput').focus();
+}
+
+// Drop the linking job's title into the search box and fire the search exactly as if the
+// user had typed it — dispatch a real 'input' event so the existing debounced handler
+// (and its autocomplete fetch) runs. The most likely canonical group usually shares the
+// job's title, so this is the common next action after opening the modal.
+function searchLinkByTitle() {
+  const input = document.getElementById('linkSearchInput');
+  input.value = _linkJobTitle || '';
+  input.focus();
+  input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
 document.addEventListener('DOMContentLoaded', () => {
