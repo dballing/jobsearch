@@ -49,6 +49,7 @@ The **Per page** dropdown sets how many rows are shown per page — 25 (default)
 | `skipped` | Not a fit — skip for now (set manually) |
 | `autoskipped` | Automatically skipped by viability scoring (see [Viability → Auto-skip](#auto-skip)) |
 | `reviewing` | Opened but not decided yet |
+| `deferred` | On the radar but not being acted on — e.g. a role you'd discuss with a recruiter while interviewing elsewhere, but aren't applying to in parallel. Counts as **Active** and keeps getting (re)scored, but the automations leave it alone: it is never auto-closed on expiry, auto-skipped on a low score, or reset on a description change. Clear it manually when it's no longer relevant. |
 | `applied` | Application submitted |
 | `rejected` | Rejected by employer |
 | `ghosted` | Applied but never heard back |

@@ -83,7 +83,7 @@ DEFAULT_VIEW          = "grouped"
 DEFAULT_STATUS_FILTER = "active"
 
 STATUSES = [
-    "new", "skipped", "autoskipped", "reviewing",
+    "new", "skipped", "autoskipped", "reviewing", "deferred",
     "applied", "rejected", "ghosted", "interviewing", "offered",
     "withdrawn", "closed",
 ]
@@ -91,6 +91,11 @@ STATUSES = [
 STATUS_COLORS = {
     "new":          "primary",
     "reviewing":    "secondary",
+    # "deferred" is parked-but-alive; a custom purple accent keeps it visually distinct
+    # from the grey "reviewing"/"withdrawn"/"ghosted". status_color is only used for the
+    # status-select left-border accent (see applySelectColor in jobs.html), never as a
+    # Bootstrap text-bg-* badge, so a non-Bootstrap token is safe here.
+    "deferred":     "deferred",
     "applied":      "info",
     "interviewing": "warning",
     "offered":      "success",
@@ -118,6 +123,9 @@ VIABILITY_COLORS = {
 STATUS_FILTERS = {
     "new":       ("New",       "status = 'new'"),
     "reviewing": ("Reviewing", "status = 'reviewing'"),
+    # Parked-but-alive: on the radar to mention to recruiters, but not being acted on.
+    # Deliberately NOT in the Active exclusion list below, so it also shows in Active.
+    "deferred":  ("Deferred",  "status = 'deferred'"),
     "active":    ("Active",    "status NOT IN ('skipped', 'autoskipped', 'rejected', 'withdrawn', 'ghosted', 'closed')"),
     "applied":   ("Applied",   "status IN ('applied', 'interviewing', 'offered', 'ghosted')"),
     "interview": ("Interview Process", "status IN ('interviewing', 'offered')"),
@@ -1094,8 +1102,8 @@ def update_jobs_status():
     db.executemany(
         """UPDATE jobs SET status = ?, refreshed_at = NULL,
            applied_at = CASE
-             WHEN ? = 'applied' AND status IN ('new','reviewing','skipped','autoskipped') THEN CURRENT_TIMESTAMP
-             WHEN ? IN ('new','reviewing','skipped','autoskipped') THEN NULL
+             WHEN ? = 'applied' AND status IN ('new','reviewing','deferred','skipped','autoskipped') THEN CURRENT_TIMESTAMP
+             WHEN ? IN ('new','reviewing','deferred','skipped','autoskipped') THEN NULL
              ELSE applied_at
            END
            WHERE job_id = ?""",
@@ -1136,8 +1144,8 @@ def update_status(job_id: str):
     db.executemany(
         """UPDATE jobs SET status = ?, refreshed_at = NULL,
            applied_at = CASE
-             WHEN ? = 'applied' AND status IN ('new','reviewing','skipped','autoskipped') THEN CURRENT_TIMESTAMP
-             WHEN ? IN ('new','reviewing','skipped','autoskipped') THEN NULL
+             WHEN ? = 'applied' AND status IN ('new','reviewing','deferred','skipped','autoskipped') THEN CURRENT_TIMESTAMP
+             WHEN ? IN ('new','reviewing','deferred','skipped','autoskipped') THEN NULL
              ELSE applied_at
            END
            WHERE job_id = ?""",

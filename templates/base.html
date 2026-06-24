@@ -679,7 +679,7 @@
       .then(rs => { if (!rs[0].ok || !rs[1].ok) throw new Error(); return Promise.all(rs.map(r => r.json())); })
       .then(([s, h]) => {
         const statusOrder = [
-          'new','reviewing','applied','interviewing','offered','rejected','withdrawn','skipped','closed'
+          'new','reviewing','deferred','applied','interviewing','offered','rejected','withdrawn','skipped','closed'
         ];
         const statusRows = statusOrder
           .filter(st => s.by_status[st])

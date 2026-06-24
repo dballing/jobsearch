@@ -508,6 +508,7 @@ function applySelectColor(sel) {
   const colorMap = {
     primary: '#0d6efd', secondary: '#6c757d', info: '#0dcaf0',
     warning: '#ffc107', success: '#198754', danger: '#dc3545', dark: '#212529',
+    deferred: '#6f42c1',  // purple accent for the parked-but-alive "deferred" status
   };
   const bsClass = STATUS_COLORS[sel.value] || 'secondary';
   sel.style.borderLeftColor = colorMap[bsClass] || '#6c757d';

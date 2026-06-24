@@ -237,7 +237,7 @@ def main() -> None:
     if args.all:
         pass  # No status filter.
     elif args.early_stage:
-        conditions.append("status IN ('new', 'reviewing')")
+        conditions.append("status IN ('new', 'reviewing', 'deferred')")
     else:
         # Default: active jobs only (matches the UI "Active" filter).
         # NULL-viability and needs_rescored jobs are escaped here so a corrected
