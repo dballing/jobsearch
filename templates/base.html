@@ -419,6 +419,7 @@
             else if (e.event === 'linked')     desc = `Linked to canonical`;
             else if (e.event === 'unlinked')        desc = 'Unlinked from canonical';
             else if (e.event === 'company_actual')  desc = e.to ? `Company override set: <strong>${escHtml(e.to)}</strong>` : 'Company override cleared';
+            else if (e.event === 'company_normalized') desc = `Company normalized: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong> <span class="text-muted fst-italic">(auto)</span>`;
             else if (e.event === 'salary_actual') {
               const fmtSal = a => (a && (a[0] != null || a[1] != null))
                 ? '$' + (a[0] != null ? a[0].toLocaleString() : '?') + '–$' + (a[1] != null ? a[1].toLocaleString() : '?')

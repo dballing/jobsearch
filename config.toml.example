@@ -91,3 +91,16 @@ label = "nc"
 # label            = "unknown"
 # label_from_input = "_jobsearch_label"
 # actor            = "careersite"
+
+# ── Company-name normalization (optional) ─────────────────────────────────────
+# Job feeds spell the same employer inconsistently (e.g. "Sirius XM" vs
+# "Sirius XM Radio"). List each variant on the left and the canonical name to
+# store on the right. Matching is case-insensitive and exact (whole field, after
+# trimming) — it is NOT substring or fuzzy. Aliases are applied to newly ingested
+# and re-seen jobs only; existing rows are normalized the next time that posting
+# reappears in a feed. Aliases are not chained: map every variant straight to the
+# final name.
+#
+# [company_aliases]
+# "Sirius XM"       = "SiriusXM"
+# "Sirius XM Radio" = "SiriusXM"

@@ -556,6 +556,33 @@ def extract_salary(item: dict) -> tuple[int | None, int | None]:
     return lo, hi
 
 
+def build_company_alias_map(raw: "dict | None") -> dict:
+    """Build the company-name normalization lookup from the config [company_aliases]
+    table. The table maps each variant spelling → the canonical name to store, e.g.
+    {"Sirius XM": "SiriusXM", "Sirius XM Radio": "SiriusXM"}.
+
+    Matching is case-insensitive (user's choice), so we key the lookup on the trimmed,
+    lower-cased variant; the canonical *value* is kept verbatim as written in config
+    (that exact casing is what gets stored). Returns {} when unset, so callers can treat
+    "no aliases" and "feature off" identically. A later duplicate key (two variants that
+    differ only in case) simply wins — harmless, and not worth a warning."""
+    if not raw:
+        return {}
+    return {str(variant).strip().lower(): str(canonical) for variant, canonical in raw.items()}
+
+
+def normalize_company(name: object, alias_map: dict) -> object:
+    """Return the canonical company name for `name` per `alias_map`, else `name` as-is.
+
+    Match is case-insensitive on the trimmed name. We only rewrite on a hit — a
+    non-matching name is returned completely untouched (original casing/whitespace), so
+    this never silently mangles companies that aren't in the list. None/empty pass
+    through unchanged."""
+    if not name or not alias_map:
+        return name
+    return alias_map.get(str(name).strip().lower(), name)
+
+
 def extract_fields_linkedin(item: dict) -> dict:
     """Map one fantastic-jobs LinkedIn actor item to our jobs-table field dict."""
     # Field names from fantastic-jobs/advanced-linkedin-job-search-api.
@@ -714,6 +741,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
            fuzzy_dedup: bool = True, fuzzy_desc_threshold: float = 0.85,
            fuzzy_title_threshold: float = 0.6,
            inherit_canonical_status: bool = True,
+           company_aliases: "dict | None" = None,
            formatter: "DescriptionFormatter | None" = None) -> Counter:
     """Process one run's items. Returns a Counter with these keys:
         inserted_clean / inserted_grouped / inserted_expired  — new postings, by kind
@@ -734,6 +762,19 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
         if not fields["job_id"]:
             print(f"  WARNING: item missing job_id, skipping: {list(item.keys())}", file=sys.stderr)
             continue
+
+        # Normalize the company name before anything reads it, so the canonical spelling
+        # is what gets stored, deduped, grouped, searched, and scored. Done per item (not
+        # as a backfill sweep) by design: only newly-ingested or re-seen jobs are
+        # normalized — a job already in the DB under an old spelling is fixed when its
+        # posting next reappears (the new normalized name then differs from the stored
+        # one, tripping the change check below into an UPDATE).
+        # Capture the feed's spelling first so we can log the rewrite to the job's
+        # History (audit trail) at the end of the loop, once the row is guaranteed to
+        # exist. company_was_normalized is True only when the alias actually fired.
+        original_company = fields["company"]
+        fields["company"] = normalize_company(original_company, company_aliases or {})
+        company_was_normalized = fields["company"] != original_company
 
         raw = json.dumps(item, ensure_ascii=False)
         desc = fields["job_description"] or ""
@@ -937,6 +978,17 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
             else:
                 c["unchanged"] += 1
 
+        # Audit trail: record when the company-alias map rewrote the feed's spelling to
+        # the canonical form. Logged for both new and re-seen jobs (the row exists by now,
+        # so this UPDATE-based append is safe). auto=true distinguishes it from a manual
+        # company_actual override event. Recorded against the feed value → stored value,
+        # i.e. exactly what the alias did this run.
+        if company_was_normalized:
+            append_history(conn, fields["job_id"], {
+                "ts": _now_iso(), "event": "company_normalized",
+                "from": original_company, "to": fields["company"], "auto": True,
+            })
+
         # Commit after each item rather than once per run. SQLite holds the write lock
         # from a row's INSERT/UPDATE until commit; a single per-run commit kept that lock
         # for the ENTIRE run — including every item's AI reformat call (1-2s each) — which
@@ -1098,6 +1150,10 @@ def main() -> None:
     fuzzy_desc_threshold: float = config.get("fuzzy_desc_threshold", 0.85)
     fuzzy_title_threshold: float = config.get("fuzzy_title_threshold", 0.6)
     inherit_canonical_status: bool = config.get("inherit_canonical_status", True)
+    # Case-insensitive variant→canonical company-name map (empty if [company_aliases] unset).
+    company_alias_map = build_company_alias_map(config.get("company_aliases"))
+    if company_alias_map:
+        print(f"Company-name normalization: {len(company_alias_map)} alias(es) configured.")
 
     # Optional AI description reformatting (engine settings shared via [ai]).
     descriptions_cfg = config.get("descriptions", {})
@@ -1179,6 +1235,7 @@ def main() -> None:
                 result = ingest(
                     conn, items, label, actor_type, exclude_ats_dups, reset_on_change,
                     fuzzy_dedup, fuzzy_desc_threshold, fuzzy_title_threshold, inherit_canonical_status,
+                    company_aliases=company_alias_map,
                     formatter=formatter,
                 )
                 print(f"    {summary_compact(result, reset_on_change)}")

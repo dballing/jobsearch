@@ -82,6 +82,16 @@ When a job is posted by a third party (e.g. a job board or recruiting firm) rath
 - Viability scoring sends both names to the AI with the same "posted via" note.
 - The override is cleared by deleting the field contents and saving. The original ingested name is always preserved.
 
+### Company name normalization
+
+Feeds spell the same employer inconsistently (e.g. "Sirius XM" vs "Sirius XM Radio"). The optional `[company_aliases]` config table maps variant spellings to one canonical name, applied automatically at ingest — so the stored value, and therefore grouping, employer search, viability scoring, and display, all use a single consistent name. See [Configuration](configuration.md#company-name-normalization-company_aliases).
+
+- Matching is **case-insensitive** and **exact** on the whole company field (after trimming whitespace) — not substring or fuzzy.
+- Applied to **newly ingested and re-seen** jobs only; a job already stored under an old spelling is normalized the next time its posting reappears in a feed (there is no bulk rewrite of existing rows).
+- Aliases are not chained: map every variant directly to the final name.
+- Each rewrite is recorded in the job's **History** as a `Company normalized: <feed name> → <canonical> (auto)` entry, so there's an audit trail of what the feed originally said and when it was canonicalized.
+- This is distinct from the per-job **Company name override** above. Normalization canonicalizes the *feed's* spelling for everyone via config; the override manually corrects a single posting (e.g. a recruiting firm shown instead of the employer). They stack — an override's muted "(via …)" original reflects the normalized feed name.
+
 ### Salary override
 
 The upstream feed extracts salary with its own AI, which sometimes misses a figure that is stated in the job description. To fill it in (or correct a wrong value), open the job preview and enter the annual **Salary override** min and/or max below the meta bar, then press Save or Enter. Inputs accept plain numbers, `$`/commas, or a `k` shorthand (e.g. `120k` → 120000).

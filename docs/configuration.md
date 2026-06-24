@@ -166,3 +166,28 @@ Notes:
 
 See [Features → Description rendering](features.md#previewing-job-descriptions) for
 how the formatted version is displayed.
+
+## Company name normalization (`[company_aliases]`)
+
+Optional. Feeds spell the same employer inconsistently (e.g. `Sirius XM` vs
+`Sirius XM Radio`). This table maps each variant spelling to the canonical name to
+store; the rewrite happens at ingest, so grouping, employer search, viability, and
+display all use one consistent name.
+
+```toml
+[company_aliases]
+"Sirius XM"       = "SiriusXM"
+"Sirius XM Radio" = "SiriusXM"
+```
+
+- Keys are variant spellings, values the canonical name. Quote names containing spaces.
+- Matching is **case-insensitive** and **exact** on the whole company field (after
+  trimming) — not substring or fuzzy. The canonical value is stored with the exact
+  casing you write here.
+- Applied to **newly ingested and re-seen** jobs only — there is no bulk rewrite of
+  existing rows. A job already stored under an old spelling is normalized the next time
+  its posting reappears in a feed.
+- Aliases are **not chained**: map every variant directly to the final name (an `X → Y`
+  and `Y → Z` pair does not turn `X` into `Z`).
+
+See [Features → Company name normalization](features.md#company-name-normalization).
