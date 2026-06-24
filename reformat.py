@@ -41,10 +41,11 @@ REFORMAT_SYSTEM = (
 # somehow exceeds this is detected via stop_reason and discarded (see below).
 MAX_TOKENS = 16000
 
-# Minimum content-similarity ratio for an AI reformat to be accepted. Not 1.0: a
-# faithful reformat can still shift a few word-tokens (e.g. a hyphenated compound split
-# differently, or an inline separator), so a small tolerance avoids false rejections
-# while a real content change (dropped sentence, invented heading) drops well below this.
+# Minimum content-similarity ratio for an AI reformat to be accepted. Compared on
+# the alphanumeric character stream (see `content_preserved`). Not 1.0: a faithful
+# reformat can still nudge a few characters (e.g. a stray typo fix, a unicode dash
+# normalized to ASCII), so a small tolerance avoids false rejections while a real
+# content change (dropped sentence, invented heading) drops well below this.
 CONTENT_THRESHOLD = 0.97
 
 
@@ -53,31 +54,43 @@ def description_hash(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
-def _content_tokens(text: str) -> str:
-    """Lowercased alphanumeric tokens, space-joined.
+def _content_stream(text: str) -> str:
+    """Lowercased alphanumeric characters only, concatenated with no separators.
 
-    Strips all punctuation/whitespace/Markdown markers so the comparison reflects
-    words and numbers only — formatting differences (``*``, ``-``, blank lines)
-    don't register, but added/removed/reworded content does.
+    Strips all punctuation, whitespace, and Markdown markers so the comparison
+    reflects letters and digits only. Crucially this is also *whitespace-position-
+    insensitive*: feeds routinely mangle word spacing (``optimizatio n``,
+    ``responsibilitie sproject``), and a faithful reformat repairs it. Comparing
+    word tokens counts every such repair as an added/removed word and wrongly
+    rejects a clean reformat; comparing the raw character stream makes the repair a
+    no-op (``optimizatio n`` and ``optimization`` collapse to the same characters)
+    while a genuine add/drop/reword/reorder still diverges.
     """
-    return " ".join(re.findall(r"[a-z0-9]+", (text or "").lower()))
+    return "".join(re.findall(r"[a-z0-9]+", (text or "").lower()))
 
 
 def content_preserved(original: str, markdown: str) -> bool:
     """True if the Markdown preserves the original's textual content.
 
-    Compares the two as *word* sequences (punctuation/whitespace/Markdown markers
-    stripped) and requires a similarity ratio >= CONTENT_THRESHOLD. Word-level
-    comparison ignores reformatting but catches a model that added (e.g. invented
+    Compares the two as *character* sequences (punctuation/whitespace/Markdown
+    markers stripped) and requires a similarity ratio >= CONTENT_THRESHOLD. The
+    character-level comparison ignores reformatting *and* whitespace-repair (see
+    `_content_stream`) but still catches a model that added (e.g. invented
     headings), dropped, reworded, or reordered text.
+
+    `autojunk=False` because difflib's default junk heuristic treats any element
+    occurring in >1% of a 200+-element sequence as noise — for a character stream
+    that's most of the alphabet, which would gut the ratio. Cost is a sub-second
+    O(n*m) diff per unique description, paid once behind the AI call that produced
+    `markdown` (and cached thereafter), so it's not on any hot path.
     """
     if not markdown:
         return False
-    a = _content_tokens(original).split()
-    b = _content_tokens(markdown).split()
+    a = _content_stream(original)
+    b = _content_stream(markdown)
     if not a:
         return False
-    return difflib.SequenceMatcher(None, a, b).ratio() >= CONTENT_THRESHOLD
+    return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio() >= CONTENT_THRESHOLD
 
 
 def reformat_description(client, text: str, model: str = "claude-haiku-4-5"):
