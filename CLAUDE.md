@@ -70,4 +70,4 @@ Typical cron line chains ingest then rescore:
 
 ## Open tech debt
 
-See `TODO.md`. Notably: removing the upstream API field-name fallbacks in `ingest.py` (legacy Apify build retired 2026-06-22, so now actionable), pre-ingest DB backups, embedding-based semantic dedup, and an `archived` column for old closed jobs.
+See `TODO.md`. Notably: pre-ingest DB backups, embedding-based semantic dedup, and an `archived` column for old closed jobs.

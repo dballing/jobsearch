@@ -451,11 +451,10 @@ AUTO_CLOSE_STATUSES = {"new", "reviewing"}
 def is_expired(item: dict) -> bool:
     """True if the posting's validity date is in the past.
 
-    Reads date_valid_through (old + new field spellings). Used to insert an
-    arrived-expired posting straight as 'closed', and to auto-close an active job whose
-    listing has since lapsed.
+    Reads date_valid_through. Used to insert an arrived-expired posting straight as
+    'closed', and to auto-close an active job whose listing has since lapsed.
     """
-    val = _scalar(item.get("date_valid_through") or item.get("date_validthrough"))
+    val = _scalar(item.get("date_valid_through"))
     if not val:
         return False
     try:
@@ -546,13 +545,10 @@ def _normalize_salary(value: object, unit: object) -> int | None:
 
 
 def extract_salary(item: dict) -> tuple[int | None, int | None]:
-    """(min, max) annual salary from an Apify item, normalized by its unit text.
-    New/old field-name variants are both checked, matching the value fields."""
-    unit = _scalar(item.get("ai_salary_unit_text") or item.get("ai_salary_unittext"))
-    lo = _normalize_salary(
-        _scalar(item.get("ai_salary_min_value") or item.get("ai_salary_minvalue")), unit)
-    hi = _normalize_salary(
-        _scalar(item.get("ai_salary_max_value") or item.get("ai_salary_maxvalue")), unit)
+    """(min, max) annual salary from an Apify item, normalized by its unit text."""
+    unit = _scalar(item.get("ai_salary_unit_text"))
+    lo = _normalize_salary(_scalar(item.get("ai_salary_min_value")), unit)
+    hi = _normalize_salary(_scalar(item.get("ai_salary_max_value")), unit)
     return lo, hi
 
 
@@ -588,10 +584,9 @@ def extract_fields_linkedin(item: dict) -> dict:
     # Field names from fantastic-jobs/advanced-linkedin-job-search-api.
     # `linkedin_id` is the actual LinkedIn job ID used as our PK (type changed to int June 2026;
     #   str() conversion handles both old string and new integer values).
-    # `direct_apply` (was `directapply`) = LinkedIn Easy Apply.
+    # `direct_apply` = LinkedIn Easy Apply.
     # Salary fields are AI-extracted by the actor and may be absent.
     # `external_apply_url` was removed June 2026 with no replacement; apply_url will be None.
-    # New name checked first with old name as fallback during the transition window.
     # _scalar() guards against fields that are arrays in JSON for multi-value records.
     salary_min, salary_max = extract_salary(item)
     return {
@@ -603,7 +598,7 @@ def extract_fields_linkedin(item: dict) -> dict:
         "job_url": f"https://www.linkedin.com/jobs/view/{_scalar(item.get('linkedin_id'))}",
         "apply_url": _scalar(item.get("external_apply_url")) or None,
         "easy_apply": 1 if str(
-            _scalar(item.get("direct_apply") or item.get("directapply") or "") or ""
+            _scalar(item.get("direct_apply") or "") or ""
         ).lower() == "true" else 0,
         "source": "linkedin",
         "salary_min": salary_min,
