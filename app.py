@@ -1360,10 +1360,12 @@ def jobs_autocomplete():
     )
     token_params  = [p for t in tokens for p in (f"%{t}%", f"%{t}%", f"%{t}%")]
     rows = db.execute(
-        f"""SELECT j.job_id, j.title, j.company, j.location, j.status, j.viability,
+        f"""SELECT j.job_id, j.title,
+                   COALESCE(j.company_actual, j.company) AS company,
+                   j.location, j.status, j.viability,
                    j.canonical_id,
                    c.title   AS canonical_title,
-                   c.company AS canonical_company
+                   COALESCE(c.company_actual, c.company) AS canonical_company
             FROM jobs j
             LEFT JOIN jobs c ON c.job_id = j.canonical_id
             WHERE {token_clauses}
