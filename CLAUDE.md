@@ -64,7 +64,7 @@ Typical cron line chains ingest then rescore:
 - **Line-buffer stdout in long-running scripts.** ingest and rescore call `sys.stdout.reconfigure(line_buffering=True)` early in `main()` so progress streams to a `tail -f`'d log (cron redirects make stdout block-buffered otherwise). New batch scripts should do the same.
 - **AI features are optional and fail-soft.** No API key / disabled → reformatting falls back to the heuristic renderer, viability is skipped. Don't make AI a hard dependency.
 - **Reformat integrity check.** `reformat.py:content_preserved` compares the alphanumeric *character* stream (whitespace-insensitive) so feed whitespace-mangling that the model repairs isn't counted as a content change; genuine add/drop/reword still fails. Threshold 0.97.
-- **Fuzzy dedup** (`ingest.py:find_canonical`) is `SequenceMatcher`-based with a title pre-filter; only canonicals (`canonical_id IS NULL`) are match candidates, so no chains.
+- **Fuzzy dedup** (`ingest.py:find_canonical`) is `SequenceMatcher`-based with a title pre-filter. It matches against *all* postings (roots and already-linked members), then resolves each hit to its canonical root — so an aggregator repost that rewrites the prose (near-0 overlap with the original ATS posting) still links via an identical sibling already in the group. Returning roots keeps the no-chain invariant; merging two matched roots also re-points the loser's members.
 - **Shared-across-group fields.** Notes, attachments, and salary overrides fan out to every current member of a fuzzy-match group, each keeping its own copy if the group later splits.
 - `docs/screenshot.png` is embedded in the README; regenerate it from `mock_screenshot.html` when the UI changes (see the screenshot-maintenance note).
 

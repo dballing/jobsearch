@@ -173,9 +173,13 @@ Fuzzy-linked jobs are collapsed into a single group row when **Matched-Jobs** gr
 
 When `inherit_canonical_status = true` (default), a newly linked duplicate starts with the same status **and applied date** as its canonical — so an auto-linked duplicate of a role you've already applied to isn't left `applied` without an `applied_at`. See [Configuration](configuration.md#global-keys).
 
+### Company-name inheritance
+
+A newly linked duplicate also adopts its canonical's **effective employer name** as a `company_actual` override when its own scraped company differs — so a repost surfaced under an aggregator name (e.g. "RemoteHunter", "Jobgether") shows the real employer ("Cribl") without a manual re-override on every repost. A genuine copy that already names the employer gets no override. This is independent of `inherit_canonical_status` (naming is a display concern, not application status).
+
 ### Notes
 
-- Only canonical jobs (`canonical_id IS NULL`) are considered as match candidates, preventing chains.
+- Match candidates include both canonical roots **and** already-linked members; every hit is resolved to its canonical root before linking, so reposts that rewrite the prose still link via an identical sibling, and no chains form.
 - Existing jobs before `fuzzy_dedup` was enabled are not retroactively linked — only new/re-ingested jobs are checked.
 
 ### Manual linking

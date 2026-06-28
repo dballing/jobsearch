@@ -475,13 +475,19 @@ def find_canonical(
     threshold: float,
     title_threshold: float = 0.6,
 ) -> list[sqlite3.Row]:
-    """Return all existing canonical jobs that are near-duplicates, sorted oldest-first.
+    """Return the canonical-root jobs that are near-duplicates, sorted oldest-first.
 
-    Only considers jobs with canonical_id IS NULL (i.e. canonical candidates,
-    not already-linked duplicates) to prevent chaining.  No company filter is
-    applied — the same job can appear under different company names when posted
-    by recruiters or aggregators.  A title similarity >= title_threshold pre-filter
-    keeps the search efficient; description similarity >= threshold is the final gate.
+    Matches against *every* posting — both canonical roots and already-linked
+    members — then resolves each hit to its canonical root (one hop:
+    canonical_id or job_id) and returns the distinct roots.  Matching members,
+    not just roots, is essential for aggregators (Jobgether, RemoteHunter) that
+    rewrite a posting's prose: their reposts share ~0 description overlap with
+    the original ATS canonical but are near-identical to a *sibling* repost
+    already in the group — which is always a member.  Resolving to the root
+    keeps the no-chain invariant (roots have canonical_id IS NULL).  No company
+    filter is applied — the same job appears under different aggregator names.
+    A title similarity >= title_threshold pre-filter keeps the search efficient;
+    description similarity >= threshold is the final gate.
 
     The caller should treat matches[0] as the canonical (oldest first_seen) and
     link all remaining matches to it, preventing future fragmentation.
@@ -489,10 +495,13 @@ def find_canonical(
     if not description or not title:
         return []
     candidates = conn.execute(
-        "SELECT * FROM jobs WHERE canonical_id IS NULL AND job_id != ?",
+        "SELECT * FROM jobs WHERE job_id != ?",
         (job_id,),
     ).fetchall()
-    matches: list[sqlite3.Row] = []
+    # Distinct canonical roots we matched, keyed by root job_id. A member match
+    # contributes its root; the first time we see a root we resolve and cache its row.
+    roots: dict[str, sqlite3.Row] = {}
+    row_by_id: dict[str, sqlite3.Row] = {c["job_id"]: c for c in candidates}
     for candidate in candidates:
         if not candidate["title"] or not candidate["job_description"]:
             continue
@@ -515,8 +524,17 @@ def find_canonical(
         ratio = desc_m.ratio()
         if ratio < threshold:
             ratio = SequenceMatcher(None, candidate["job_description"], description).ratio()
-        if ratio >= threshold:
-            matches.append(candidate)
+        if ratio < threshold:
+            continue
+        # Resolve a matched member to its canonical root so we return roots, not members.
+        root_id = candidate["canonical_id"] or candidate["job_id"]
+        if root_id not in roots:
+            # The root row is normally in this run's candidate set; fall back to a
+            # lookup if a member's root wasn't itself a candidate (shouldn't happen).
+            roots[root_id] = row_by_id.get(root_id) or conn.execute(
+                "SELECT * FROM jobs WHERE job_id = ?", (root_id,)
+            ).fetchone()
+    matches = [r for r in roots.values() if r is not None]
     # Sort oldest-first so matches[0] is the most-canonical candidate.
     matches.sort(key=lambda r: r["first_seen"] or "")
     return matches
@@ -787,6 +805,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
             default_status = "closed" if expired else "new"
             initial_status = default_status
             initial_applied_at = None
+            initial_company_actual = None
             if fuzzy_dedup and not expired:
                 matches = find_canonical(
                     conn, fields["job_id"], fields["title"], fields["company"],
@@ -795,6 +814,18 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                 if matches:
                     canonical = matches[0]
                     canonical_id = canonical["job_id"]
+                    # Show the repost under the canonical's *effective* employer name
+                    # (e.g. "Cribl" behind an aggregator like RemoteHunter/Jobgether) so
+                    # it doesn't need a manual re-override every time. The override lives
+                    # on the aggregator member, but the name to adopt is the root's
+                    # effective one (its own company, or its override if it has one) —
+                    # and only when the repost's scraped company actually differs, so a
+                    # genuine copy already naming the employer isn't given a no-op override.
+                    # Unconditional w.r.t. the status-inheritance toggle: naming is a
+                    # display concern, not application status.
+                    canonical_company = canonical["company_actual"] or canonical["company"]
+                    if canonical_company and canonical_company != fields["company"]:
+                        initial_company_actual = canonical_company
                     if inherit_canonical_status:
                         # Inherit the canonical's applied date alongside its status,
                         # so an auto-linked duplicate of an applied role isn't left
@@ -807,12 +838,15 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                         f"status: {initial_status}"
                     )
                     # (the new posting itself is tallied as inserted_grouped below)
-                    # Also link any other orphaned matches to the same canonical so
-                    # future jobs find one group rather than many.
+                    # Also merge any other matched roots into matches[0] so future jobs
+                    # find one group rather than many. Re-point each other root AND its
+                    # existing members (canonical_id = other) to preserve the no-chain
+                    # invariant — leaving members pointing at a now-demoted root chains.
                     for other in matches[1:]:
                         conn.execute(
-                            "UPDATE jobs SET canonical_id = ? WHERE job_id = ?",
-                            (canonical_id, other["job_id"]),
+                            "UPDATE jobs SET canonical_id = ? "
+                            "WHERE job_id = ? OR canonical_id = ?",
+                            (canonical_id, other["job_id"], other["job_id"]),
                         )
                         print(
                             f"  NOTE: also linking orphan {other['job_id']} ({other['title']}) "
@@ -827,18 +861,19 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
             conn.execute(
                 """
                 INSERT INTO jobs
-                    (job_id, title, company, location, posted_date,
+                    (job_id, title, company, company_actual, location, posted_date,
                      job_url, apply_url, easy_apply, salary_min, salary_max, salary_currency,
                      labels, source, status, applied_at, job_description, canonical_id, raw,
                      description_hash, job_description_formatted)
                 VALUES
-                    (:job_id, :title, :company, :location, :posted_date,
+                    (:job_id, :title, :company, :company_actual, :location, :posted_date,
                      :job_url, :apply_url, :easy_apply, :salary_min, :salary_max, :salary_currency,
                      :labels, :source, :status, :applied_at, :job_description, :canonical_id, :raw,
                      :description_hash, :job_description_formatted)
                 """,
                 {**fields, "labels": json.dumps([label]), "status": initial_status,
-                 "applied_at": initial_applied_at, "canonical_id": canonical_id, "raw": raw,
+                 "applied_at": initial_applied_at, "company_actual": initial_company_actual,
+                 "canonical_id": canonical_id, "raw": raw,
                  "description_hash": desc_hash, "job_description_formatted": formatted},
             )
             if initial_status == "closed":
@@ -857,6 +892,13 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                 append_history(conn, fields["job_id"], {
                     "ts": ts, "event": "status", "from": default_status,
                     "to": initial_status, "note": "inherited from canonical on ingest",
+                })
+            # Record the inherited company-name override, mirroring the UI link route's
+            # "company_actual" event so the override's provenance is visible in history.
+            if initial_company_actual:
+                append_history(conn, fields["job_id"], {
+                    "ts": ts, "event": "company_actual", "from": None,
+                    "to": initial_company_actual, "note": "inherited from canonical on ingest",
                 })
             if initial_status == "closed":
                 append_history(conn, fields["job_id"], {
@@ -902,9 +944,12 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                     )
                     c["relinked"] += 1
                     for other in matches[1:]:
+                        # Re-point each other root AND its members (see the insert-path
+                        # merge above) so merging two groups never leaves a chain.
                         conn.execute(
-                            "UPDATE jobs SET canonical_id = ? WHERE job_id = ?",
-                            (canonical_id, other["job_id"]),
+                            "UPDATE jobs SET canonical_id = ? "
+                            "WHERE job_id = ? OR canonical_id = ?",
+                            (canonical_id, other["job_id"], other["job_id"]),
                         )
                         print(
                             f"  NOTE: also linking orphan {other['job_id']} ({other['title']}) "
