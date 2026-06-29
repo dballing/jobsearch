@@ -121,6 +121,19 @@ The preview panel also lets you attach **files** to a job — cover letters, doc
 
 When any `new` jobs on the current page have a `low` viability score, a **Skip N low & new** button appears in the filter bar. Clicking it confirms and sets all matching jobs on that page to `skipped` in one action.
 
+### Weekly contact report
+
+The calendar-week icon in the navbar opens `/report/weekly` — a printable record of job-search **contacts** in a Sun→Sat week (local time), intended as on-demand evidence of job-search activity for Virginia unemployment.
+
+A "contact" is an actual exchange with an employer:
+
+- the **application** you submitted (sourced from `applied_at`), and
+- a **status change** that reflects engagement: `interviewing`, `offered`, `rejected`, or `withdrawn`.
+
+`ghosted` is deliberately **excluded** — it's auto-inferred silence (the absence of a response), not a contact event. A role appears if it had any such contact in the week; matched-group duplicates collapse to one entry. Entries are grouped by employer and show the title, application URL, applied date/time, and each in-week contact's date/time.
+
+Navigation: previous/next week, a date picker (jump to the week containing any date), and **This week**. The **Print** button (or your browser's print/Save-as-PDF) hides the app chrome and prints just the report. Weeks are bucketed in the **server's local timezone**, so evening activity isn't misfiled into the next UTC day.
+
 ---
 
 ## Re-ingestion behavior

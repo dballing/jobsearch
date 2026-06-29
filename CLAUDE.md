@@ -39,7 +39,7 @@ Typical cron line chains ingest then rescore:
 
 | File | Role |
 |------|------|
-| `app.py` | Flask app: index (filter/group/sort), preview panel, status/override/notes/attachment/link routes, stats. Holds the SQLite schema migration in `_migrate()`. |
+| `app.py` | Flask app: index (filter/group/sort), preview panel, status/override/notes/attachment/link routes, stats, weekly contact report (`/report/weekly`). Holds the SQLite schema migration in `_migrate()`. |
 | `ingest.py` | Apify ingestion: fetch runs, extract fields (linkedin + careersite extractors), fuzzy dedup, company-alias normalization, auto-ghost/close/reset, run summary. `DescriptionFormatter` wraps AI reformatting. |
 | `viability.py` | Shared scoring helpers: `prompt_hash`, `score_job`. |
 | `rescore_viability.py` | Batch AI viability scoring driver (selection logic, auto-skip, progress output). |
@@ -48,6 +48,7 @@ Typical cron line chains ingest then rescore:
 | `runlock.py` | `acquire_run_lock()` — single shared writer lock serializing ingest vs. rescore. |
 | `import_linkedin.py` | One-off import by LinkedIn URL/ID. |
 | `templates/base.html`, `jobs.html` | Layout/navbar/offcanvas preview; main jobs table. |
+| `templates/report_weekly.html` | Printable weekly job-hunt-contact report (Sun→Sat, local time), grouped by employer. |
 | `docs/configuration.md`, `docs/features.md` | Full config and feature reference. Keep in sync with behavior changes. |
 
 ## Data & state

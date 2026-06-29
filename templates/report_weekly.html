@@ -1,0 +1,111 @@
+{# Weekly job-hunt-contact report (Sun→Sat, local time). Printable evidence of
+   job-search activity for VA unemployment: every role with an application or a
+   status-change contact in the selected week, grouped by employer. Built by
+   app.py:report_weekly(). The .screen-only chrome is hidden when printed. #}
+{% extends "base.html" %}
+{% block title %}Weekly Contact Report{% endblock %}
+
+{% block content %}
+<style>
+  /* Keep the printed page to just the report: drop the app navbar and on-screen controls. */
+  @media print {
+    .navbar, .screen-only { display: none !important; }
+    body { background: #fff !important; }
+    a[href]::after { content: ""; }  /* don't expand links to raw URLs */
+    /* Don't keep whole employer blocks together — a tall one that won't fit the
+       remaining space would jump to the next page and leave a big blank gap. Instead
+       let an employer's table flow across pages, only keeping each role's two-row pair
+       (role + its URL line) intact, and the employer header attached to its first row. */
+    .role-group { break-inside: avoid; }
+    .employer-block > h5 { break-after: avoid; }
+  }
+</style>
+
+<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+  <div>
+    <h3 class="mb-0">Weekly Job-Search Contact Report</h3>
+    <div class="text-muted">{{ week_label }}</div>
+  </div>
+  <div class="screen-only d-flex align-items-center gap-2">
+    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('report_weekly', week=prev_week) }}"
+       title="Previous week"><i class="bi bi-chevron-left"></i></a>
+    <form method="get" action="{{ url_for('report_weekly') }}" class="d-flex align-items-center gap-1">
+      <input type="date" name="week" value="{{ week_start_iso }}" class="form-control form-control-sm"
+             onchange="this.form.submit()" title="Jump to the week containing this date">
+    </form>
+    <a class="btn btn-sm btn-outline-secondary {{ 'disabled' if is_current_week }}"
+       href="{{ url_for('report_weekly', week=next_week) }}" title="Next week"><i class="bi bi-chevron-right"></i></a>
+    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('report_weekly') }}"
+       title="Jump to the current week">This week</a>
+    <button class="btn btn-sm btn-primary" onclick="window.print()" title="Print or save as PDF">
+      <i class="bi bi-printer"></i> Print
+    </button>
+  </div>
+</div>
+
+{# Lead with the total (always >= employer count) so the breakdown never reads as
+   "fewer applications than employers" — some employers appear only via a follow-up
+   contact whose application was in an earlier week. #}
+<p class="text-muted">
+  {% set total = n_apps + n_responses %}
+  {{ total }} job-search contact{{ '' if total == 1 else 's' }}
+  across {{ n_employers }} employer{{ '' if n_employers == 1 else 's' }}:
+  {{ n_apps }} application{{ '' if n_apps == 1 else 's' }} submitted,
+  {{ n_responses }} follow-up contact{{ '' if n_responses == 1 else 's' }}
+  (interviews, offers, rejections, withdrawals).
+</p>
+
+{% if not report %}
+  <div class="alert alert-secondary">No job-search contacts recorded for this week.</div>
+{% else %}
+  {% for emp in report %}
+  <div class="employer-block mb-4">
+    <h5 class="border-bottom pb-1">{{ emp.company }}</h5>
+    <table class="table table-sm align-top mb-0">
+      <thead>
+        <tr class="text-muted small">
+          <th style="width:30%">Title</th>
+          <th style="width:24%">Applied</th>
+          <th style="width:34%">Contact(s) this week</th>
+          <th style="width:12%">Application</th>
+        </tr>
+      </thead>
+        {% for role in emp.roles %}
+        {# One <tbody> per role so each role's two-row pair stays on one page in print
+           (.role-group { break-inside: avoid }); the table can still break between roles. #}
+        <tbody class="role-group">
+        {# Row 1: the role + its in-week contacts. border-bottom-0 pairs it with the URL
+           line below so the two rows read as one entry (divider falls under the URL). #}
+        <tr>
+          <td class="border-bottom-0">{{ role.title }}<button class="btn btn-sm btn-link p-0 ms-1 text-muted screen-only"
+              onclick="showPreview('{{ role.job_id }}')" title="Preview description"><i class="bi bi-card-text"></i></button></td>
+          <td class="small border-bottom-0">{{ role.applied_at or '—' }}</td>
+          <td class="small border-bottom-0">
+            {% for ev in role.events %}
+            <div>
+              <span class="badge text-bg-{{ 'success' if ev.kind in ('applied','offered','interviewing')
+                                            else 'danger' if ev.kind == 'rejected'
+                                            else 'secondary' }}">{{ ev.label }}</span>
+              {{ ev.when }}
+            </div>
+            {% endfor %}
+          </td>
+          <td class="small border-bottom-0">
+            {% if role.url %}<a href="{{ role.url }}" target="_blank" rel="noopener">Open</a>{% else %}—{% endif %}
+          </td>
+        </tr>
+        {# Row 2: the literal application URL, spanning Applied/Contacts/Application, so a
+           printed copy carries the address (not just a clickable link). #}
+        <tr>
+          <td class="border-top-0"></td>
+          <td class="small text-muted text-break border-top-0" colspan="3">
+            {% if role.url %}URL: {{ role.url }}{% endif %}
+          </td>
+        </tr>
+        </tbody>
+        {% endfor %}
+    </table>
+  </div>
+  {% endfor %}
+{% endif %}
+{% endblock %}

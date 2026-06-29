@@ -16,7 +16,7 @@ import shlex
 import sqlite3
 import tomllib
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from flask import Flask, abort, g, render_template, request, send_file, url_for
@@ -132,6 +132,31 @@ STATUS_FILTERS = {
     "rejected":  ("Rejected",  "status = 'rejected'"),
     "all":       ("All",       None),
 }
+
+# ── Weekly job-hunt-contact report ───────────────────────────────────────────
+# Status transitions that represent an actual *contact* between the candidate and an
+# employer — me initiating (withdrawing), the employer advancing the process, or the
+# employer actively ending it. The application itself is a contact too, sourced from
+# applied_at (not history) so it also covers jobs migrated before history existed.
+# 'ghosted' is deliberately excluded: it's auto-inferred silence (the *absence* of a
+# response), not a contact event. Backs the report VA unemployment can request.
+CONTACT_STATUSES = {"interviewing", "offered", "rejected", "withdrawn"}
+# Status-history note prefixes marking a *propagated* transition — a matched-group
+# duplicate adopting the group's already-decided status when it's linked or re-ingested,
+# or a migration backfill — not a fresh contact. Excluded from the report so one
+# withdrawal/rejection isn't recounted once per posting in the group (each propagation
+# lands at its own later timestamp, so the (ts, status) de-dup alone won't catch them).
+_PROPAGATED_STATUS_NOTES = ("inherited from canonical", "reconstructed from canonical")
+CONTACT_LABELS = {
+    "applied":      "Applied",
+    "interviewing": "Interviewing",
+    "offered":      "Offer",
+    "rejected":     "Rejected",
+    "withdrawn":    "Withdrew",
+}
+# The report buckets contacts into Sun→Sat calendar weeks in the server's *local*
+# timezone (where the candidate lives), so evening activity isn't misfiled into the
+# next day's UTC date.
 
 # Effective salary range. When a manual override (salary_*_actual) is set, that pair
 # IS the salary — a blank bound is open-ended (e.g. "$175k+"). Coalescing each bound
@@ -960,6 +985,170 @@ def index():
         group_varied=GROUP_VARIED,
         col_urls=col_urls,
     )
+
+
+def _parse_utc(ts: str | None) -> datetime | None:
+    """Parse a stored UTC timestamp into a tz-aware UTC datetime, or None.
+
+    The DB holds two shapes: 'YYYY-MM-DD HH:MM:SS' (SQLite CURRENT_TIMESTAMP and
+    first_seen) and ISO 'YYYY-MM-DDTHH:MM:SSZ' (history event `ts`). Both are UTC;
+    naive values are assumed UTC.
+    """
+    if not ts:
+        return None
+    s = ts.strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    s = s.replace(" ", "T", 1)  # space form → ISO so fromisoformat accepts it
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def _local_naive(dt: datetime) -> datetime:
+    """Convert an aware UTC datetime to the server's local wall-clock time, naive.
+
+    astimezone() with no argument applies the OS local zone with the correct DST
+    offset for that specific instant, so per-instant bucketing stays accurate across
+    spring/fall transitions; we drop tzinfo to compare against naive week bounds.
+    """
+    return dt.astimezone().replace(tzinfo=None)
+
+
+def _week_bounds(anchor: datetime) -> tuple[datetime, datetime]:
+    """Return [start, end) naive-local datetimes for the Sun→Sat week containing
+    `anchor` (a naive-local datetime). End is the next Sunday 00:00 (exclusive)."""
+    # weekday(): Mon=0..Sun=6 → days since the most recent Sunday.
+    days_since_sun = (anchor.weekday() + 1) % 7
+    start = datetime(anchor.year, anchor.month, anchor.day) - timedelta(days=days_since_sun)
+    return start, start + timedelta(days=7)
+
+
+@app.route("/report/weekly")
+def report_weekly():
+    """Printable weekly job-hunt-contact report (Sun→Sat, local time).
+
+    Lists every role with a *contact* in the selected week — an application I
+    submitted (applied_at) or a status change I/the employer made (CONTACT_STATUSES) —
+    grouped by employer, with the application URL, applied date/time, and each in-week
+    contact's date/time. Intended to evidence job-search activity for VA unemployment.
+    `?week=YYYY-MM-DD` selects any day in the target week; default is the current week.
+    """
+    db = get_db()
+
+    # Resolve the requested week from a date param (any day in the week); fall back to
+    # today (local) on absence or a malformed value.
+    raw_week = request.args.get("week", "").strip()
+    try:
+        anchor = datetime.fromisoformat(raw_week) if raw_week else datetime.now()
+    except ValueError:
+        anchor = datetime.now()
+    start, end = _week_bounds(anchor)
+
+    # Narrow to jobs that could possibly contribute: anything applied-to, or with a
+    # status change in its history. The week filter happens in Python (timestamps need
+    # local-tz conversion). status/applied_at fan out across a matched group, so we
+    # collapse to one entry per canonical group below.
+    rows = db.execute(
+        """SELECT job_id, COALESCE(canonical_id, job_id) AS group_key, canonical_id,
+                  title, company, company_actual, job_url, apply_url, applied_at, history
+           FROM jobs
+           WHERE applied_at IS NOT NULL OR history LIKE '%"event":"status"%'"""
+    ).fetchall()
+
+    groups: dict[str, list[sqlite3.Row]] = {}
+    for r in rows:
+        groups.setdefault(r["group_key"], []).append(r)
+
+    employers: dict[str, list[dict]] = {}
+    n_apps = n_responses = 0
+    for members in groups.values():
+        # Representative posting for display: the canonical root if present (status and
+        # applied_at fan out identically across members, so any member's timeline works).
+        rep = next((m for m in members if m["canonical_id"] is None), members[0])
+
+        # The application contact: applied_at is shared across the group; take any set one.
+        applied_dt = next(
+            (d for d in (_parse_utc(m["applied_at"]) for m in members) if d), None
+        )
+
+        # Union status-change contacts across members, de-duped by (instant, status) so a
+        # real change fanned out to every member at one instant is counted once. Skip
+        # *propagated* transitions (a duplicate adopting the group's already-decided status
+        # on link/ingest, or a migration backfill): those carry their own later timestamp,
+        # so they'd otherwise show as extra contacts the canonical's own log never recorded.
+        contacts: dict[tuple[str, str], datetime] = {}
+        for m in members:
+            for ev in json.loads(m["history"] or "[]"):
+                if ev.get("event") != "status" or ev.get("to") not in CONTACT_STATUSES:
+                    continue
+                if (ev.get("note") or "").startswith(_PROPAGATED_STATUS_NOTES):
+                    continue
+                dt = _parse_utc(ev.get("ts"))
+                if dt:
+                    contacts[(ev["ts"], ev["to"])] = dt
+
+        # Keep only this week's contacts (local-time bucketed); the application counts as
+        # a contact only if it, too, landed in the week.
+        events: list[dict] = []
+        applied_in_week = applied_dt is not None and start <= _local_naive(applied_dt) < end
+        if applied_in_week:
+            events.append({"dt": applied_dt, "label": CONTACT_LABELS["applied"], "kind": "applied"})
+        for (_, to), dt in contacts.items():
+            if start <= _local_naive(dt) < end:
+                events.append({"dt": dt, "label": CONTACT_LABELS[to], "kind": to})
+        if not events:
+            continue
+
+        events.sort(key=lambda e: e["dt"])
+        n_apps += 1 if applied_in_week else 0
+        n_responses += sum(1 for e in events if e["kind"] != "applied")
+
+        company = (rep["company_actual"] or rep["company"] or "—").strip()
+        # Application URL: prefer a real apply link from any member, else the listing URL.
+        url = next((m["apply_url"] for m in members if (m["apply_url"] or "").strip()), None) \
+            or rep["job_url"]
+        employers.setdefault(company, []).append({
+            "title": rep["title"] or "—",
+            "job_id": rep["job_id"],  # representative posting, for the description preview panel
+            "url": url,
+            "applied_at": _fmt_local(applied_dt),
+            "applied_in_week": applied_in_week,
+            "events": [{"when": _fmt_local(e["dt"]), "label": e["label"], "kind": e["kind"]}
+                       for e in events],
+            # Sort by the actual instant of the earliest in-week contact (events is already
+            # chronological); the formatted "when" string wouldn't order by date.
+            "_sort": events[0]["dt"],
+        })
+
+    # Alphabetical by employer; roles within an employer earliest-contact first.
+    report = [
+        {"company": c, "roles": sorted(roles, key=lambda r: r["_sort"])}
+        for c, roles in sorted(employers.items(), key=lambda kv: kv[0].lower())
+    ]
+
+    return render_template(
+        "report_weekly.html",
+        report=report,
+        week_label=f"{start:%a %b %-d} – {end - timedelta(days=1):%a %b %-d, %Y}",
+        week_start_iso=f"{start:%Y-%m-%d}",
+        prev_week=f"{(start - timedelta(days=1)):%Y-%m-%d}",
+        next_week=f"{end:%Y-%m-%d}",
+        is_current_week=(start <= datetime.now() < end),
+        n_apps=n_apps,
+        n_responses=n_responses,
+        n_employers=len(report),
+    )
+
+
+def _fmt_local(dt: datetime | None) -> str | None:
+    """Format an aware UTC datetime as local wall time for the report, e.g.
+    'Sun Jun 22, 2026 2:16 PM EDT'. Returns None for None."""
+    if dt is None:
+        return None
+    return dt.astimezone().strftime("%a %b %-d, %Y %-I:%M %p %Z")
 
 
 @app.route("/stats")
