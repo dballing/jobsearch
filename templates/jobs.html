@@ -503,6 +503,24 @@
 <script>
 const STATUS_COLORS = {{ status_colors | tojson }};
 
+// ── Rows-per-page persistence ──
+// Page size lives in the ?per_page= URL param (server-side paging), but we also remember
+// the user's choice per-browser in localStorage — the same way column visibility persists.
+// On a fresh visit that carries no explicit per_page (e.g. the navbar brand link or a
+// bookmark), restore the saved value by redirecting once. Within-app links already thread
+// per_page through, so this only fires when the param is genuinely absent — no loop.
+const PER_PAGE_KEY = 'jobsearch_per_page';
+(function restorePerPage() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.has('per_page')) return;                  // explicit choice in URL wins
+  let saved;
+  try { saved = localStorage.getItem(PER_PAGE_KEY); } catch { return; }
+  if (!saved || saved === '25') return;                // nothing saved, or already the default
+  if (!{{ per_page_options | tojson }}.includes(saved)) return;  // ignore stale/invalid values
+  params.set('per_page', saved);
+  window.location.search = params.toString();
+})();
+
 function applySelectColor(sel) {
   // Mirror the Bootstrap badge color as a left border accent
   const colorMap = {
@@ -865,7 +883,9 @@ function searchByComp(min, max, btn) {
 }
 
 // Page-size dropdown: set per_page (preserving all other state) and jump to page 1.
+// Also remember the choice per-browser so it survives fresh visits (see restorePerPage).
 function setPerPage(value) {
+  try { localStorage.setItem(PER_PAGE_KEY, value || '25'); } catch {}
   const p = new URLSearchParams(window.location.search);
   if (value && value !== '25') { p.set('per_page', value); } else { p.delete('per_page'); }
   p.set('page', '1');
