@@ -386,9 +386,15 @@
       .then(job => {
         const viabilityColors = {high: 'success', medium: 'warning', low: 'danger'};
         titleEl.textContent = job.title || '(no title)';
+        // Effective employer name, linked to the company's own site when we have one
+        // (cleaner in the panel than a separate icon). An override keeps its "(via …)" note.
+        const effName = escHtml(job.company_actual || job.company || '');
+        const companyLinked = job.company_url
+          ? `<a href="${escHtml(job.company_url)}" target="_blank" rel="noopener" title="Open company website — ${escHtml(job.company_url)}">${effName}</a>`
+          : effName;
         const companyHtml = job.company_actual
-          ? `${escHtml(job.company_actual)} <span class="text-muted fst-italic" style="font-size:.85em">(via ${escHtml(job.company)})</span>`
-          : escHtml(job.company || '');
+          ? `${companyLinked} <span class="text-muted fst-italic" style="font-size:.85em">(via ${escHtml(job.company)})</span>`
+          : companyLinked;
         const metaParts = [companyHtml, job.location ? escHtml(job.location) : null, job.salary_display ? escHtml(job.salary_display) : null]
                            .filter(Boolean).join(' · ');
         let metaHtml = `<div>${metaParts}</div>`;

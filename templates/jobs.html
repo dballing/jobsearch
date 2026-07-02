@@ -166,6 +166,13 @@
         ><i class="bi bi-link-45deg"></i></button>
 {% endmacro %}
 
+{# Link-out to the employer's own website (company_url column). Rendered only when
+   we have one; opens in a new tab and shows the URL in its tooltip. #}
+{% macro company_link(url) %}
+{% if url %}<a href="{{ url }}" target="_blank" rel="noopener" class="btn btn-sm btn-link p-0 ms-1 text-muted"
+   title="Open company website — {{ url }}"><i class="bi bi-box-arrow-up-right"></i></a>{% endif %}
+{% endmacro %}
+
 {# Status dropdown for a single job. data-prev/data-viability let the JS animate the
    left-border color and confirm risky transitions; onchange POSTs to /job/<id>/status. #}
 {% macro status_select(job_id, current_status, viability='') %}
@@ -211,7 +218,7 @@
               <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('{{ job.preview_job_id }}')" title="Preview description"><i class="bi bi-card-text"></i></button>
               {% endif %}
             </td>
-            <td>{{ job.company_display or '—' }}{% if job.has_company_override %}<sup title="One or more postings have a company name override" style="cursor:help">*</sup>{% endif %}{% if job.company_display and job.company_display != group_varied %}<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany({{ job.company_display | tojson }}, this)'><i class="bi bi-search"></i></button>{% endif %}</td>
+            <td>{{ job.company_display or '—' }}{% if job.has_company_override %}<sup title="One or more postings have a company name override" style="cursor:help">*</sup>{% endif %}{% if job.company_display and job.company_display != group_varied %}<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany({{ job.company_display | tojson }}, this)'><i class="bi bi-search"></i></button>{% endif %}{{ company_link(job.company_url) }}</td>
             <td class="col-location">
               <button class="btn btn-sm btn-link p-0 me-1 expand-toggle"
                       onclick="toggleGroup({{ gindex }}, this)"
@@ -288,7 +295,7 @@
                 {% if sub.title %}<button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle({{ sub.title | tojson }}, this)'><i class="bi bi-search"></i></button>{% endif %}
               {% endif %}
             </td>
-            <td class="small">{% if job.is_fuzzy_group %}{{ sub.company_display or '—' }}{% if sub.company_actual %}<sup title="Originally listed as: {{ sub.company }}" style="cursor:help">*</sup>{% endif %}{% if sub.company_display %}<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany({{ sub.company_display | tojson }}, this)'><i class="bi bi-search"></i></button>{% endif %}{% endif %}</td>
+            <td class="small">{% if job.is_fuzzy_group %}{{ sub.company_display or '—' }}{% if sub.company_actual %}<sup title="Originally listed as: {{ sub.company }}" style="cursor:help">*</sup>{% endif %}{% if sub.company_display %}<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany({{ sub.company_display | tojson }}, this)'><i class="bi bi-search"></i></button>{% endif %}{{ company_link(sub.company_url) }}{% endif %}</td>
             <td class="ps-3 small col-location"{% if sub.locations_all %} title="{{ sub.locations_all }}" style="cursor: help;"{% endif %}>
               {% if sub.job_url %}
                 <a href="{{ sub.job_url }}" target="_blank" rel="noopener">{{ sub.location or '—' }}</a>
@@ -339,7 +346,7 @@
               {% endif %}
               {% if job.title %}<button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle({{ job.title | tojson }}, this)'><i class="bi bi-search"></i></button>{% endif %}
             </td>
-            <td>{{ job.company_display or '—' }}{% if job.company_actual %}<sup title="Originally listed as: {{ job.company }}" style="cursor:help">*</sup>{% endif %}{% if job.company_display %}<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany({{ job.company_display | tojson }}, this)'><i class="bi bi-search"></i></button>{% endif %}</td>
+            <td>{{ job.company_display or '—' }}{% if job.company_actual %}<sup title="Originally listed as: {{ job.company }}" style="cursor:help">*</sup>{% endif %}{% if job.company_display %}<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany({{ job.company_display | tojson }}, this)'><i class="bi bi-search"></i></button>{% endif %}{{ company_link(job.company_url) }}</td>
             <td class="col-location"{% if job.locations_all %} title="{{ job.locations_all }}" style="cursor: help;"{% endif %}>
               {{ job.location_primary if view == 'grouped' else (job.location or '—') }}
               {% if job.locations_count > 1 %}<span class="text-muted" style="text-decoration: underline dotted;">+{{ job.locations_count - 1 }}</span>{% endif %}

@@ -7,9 +7,12 @@
 
 {% block content %}
 <style>
+  /* Company URL text is shown only when printing (on screen the name is a live link). */
+  .print-only { display: none; }
   /* Keep the printed page to just the report: drop the app navbar and on-screen controls. */
   @media print {
     .navbar, .screen-only { display: none !important; }
+    .print-only { display: inline !important; }
     body { background: #fff !important; }
     a[href]::after { content: ""; }  /* don't expand links to raw URLs */
     /* Don't keep whole employer blocks together — a tall one that won't fit the
@@ -60,7 +63,12 @@
 {% else %}
   {% for emp in report %}
   <div class="employer-block mb-4">
-    <h5 class="border-bottom pb-1">{{ emp.company }}</h5>
+    {# Company name links to the employer's site on screen; the URL is also printed as
+       plain text (.print-only) so a paper/PDF copy carries the address. #}
+    <h5 class="border-bottom pb-1">
+      {% if emp.company_url %}<a href="{{ emp.company_url }}" target="_blank" rel="noopener">{{ emp.company }}</a>{% else %}{{ emp.company }}{% endif %}
+      {% if emp.company_url %}<span class="print-only text-muted fw-normal" style="font-size:.8rem"> — {{ emp.company_url }}</span>{% endif %}
+    </h5>
     <table class="table table-sm align-top mb-0">
       <thead>
         <tr class="text-muted small">

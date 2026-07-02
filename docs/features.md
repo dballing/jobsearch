@@ -83,6 +83,16 @@ When a job is posted by a third party (e.g. a job board or recruiting firm) rath
 - Viability scoring sends both names to the AI with the same "posted via" note.
 - The override is cleared by deleting the field contents and saving. The original ingested name is always preserved.
 
+### Company website link
+
+Ingest records the employer's own site in a `company_url` column, taken from the feed (preferring the real domain — LinkedIn's `linkedin_org_url` / careersite's `domain_derived` — and falling back to the source's `organization_url`, i.e. a LinkedIn/ATS company page). It's surfaced in three places:
+
+- **Jobs table** — a box-arrow link-out icon next to the company name opens the site in a new tab.
+- **Preview panel** — the company name itself is the link.
+- **Weekly report** — the employer heading links to the site; the raw URL is also printed as plain text so a paper/PDF copy carries the address.
+
+The icon/link only appears when a URL is known (~99.7% of listings; roughly 82% resolve to the employer's own site, the rest to a company page).
+
 ### Company name normalization
 
 Feeds spell the same employer inconsistently (e.g. "Sirius XM" vs "Sirius XM Radio"). The optional `[company_aliases]` config table maps variant spellings to one canonical name, applied automatically at ingest — so the stored value, and therefore grouping, employer search, viability scoring, and display, all use a single consistent name. See [Configuration](configuration.md#company-name-normalization-company_aliases).

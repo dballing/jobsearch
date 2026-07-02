@@ -658,6 +658,9 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
         "title":            title,
         "company":          company,
         "company_display":  company,
+        # Group-level employer site: first sub-row that has one (members of a real
+        # employer group share it; a mixed fuzzy group just links whichever resolves).
+        "company_url":      next((s.get("company_url") for s in sub_rows if s.get("company_url")), None),
         "location_count":   h["location_count"],
         # Group's aggregate comp band (MIN low / MAX high); for a uniform group
         # this is the shared range, used by the salary-cell comp-search icon.
@@ -713,6 +716,7 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
             "company":          s.get("company", ""),
             "company_actual":   s.get("company_actual"),
             "company_display":  s.get("company_display", ""),
+            "company_url":      s.get("company_url"),
             "salary_min_feed":  s.get("salary_min_feed"),
             "salary_max_feed":  s.get("salary_max_feed"),
             "salary_feed_display": s.get("salary_feed_display", ""),
@@ -1074,7 +1078,8 @@ def report_weekly():
     # collapse to one entry per canonical group below.
     rows = db.execute(
         """SELECT job_id, COALESCE(canonical_id, job_id) AS group_key, canonical_id,
-                  title, company, company_actual, job_url, apply_url, applied_at, history
+                  title, company, company_actual, company_url, job_url, apply_url,
+                  applied_at, history
            FROM jobs
            WHERE applied_at IS NOT NULL OR history LIKE '%"event":"status"%'"""
     ).fetchall()
@@ -1131,10 +1136,12 @@ def report_weekly():
         # Application URL: prefer a real apply link from any member, else the listing URL.
         url = next((m["apply_url"] for m in members if (m["apply_url"] or "").strip()), None) \
             or rep["job_url"]
+        company_url = next((m["company_url"] for m in members if (m["company_url"] or "").strip()), None)
         employers.setdefault(company, []).append({
             "title": rep["title"] or "—",
             "job_id": rep["job_id"],  # representative posting, for the description preview panel
             "url": url,
+            "company_url": company_url,
             "applied_at": _fmt_local(applied_dt),
             "applied_in_week": applied_in_week,
             "events": [{"when": _fmt_local(e["dt"]), "label": e["label"], "kind": e["kind"]}
@@ -1144,9 +1151,12 @@ def report_weekly():
             "_sort": events[0]["dt"],
         })
 
-    # Alphabetical by employer; roles within an employer earliest-contact first.
+    # Alphabetical by employer; roles within an employer earliest-contact first. The
+    # employer's site is the first role's that resolved one (roles share an employer).
     report = [
-        {"company": c, "roles": sorted(roles, key=lambda r: r["_sort"])}
+        {"company": c,
+         "company_url": next((r["company_url"] for r in roles if r["company_url"]), None),
+         "roles": sorted(roles, key=lambda r: r["_sort"])}
         for c, roles in sorted(employers.items(), key=lambda kv: kv[0].lower())
     ]
 
@@ -1269,6 +1279,7 @@ def get_job(job_id: str):
         "title":            job["title"],
         "company":          job["company"],
         "company_actual":   job.get("company_actual"),
+        "company_url":      job.get("company_url"),
         "location":         job["location"],
         "job_url":          job["job_url"],
         "apply_url":        job["apply_url"],
