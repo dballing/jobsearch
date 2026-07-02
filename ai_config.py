@@ -15,7 +15,7 @@ import os
 DEFAULT_MODEL = "claude-haiku-4-5"
 
 # Approximate pricing per token (USD). Update if Anthropic changes rates.
-# Source: https://platform.claude.com/docs/en/about-claude/models/overview (2026-06-04).
+# Source: https://platform.claude.com/docs/en/about-claude/models/overview (2026-07-02).
 # Per-model entries list only input/output $/1M; cache_write is 1.25x input (5-min TTL)
 # and cache_read is 0.1x input, so they're derived rather than hand-typed.
 def _pricing(input_per_m: float, output_per_m: float) -> dict[str, float]:
@@ -28,16 +28,19 @@ def _pricing(input_per_m: float, output_per_m: float) -> dict[str, float]:
 
 
 MODEL_PRICING: dict[str, dict[str, float]] = {
-    # Current models
+    # Current models (latest generation).
     "claude-fable-5":    _pricing(10.00, 50.00),
-    "claude-mythos-5":   _pricing(10.00, 50.00),
+    "claude-mythos-5":   _pricing(10.00, 50.00),  # Project Glasswing only; same specs/price as Fable 5
     "claude-opus-4-8":   _pricing(5.00, 25.00),
+    # Sonnet 5 introductory pricing ($2/$10) runs through 2026-08-31; it then
+    # reverts to the standard $3.00 / $15.00 — bump these two numbers after that date.
+    "claude-sonnet-5":   _pricing(2.00, 10.00),
+    "claude-haiku-4-5":  _pricing(1.00, 5.00),
+    # Legacy (still active).
     "claude-opus-4-7":   _pricing(5.00, 25.00),
     "claude-opus-4-6":   _pricing(5.00, 25.00),
-    "claude-sonnet-4-6": _pricing(3.00, 15.00),
-    "claude-haiku-4-5":  _pricing(1.00, 5.00),
-    # Legacy (still active)
     "claude-opus-4-5":   _pricing(5.00, 25.00),
+    "claude-sonnet-4-6": _pricing(3.00, 15.00),
     "claude-sonnet-4-5": _pricing(3.00, 15.00),
 }
 

@@ -114,7 +114,7 @@ compatible — an `api_key`/`model` left under `[viability]` still works as an o
 ```toml
 [viability]
 enabled = true
-model   = "claude-sonnet-4-6"   # optional: override [ai].model for scoring
+model   = "claude-sonnet-5"     # optional: override [ai].model for scoring
 prompt  = """
 Describe yourself as a candidate…
 """
