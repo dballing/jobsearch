@@ -412,8 +412,11 @@ def main() -> None:
     breakdown      = ", ".join(f"{r}: {tally[r]}" for r in ("high", "medium", "low") if tally.get(r))
     fail_note      = f", {failed} failed" if failed else ""
     autoskip_note  = f", {auto_skipped} auto-skipped" if auto_skipped else ""
+    # Per-job average over the whole selection (count = jobs processed), for spotting a
+    # slow model/API at a glance in a tailed log.
+    avg_note       = f" (avg {elapsed / count:.2f}s/job)" if count else ""
     # Lead with walltime (like ingest) so a tailed log surfaces slow runs at a glance.
-    print(f"Done in {elapsed:.1f}s. {scored} job(s) scored{fail_note}{autoskip_note}." + (f" ({breakdown})" if breakdown else ""))
+    print(f"Done in {elapsed:.1f}s{avg_note}. {scored} job(s) scored{fail_note}{autoskip_note}." + (f" ({breakdown})" if breakdown else ""))
     summary = format_token_summary(
         model, input=tok_input, output=tok_output,
         cache_write=tok_write, cache_read=tok_read,

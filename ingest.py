@@ -1086,8 +1086,11 @@ def summary_detailed(c: Counter, ghosted: int, elapsed: float, dry_run: bool) ->
     """Multi-line grand-total breakdown."""
     prefix = "[DRY-RUN] " if dry_run else ""
     exp = f", {c['inserted_expired']} arrived-expired" if c["inserted_expired"] else ""
+    total = _seen_total(c)
+    # Per-posting average, for spotting a slow fetch/dedup pass at a glance in a log.
+    avg = f" (avg {elapsed / total:.2f}s/posting)" if total else ""
     return (
-        f"{prefix}Done in {elapsed:.1f}s. {_seen_total(c)} postings seen.\n"
+        f"{prefix}Done in {elapsed:.1f}s{avg}. {total} postings seen.\n"
         f"  New:      {c['inserted_clean']} standalone, {c['inserted_grouped']} grouped{exp}\n"
         f"  Existing: {c['updated']} updated, {c['unchanged']} unchanged, "
         f"{c['skipped_ats']} ATS duplicates skipped\n"
