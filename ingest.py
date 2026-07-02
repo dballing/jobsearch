@@ -36,6 +36,8 @@ APIFY_BASE = "https://api.apify.com/v2"
 #   canonical_id              NULL for a canonical/standalone job; otherwise the job_id
 #                             of the canonical this is a fuzzy duplicate of (one hop only).
 #   company_actual/salary_*_actual  manual UI overrides that win over scraped values.
+#   company_url               employer's own site (extract_company_url): prefers the
+#                             feed's linkedin_org_url/domain_derived, else organization_url.
 #   needs_rescored            set when a viability-relevant field changed, so the next
 #                             rescore re-evaluates even if the prompt itself is unchanged.
 #   job_description_formatted optional AI-cleaned Markdown; NULL → heuristic renderer.
@@ -54,6 +56,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     posted_date     TEXT,
     job_url         TEXT,
     apply_url       TEXT,
+    company_url     TEXT,
     easy_apply      INTEGER,
     salary_min      INTEGER,
     salary_max      INTEGER,
@@ -212,6 +215,9 @@ def open_db(path: str) -> sqlite3.Connection:
         conn.commit()
     if "description_hash" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN description_hash TEXT")
+        conn.commit()
+    if "company_url" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN company_url TEXT")
         conn.commit()
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_jobs_description_hash ON jobs(description_hash)"
@@ -597,6 +603,28 @@ def normalize_company(name: object, alias_map: dict) -> object:
     return alias_map.get(str(name).strip().lower(), name)
 
 
+def extract_company_url(item: dict) -> str | None:
+    """Best-effort URL for the *employer's* own site from a feed item, or None.
+
+    Preference order, best first:
+      1. `linkedin_org_url`  — the employer's real website (LinkedIn feed), e.g. hdrinc.com
+      2. `domain_derived`    — the employer's bare domain (careersite feed), e.g. acme.net
+      3. `organization_url`  — fallback: the org's page *on the feed source* (an ATS or
+                               LinkedIn company page), not the employer's own site
+    A bare domain (no scheme) is promoted to https://. Feed values are frequently absent
+    or the literal string "None"/"null"; those are treated as missing.
+    """
+    def _clean(v: object) -> str | None:
+        s = str(_scalar(v) or "").strip()
+        return s if s and s.lower() not in ("none", "null") and "." in s else None
+
+    for key in ("linkedin_org_url", "domain_derived", "organization_url"):
+        url = _clean(item.get(key))
+        if url:
+            return url if "://" in url else f"https://{url}"
+    return None
+
+
 def extract_fields_linkedin(item: dict) -> dict:
     """Map one fantastic-jobs LinkedIn actor item to our jobs-table field dict."""
     # Field names from fantastic-jobs/advanced-linkedin-job-search-api.
@@ -615,6 +643,7 @@ def extract_fields_linkedin(item: dict) -> dict:
         "posted_date": _scalar(item.get("date_posted")),
         "job_url": f"https://www.linkedin.com/jobs/view/{_scalar(item.get('linkedin_id'))}",
         "apply_url": _scalar(item.get("external_apply_url")) or None,
+        "company_url": extract_company_url(item),
         "easy_apply": 1 if str(
             _scalar(item.get("direct_apply") or "") or ""
         ).lower() == "true" else 0,
@@ -644,6 +673,7 @@ def extract_fields_careersite(item: dict) -> dict:
         "posted_date": _scalar(item.get("date_posted")),
         "job_url": job_url,
         "apply_url": job_url,
+        "company_url": extract_company_url(item),
         "easy_apply": 0,
         "source": "careersite",
         "salary_min": salary_min,
@@ -862,12 +892,12 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                 """
                 INSERT INTO jobs
                     (job_id, title, company, company_actual, location, posted_date,
-                     job_url, apply_url, easy_apply, salary_min, salary_max, salary_currency,
+                     job_url, apply_url, company_url, easy_apply, salary_min, salary_max, salary_currency,
                      labels, source, status, applied_at, job_description, canonical_id, raw,
                      description_hash, job_description_formatted)
                 VALUES
                     (:job_id, :title, :company, :company_actual, :location, :posted_date,
-                     :job_url, :apply_url, :easy_apply, :salary_min, :salary_max, :salary_currency,
+                     :job_url, :apply_url, :company_url, :easy_apply, :salary_min, :salary_max, :salary_currency,
                      :labels, :source, :status, :applied_at, :job_description, :canonical_id, :raw,
                      :description_hash, :job_description_formatted)
                 """,
@@ -986,7 +1016,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                 UPDATE jobs SET
                     title = :title, company = :company, location = :location,
                     posted_date = :posted_date, job_url = :job_url,
-                    apply_url = :apply_url, easy_apply = :easy_apply,
+                    apply_url = :apply_url, company_url = :company_url, easy_apply = :easy_apply,
                     salary_min = :salary_min, salary_max = :salary_max,
                     salary_currency = :salary_currency,
                     job_description = :job_description,

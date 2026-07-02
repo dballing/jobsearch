@@ -321,6 +321,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE jobs ADD COLUMN job_description_formatted TEXT")
     if "description_hash" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN description_hash TEXT")
+    if "company_url" not in cols:
+        # Employer's own site (from the feed's linkedin_org_url/domain_derived/
+        # organization_url); populated at ingest by ingest.extract_company_url.
+        conn.execute("ALTER TABLE jobs ADD COLUMN company_url TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_jobs_description_hash ON jobs(description_hash)"
     )
