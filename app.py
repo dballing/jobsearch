@@ -1479,13 +1479,14 @@ def add_manual_job():
     """
     db = get_db()
     f  = request.form
-    title   = f.get("title", "").strip()
-    company = f.get("company", "").strip()
-    job_url = f.get("job_url", "").strip()
-    # Job URL is required: it's the link from the tracker back to the live posting, and
-    # every feed-sourced job has one, so manual entries should too.
-    if not title or not company or not job_url:
-        return "Title, company, and job URL are required.", 400
+    title       = f.get("title", "").strip()
+    company     = f.get("company", "").strip()
+    job_url     = f.get("job_url", "").strip()
+    company_url = f.get("company_url", "").strip()
+    # Job URL and company URL are required: nearly every feed-sourced job has both (the
+    # posting link and the employer site — ~99.7% coverage), so manual entries should too.
+    if not title or not company or not job_url or not company_url:
+        return "Title, company, job URL, and company URL are required.", 400
     status = (f.get("status", "new").strip() or "new")
     if status not in STATUSES:
         return "Invalid status.", 400
@@ -1508,11 +1509,11 @@ def add_manual_job():
     job_id = f"manual_{uuid.uuid4().hex}"
     db.execute(
         """INSERT INTO jobs
-             (job_id, title, company, location, posted_date, job_url, apply_url,
+             (job_id, title, company, location, posted_date, job_url, apply_url, company_url,
               easy_apply, salary_min, salary_max, salary_currency, job_description, notes,
               status, applied_at, labels, source, raw)
            VALUES
-             (:job_id, :title, :company, :location, :posted_date, :job_url, :apply_url,
+             (:job_id, :title, :company, :location, :posted_date, :job_url, :apply_url, :company_url,
               0, :salary_min, :salary_max, :salary_currency, :job_description, :notes,
               :status, :applied_at, :labels, 'manual', :raw)""",
         {
@@ -1521,6 +1522,7 @@ def add_manual_job():
             "posted_date":     f.get("posted_date", "").strip() or None,
             "job_url":         job_url,
             "apply_url":       f.get("apply_url", "").strip() or None,
+            "company_url":     company_url,
             "salary_min":      sal_min,
             "salary_max":      sal_max,
             "salary_currency": f.get("salary_currency", "").strip() or None,

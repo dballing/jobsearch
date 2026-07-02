@@ -102,6 +102,10 @@
               <label class="form-label small fw-semibold">Apply URL</label>
               <input type="url" name="apply_url" class="form-control form-control-sm" placeholder="https://…">
             </div>
+            <div class="col-md-6">
+              <label class="form-label small fw-semibold">Company website <span class="text-danger">*</span></label>
+              <input type="url" name="company_url" class="form-control form-control-sm" placeholder="https://…" required>
+            </div>
             <div class="col-md-4">
               <label class="form-label small fw-semibold">Salary min</label>
               <input type="text" name="salary_min" class="form-control form-control-sm" placeholder="e.g. 150000 or 150k">
@@ -1015,8 +1019,9 @@ async function submitManualJob(event) {
   const errBox = document.getElementById('addJobError');
   const btn    = document.getElementById('addJobSubmitBtn');
   errBox.classList.add('d-none');
-  if (!form.title.value.trim() || !form.company.value.trim() || !form.job_url.value.trim()) {
-    errBox.textContent = 'Title, company, and job URL are required.';
+  if (!form.title.value.trim() || !form.company.value.trim() ||
+      !form.job_url.value.trim() || !form.company_url.value.trim()) {
+    errBox.textContent = 'Title, company, job URL, and company URL are required.';
     errBox.classList.remove('d-none');
     return false;
   }
