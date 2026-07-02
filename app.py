@@ -140,7 +140,9 @@ STATUS_FILTERS = {
     "active":    ("Active",    "status NOT IN ('skipped', 'autoskipped', 'rejected', 'withdrawn', 'ghosted', 'closed')"),
     "applied":   ("Applied",   "status IN ('applied', 'interviewing', 'offered', 'ghosted')"),
     "interview": ("Interview Process", "status IN ('interviewing', 'offered')"),
-    "rejected":  ("Rejected",  "status = 'rejected'"),
+    # Ghosted counts as a presumptive rejection (applied, no response, auto-aged out), so
+    # it's included here alongside explicit rejections. It also still shows under Applied.
+    "rejected":  ("Rejected",  "status IN ('rejected', 'ghosted')"),
     "all":       ("All",       None),
 }
 
