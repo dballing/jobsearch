@@ -91,7 +91,16 @@ def score_job(
     try:
         message = client.messages.create(
             model=model,
-            max_tokens=150,  # only a one-line JSON verdict is expected
+            max_tokens=256,  # only a one-line JSON verdict is expected (headroom for a longer reason)
+            # Disable the model's internal chain-of-thought: this is a trivial one-line
+            # classification that needs no reasoning, and the human-readable justification
+            # is the `reason` field of the JSON answer (normal output), NOT thinking.
+            # Models with adaptive thinking on by default (e.g. Sonnet 5, whose effort
+            # defaults to 'high') otherwise spend the whole small max_tokens budget
+            # thinking and return an empty/truncated verdict — every such job then "fails".
+            # (Always-on-thinking models like Fable 5 reject this, but they're not sensible
+            # choices for a cheap high-volume scorer, and the default is Haiku.)
+            thinking={"type": "disabled"},
             system=[{
                 "type": "text",
                 "text": system_text,
