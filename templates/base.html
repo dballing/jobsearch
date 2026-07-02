@@ -416,6 +416,7 @@
             let desc;
             if      (e.event === 'ingested')   desc = `Ingested${e.label ? ' [' + escHtml(e.label) + ']' : ''}`;
             else if (e.event === 'imported')   desc = `Imported${e.stub ? ' (stub)' : ''}`;
+            else if (e.event === 'created')    desc = 'Added manually';
             else if (e.event === 'status')     desc = `Status: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong>${e.note ? ' <span class="text-muted fst-italic">(' + escHtml(e.note) + ')</span>' : ''}`;
             else if (e.event === 'viability')  desc = `Scored: <strong>${escHtml(e.rating||'?')}</strong>`;
             else if (e.event === 'rescore')    desc = `Rescored: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong>`;

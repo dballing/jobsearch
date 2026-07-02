@@ -39,7 +39,7 @@ Typical cron line chains ingest then rescore:
 
 | File | Role |
 |------|------|
-| `app.py` | Flask app: index (filter/group/sort), preview panel, status/override/notes/attachment/link routes, stats, weekly contact report (`/report/weekly`). Holds the SQLite schema migration in `_migrate()`. |
+| `app.py` | Flask app: index (filter/group/sort), preview panel, status/override/notes/attachment/link routes, manual job add (`/jobs/manual`), stats, weekly contact report (`/report/weekly`). Holds the SQLite schema migration in `_migrate()`. |
 | `ingest.py` | Apify ingestion: fetch runs, extract fields (linkedin + careersite extractors), fuzzy dedup, company-alias normalization, auto-ghost/close/reset, run summary. `DescriptionFormatter` wraps AI reformatting. |
 | `viability.py` | Shared scoring helpers: `prompt_hash`, `score_job`. |
 | `rescore_viability.py` | Batch AI viability scoring driver (selection logic, auto-skip, progress output). |

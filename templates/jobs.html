@@ -56,6 +56,107 @@
   </div>
 </div>
 
+{# ── Add-manual-job modal ── #}
+{# Create a job that didn't come through a feed (e.g. a manual application). Posts a
+   FormData to /jobs/manual; title + company are required (validated both here and
+   server-side). The "Score viability now" checkbox triggers an inline AI rescore. #}
+<div class="modal fade" id="addJobModal" tabindex="-1" aria-labelledby="addJobModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title fw-semibold" id="addJobModalLabel">Add a job manually</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form id="addJobForm" onsubmit="return submitManualJob(event)">
+        <div class="modal-body">
+          <div id="addJobError" class="alert alert-danger py-2 small d-none"></div>
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label small fw-semibold">Title <span class="text-danger">*</span></label>
+              <input type="text" name="title" class="form-control form-control-sm" required>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small fw-semibold">Company <span class="text-danger">*</span></label>
+              <input type="text" name="company" class="form-control form-control-sm" required>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small fw-semibold">Location</label>
+              <input type="text" name="location" class="form-control form-control-sm" placeholder="e.g. Remote, or McLean, VA">
+            </div>
+            <div class="col-md-3">
+              <label class="form-label small fw-semibold">Status</label>
+              <select name="status" class="form-select form-select-sm">
+                {% for s in statuses %}<option value="{{ s }}" {% if s == 'new' %}selected{% endif %}>{{ s }}</option>{% endfor %}
+              </select>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label small fw-semibold">Applied at</label>
+              <input type="datetime-local" name="applied_at" class="form-control form-control-sm"
+                     title="Optional. Left blank, an applied-family status stamps now.">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small fw-semibold">Job URL <span class="text-danger">*</span></label>
+              <input type="url" name="job_url" class="form-control form-control-sm" placeholder="https://…" required>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small fw-semibold">Apply URL</label>
+              <input type="url" name="apply_url" class="form-control form-control-sm" placeholder="https://…">
+            </div>
+            <div class="col-md-4">
+              <label class="form-label small fw-semibold">Salary min</label>
+              <input type="text" name="salary_min" class="form-control form-control-sm" placeholder="e.g. 150000 or 150k">
+            </div>
+            <div class="col-md-4">
+              <label class="form-label small fw-semibold">Salary max</label>
+              <input type="text" name="salary_max" class="form-control form-control-sm" placeholder="e.g. 200000 or 200k">
+            </div>
+            <div class="col-md-4">
+              <label class="form-label small fw-semibold">Currency</label>
+              <input type="text" name="salary_currency" class="form-control form-control-sm" placeholder="USD">
+            </div>
+            <div class="col-md-4">
+              <label class="form-label small fw-semibold">Posted date</label>
+              <input type="date" name="posted_date" class="form-control form-control-sm">
+            </div>
+            {% if all_labels %}
+            <div class="col-md-8">
+              <label class="form-label small fw-semibold d-block">Labels</label>
+              {% for l in all_labels %}
+              <div class="form-check form-check-inline">
+                <input class="form-check-input" type="checkbox" name="labels" value="{{ l.value }}" id="addlbl-{{ l.value }}">
+                <label class="form-check-label small" for="addlbl-{{ l.value }}">{{ l.label }}</label>
+              </div>
+              {% endfor %}
+            </div>
+            {% endif %}
+            <div class="col-12">
+              <label class="form-label small fw-semibold">Description</label>
+              <textarea name="job_description" class="form-control form-control-sm" rows="6"
+                        placeholder="Paste the job description — used for viability scoring."></textarea>
+            </div>
+            <div class="col-12">
+              <label class="form-label small fw-semibold">Notes</label>
+              <textarea name="notes" class="form-control form-control-sm" rows="2"></textarea>
+            </div>
+            <div class="col-12">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="rescore" value="1" id="addJobRescore" checked>
+                <label class="form-check-label small" for="addJobRescore">
+                  Score viability now (otherwise it's scored on the next scheduled run)
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-sm btn-success" id="addJobSubmitBtn">Add job</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
 {# Per-row "link to canonical" button — info-colored when already linked, muted when
    not. Opens the link modal (openLinkModal) for manual fuzzy-group editing. #}
 {% macro link_btn(job_id, canonical_id='') %}
@@ -150,7 +251,7 @@
               {% if job.group_source == group_varied %}
                 <span class="text-muted small fst-italic">{{ group_varied }}</span>
               {% else %}
-                <span class="badge {{ 'bg-primary' if job.group_source == 'linkedin' else 'bg-info text-dark' }}">{{ job.group_source_display }}</span>
+                <span class="badge {{ source_badges.get(job.group_source, source_badge_default) }}">{{ job.group_source_display }}</span>
               {% endif %}
             </td>
             {% endif %}
@@ -215,7 +316,7 @@
               {% endfor %}
             </td>
             {% if sources|length > 1 %}
-            <td class="col-source"><span class="badge {{ 'bg-primary' if sub.source == 'linkedin' else 'bg-info text-dark' }}">{{ sub.source_display }}</span></td>
+            <td class="col-source"><span class="badge {{ source_badges.get(sub.source, source_badge_default) }}">{{ sub.source_display }}</span></td>
             {% endif %}
             <td>{{ status_select(sub.job_id, sub.status, sub.viability or '') }}</td>
             <td class="text-nowrap small col-applied">{% if sub.applied_at %}<span data-utc="{{ sub.applied_at }}">{{ sub.applied_at }}</span>{% else %}—{% endif %}</td>
@@ -258,7 +359,7 @@
               {% endfor %}
             </td>
             {% if sources|length > 1 %}
-            <td class="col-source"><span class="badge {{ 'bg-primary' if job.source == 'linkedin' else 'bg-info text-dark' }}">{{ job.source_display }}</span></td>
+            <td class="col-source"><span class="badge {{ source_badges.get(job.source, source_badge_default) }}">{{ job.source_display }}</span></td>
             {% endif %}
             <td>{{ status_select(job.job_id, job.status, job.viability or '') }}</td>
             <td class="text-nowrap col-applied">{% if job.applied_at %}<span data-utc="{{ job.applied_at }}">{{ job.applied_at }}</span>{% else %}—{% endif %}</td>
@@ -380,6 +481,11 @@
     </button>
     <ul class="dropdown-menu" id="colPickerMenu" aria-labelledby="colPickerBtn"></ul>
   </div>
+
+  <button type="button" class="btn btn-sm btn-success" data-bs-toggle="modal"
+          data-bs-target="#addJobModal" title="Manually add a job not from a feed">
+    <i class="bi bi-plus-lg"></i> Add job
+  </button>
 
   <div class="d-flex align-items-center gap-1">
     <span class="text-muted small">Per&nbsp;page:</span>
@@ -891,6 +997,54 @@ function setPerPage(value) {
   p.set('page', '1');
   window.location.search = p.toString();
 }
+
+// ── Add manual job ──
+// Submit the "Add job" modal via FormData (carries the label checkboxes and the rescore
+// flag as-is). On success, reload so the new row appears; if an inline score was asked
+// for but couldn't run (AI disabled/unconfigured), surface why before reloading.
+async function submitManualJob(event) {
+  event.preventDefault();
+  const form   = document.getElementById('addJobForm');
+  const errBox = document.getElementById('addJobError');
+  const btn    = document.getElementById('addJobSubmitBtn');
+  errBox.classList.add('d-none');
+  if (!form.title.value.trim() || !form.company.value.trim() || !form.job_url.value.trim()) {
+    errBox.textContent = 'Title, company, and job URL are required.';
+    errBox.classList.remove('d-none');
+    return false;
+  }
+  const wantScore = form.rescore.checked;
+  btn.disabled = true;
+  btn.textContent = wantScore ? 'Adding & scoring…' : 'Adding…';
+  try {
+    const resp = await fetch('/jobs/manual', { method: 'POST', body: new FormData(form) });
+    if (!resp.ok) {
+      errBox.textContent = (await resp.text()) || 'Failed to add job.';
+      errBox.classList.remove('d-none');
+      btn.disabled = false; btn.textContent = 'Add job';
+      return false;
+    }
+    const data = await resp.json();
+    if (wantScore && data && data.scored === false && data.score_message) {
+      alert('Job added, but viability was not scored: ' + data.score_message +
+            '\nIt will be scored on the next scheduled run.');
+    }
+    window.location.reload();
+  } catch (e) {
+    errBox.textContent = 'Network error: ' + e;
+    errBox.classList.remove('d-none');
+    btn.disabled = false; btn.textContent = 'Add job';
+  }
+  return false;
+}
+
+// Default the Add-job "Posted date" to today (local) whenever the modal opens and the
+// field is still empty — so it re-defaults across a midnight boundary but never clobbers
+// a date the user typed. en-CA gives the YYYY-MM-DD a date input expects.
+document.getElementById('addJobModal')?.addEventListener('show.bs.modal', function () {
+  const el = this.querySelector('[name="posted_date"]');
+  if (el && !el.value) el.value = new Date().toLocaleDateString('en-CA');
+});
 
 // "Search all" seeded with an arbitrary query string (clean slate + restore),
 // shared by the title- and company-cell search icons. The q search matches title,

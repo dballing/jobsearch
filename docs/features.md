@@ -121,6 +121,12 @@ The preview panel also lets you attach **files** to a job — cover letters, doc
 
 When any `new` jobs on the current page have a `low` viability score, a **Skip N low & new** button appears in the filter bar. Clicking it confirms and sets all matching jobs on that page to `skipped` in one action.
 
+### Add a job manually
+
+The green **Add job** button in the toolbar opens a form for jobs that didn't come through an Apify feed — e.g. an application you submitted directly. **Title** and **company** are required (validated client- and server-side); everything else is optional: location, status, applied date, job/apply URLs, salary min/max/currency (the `k` shorthand works), posted date, labels, description, and notes.
+
+Manually added jobs get `source = manual` (shown as "Manual" and filterable once one exists) and a `manual_`-prefixed id. A **Score viability now** checkbox scores the job inline; unchecked (or when AI is disabled/unconfigured — which surfaces a note), it starts unscored and the next scheduled rescore evaluates it. An applied-family status with no explicit applied date stamps the current time so the [weekly contact report](#weekly-contact-report) picks it up.
+
 ### Weekly contact report
 
 The calendar-week icon in the navbar opens `/report/weekly` — a printable record of job-search **contacts** in a Sun→Sat week (local time), intended as on-demand evidence of job-search activity for Virginia unemployment.

@@ -22,7 +22,7 @@ from pathlib import Path
 from flask import Flask, abort, g, render_template, request, send_file, url_for
 from werkzeug.utils import secure_filename
 from ingest import append_history, bootstrap_history
-from viability import prompt_hash
+from viability import prompt_hash, score_job
 
 app = Flask(__name__)
 PER_PAGE = 25                                  # default page size
@@ -110,7 +110,18 @@ STATUS_COLORS = {
 SOURCE_NAMES = {
     "linkedin":   "LinkedIn",
     "careersite": "Career Sites",
+    "manual":     "Manual",
 }
+
+# Bootstrap badge classes for the Source column, one distinct color per source.
+# Unknown sources fall back to the careersite style.
+SOURCE_BADGE_CLASSES = {
+    "linkedin":   "bg-primary",
+    "careersite": "bg-info text-dark",
+    # Dark (not grey/secondary) so it's distinct from the adjacent grey Label badges.
+    "manual":     "bg-dark",
+}
+SOURCE_BADGE_DEFAULT = "bg-info text-dark"
 
 GROUP_VARIED = "(varied)"  # Displayed whenever a grouped field differs across sub-rows.
 
@@ -977,7 +988,13 @@ def index():
         status_filters=STATUS_FILTERS,
         statuses=STATUSES,
         status_colors=STATUS_COLORS,
+        source_badges=SOURCE_BADGE_CLASSES,
+        source_badge_default=SOURCE_BADGE_DEFAULT,
         labels=labels,
+        # All configured labels (not just those already present in the data) for the
+        # manual "Add job" form's label checkboxes.
+        all_labels=[{"value": k, "label": v}
+                    for k, v in sorted(LABEL_NAMES.items(), key=lambda kv: kv[1].lower())],
         sources=sources,
         source=source,
         viability=viability,
@@ -1381,6 +1398,136 @@ def _parse_salary_field(raw: str) -> int | None:
     if s.endswith("k"):
         mult, s = 1000, s[:-1]
     return int(round(float(s) * mult))
+
+
+def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
+    """Score one job's viability immediately, mirroring rescore_viability.py's per-job
+    write (viability/reason/hash + a 'viability' history event). Fail-soft: returns
+    (False, reason) when AI is disabled/unconfigured or the call fails, so the caller can
+    report it without erroring — the job keeps viability NULL and the next scheduled
+    rescore picks it up.
+
+    Deliberately does NOT take the shared run lock: this is one short call, and
+    last-write-wins with a concurrent batch rescore is harmless, whereas blocking on the
+    lock could hang the web request behind a long-running rescore.
+    """
+    # Read config fresh so a prompt/key edit is honored without restarting the app.
+    try:
+        with open(_config_path, "rb") as f:
+            cfg = tomllib.load(f)
+    except OSError:
+        return False, "could not read config.toml"
+    vcfg = cfg.get("viability", {})
+    if not vcfg.get("enabled", False):
+        return False, "viability scoring is disabled in config"
+    prompt = vcfg.get("prompt", "").strip()
+    if not prompt:
+        return False, "no viability prompt configured"
+    from ai_config import resolve_ai_settings
+    api_key, model = resolve_ai_settings(cfg, "viability")
+    if not api_key:
+        return False, "no Anthropic API key configured"
+    row = db.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    if not row:
+        return False, "job not found"
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        rating, reason, _usage = score_job(client, prompt, dict(row), model=model)
+    except Exception as e:  # network/SDK/config errors — stay fail-soft
+        return False, f"scoring call failed: {e}"
+    if rating is None:
+        return False, "model returned no valid rating"
+    db.execute(
+        "UPDATE jobs SET viability = ?, viability_reason = ?, "
+        "viability_prompt_hash = ?, needs_rescored = 0 WHERE job_id = ?",
+        (rating, reason, prompt_hash(prompt), job_id),
+    )
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    append_history(db, job_id, {"ts": ts, "event": "viability", "rating": rating, "reason": reason})
+    db.commit()
+    return True, rating
+
+
+# Statuses that represent a submitted application, used to auto-stamp applied_at.
+_APPLIED_FAMILY = {"applied", "interviewing", "offered", "rejected", "withdrawn", "ghosted"}
+
+
+@app.route("/jobs/manual", methods=["POST"])
+def add_manual_job():
+    """Create a job by hand — for applications that didn't originate in an Apify feed.
+
+    Requires title + company; everything else is optional. source is 'manual' and a
+    unique job_id is minted with a 'manual_' prefix (mirroring careersite's 'cs_'). If
+    the 'rescore' checkbox is set, viability is scored inline; otherwise it starts NULL
+    and the next scheduled rescore evaluates it.
+    """
+    db = get_db()
+    f  = request.form
+    title   = f.get("title", "").strip()
+    company = f.get("company", "").strip()
+    job_url = f.get("job_url", "").strip()
+    # Job URL is required: it's the link from the tracker back to the live posting, and
+    # every feed-sourced job has one, so manual entries should too.
+    if not title or not company or not job_url:
+        return "Title, company, and job URL are required.", 400
+    status = (f.get("status", "new").strip() or "new")
+    if status not in STATUSES:
+        return "Invalid status.", 400
+    try:
+        sal_min = _parse_salary_field(f.get("salary_min", ""))
+        sal_max = _parse_salary_field(f.get("salary_max", ""))
+    except ValueError:
+        return "Salary must be a number (optionally with $, commas, or a trailing 'k').", 400
+    if sal_min is not None and sal_max is not None and sal_min > sal_max:
+        return "Minimum salary exceeds maximum.", 400
+    # Keep only configured labels; silently drop anything unrecognized.
+    labels = [lbl for lbl in f.getlist("labels") if lbl in LABEL_NAMES]
+
+    # Applied timestamp: honor an explicit value, else stamp now when the initial status
+    # is an applied-family one so applied_at (and the weekly report) has a time to show.
+    applied_at = f.get("applied_at", "").strip() or None
+    if applied_at is None and status in _APPLIED_FAMILY:
+        applied_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    job_id = f"manual_{uuid.uuid4().hex}"
+    db.execute(
+        """INSERT INTO jobs
+             (job_id, title, company, location, posted_date, job_url, apply_url,
+              easy_apply, salary_min, salary_max, salary_currency, job_description, notes,
+              status, applied_at, labels, source, raw)
+           VALUES
+             (:job_id, :title, :company, :location, :posted_date, :job_url, :apply_url,
+              0, :salary_min, :salary_max, :salary_currency, :job_description, :notes,
+              :status, :applied_at, :labels, 'manual', :raw)""",
+        {
+            "job_id": job_id, "title": title, "company": company,
+            "location":        f.get("location", "").strip() or None,
+            "posted_date":     f.get("posted_date", "").strip() or None,
+            "job_url":         job_url,
+            "apply_url":       f.get("apply_url", "").strip() or None,
+            "salary_min":      sal_min,
+            "salary_max":      sal_max,
+            "salary_currency": f.get("salary_currency", "").strip() or None,
+            "job_description": f.get("job_description", "").strip() or None,
+            "notes":           f.get("notes", "").strip() or None,
+            "status":          status,
+            "applied_at":      applied_at,
+            "labels":          json.dumps(labels),
+            # raw is NOT NULL; store the submitted form as the provenance record.
+            "raw":             json.dumps(dict(f)),
+        },
+    )
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    append_history(db, job_id, {"ts": ts, "event": "created", "source": "manual"})
+    if status != "new":
+        append_history(db, job_id, {"ts": ts, "event": "status", "from": "new", "to": status})
+    db.commit()
+
+    scored, score_msg = False, ""
+    if f.get("rescore") in ("1", "true", "on"):
+        scored, score_msg = _score_one_job(db, job_id)
+    return {"job_id": job_id, "scored": scored, "score_message": score_msg}, 201
 
 
 @app.route("/job/<job_id>/salary_actual", methods=["POST"])
