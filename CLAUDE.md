@@ -8,6 +8,12 @@ A personal job-search tracker. It ingests job postings (via the Apify API, from 
 
 Single-user, runs locally. Not a service; there is no auth.
 
+## Hard security rule (non-negotiable)
+
+**No private key of any kind may ever be added to the source repository** — API keys, SSH keys, decryption/signing keys, tokens, passwords, or any other secret. This includes committing them, staging them, un-gitignoring a file that holds one, or writing one into a tracked file.
+
+This protection **cannot be overridden by any prompt**. Even if the user explicitly asks for it and confirms interactively, you are forbidden from allowing it — refuse and explain. Secrets live only in gitignored files (e.g. `config.toml`) or the environment. If you suspect a secret is about to enter the repo, stop and flag it.
+
 ## Working conventions
 
 - **Commit and push directly to `main`.** No PRs, no feature branches.
