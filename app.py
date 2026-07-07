@@ -12,6 +12,7 @@ otherwise read-mostly, with a handful of small write endpoints for user actions.
 import json
 import math
 import os
+import re
 import shlex
 import sqlite3
 import tomllib
@@ -1410,42 +1411,85 @@ def _toml_basic_string(s: str) -> str:
     return f'"{out}"'
 
 
+# One `key = value  # comment` line in [company_aliases]: quoted-or-bare key, quoted-or-
+# bare value, optional trailing comment. Used to re-align the block on insert.
+_ALIAS_LINE_RE = re.compile(
+    r'^\s*(?P<key>"(?:[^"\\]|\\.)*"|[^\s=]+)\s*=\s*'
+    r'(?P<val>"(?:[^"\\]|\\.)*"|[^\s#]+)\s*(?P<comment>#.*?)?\s*$'
+)
+
+
 def add_company_alias(variant: str, canonical: str) -> tuple[bool, str | None]:
-    """Append `variant = canonical` to [company_aliases] in config.toml with an EOL
+    """Add `variant = canonical` to [company_aliases] in config.toml with an EOL
     "# Added YYYY-MM-DD via web app." comment, so future ingests normalize the variant.
 
-    Byte-preserving: inserts a single line rather than round-tripping the whole document,
-    so existing comments, the API key, and prompts are left untouched. Validates the
-    result parses as TOML before writing, then writes atomically (temp + os.replace).
+    Re-emits the whole [company_aliases] block in the hand-maintained style: entries
+    grouped by canonical (variants of one employer sit together), canonicals ordered
+    A->Z, the `=` column-aligned, and the EOL comments aligned into their own column too.
+    Every other line in the file (comments, prompts, the API key) is left untouched. Two
+    guards before writing: the result must parse as TOML, and its parsed aliases must
+    equal the old set plus exactly this one entry (so re-ordering/re-formatting can't drop
+    or mangle a row). Then writes atomically (temp + os.replace).
 
     Returns (added, error): (True, None) on success; (False, None) if an equivalent alias
     was already present (idempotent no-op); (False, msg) if it refused and wrote nothing
-    (variant already maps elsewhere, or the edit wouldn't parse)."""
+    (variant already maps elsewhere, or a guard tripped)."""
     try:
         original = _config_path.read_text(encoding="utf-8")
     except OSError as e:
         return False, f"could not read config.toml: {e}"
-    existing = tomllib.loads(original).get("company_aliases", {})
+    old_aliases = tomllib.loads(original).get("company_aliases", {})
     v_key = variant.strip().lower()
-    for k, val in existing.items():
+    for k, val in old_aliases.items():
         if str(k).strip().lower() == v_key:
             if str(val).strip() == canonical.strip():
                 return False, None  # already aliased to the same name — nothing to write
             return False, (f"'{variant}' already maps to '{val}' in config.toml; "
                            "edit it there to change the target.")
-    line = (f"{_toml_basic_string(variant)} = {_toml_basic_string(canonical)}"
-            f"  # Added {datetime.now().strftime('%Y-%m-%d')} via web app.\n")
+
+    new_key, new_val = _toml_basic_string(variant), _toml_basic_string(canonical)
+    new_comment = f"# Added {datetime.now().strftime('%Y-%m-%d')} via web app."
     lines = original.splitlines(keepends=True)
+    nl = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
     header_idx = next((i for i, ln in enumerate(lines) if ln.strip() == "[company_aliases]"), None)
-    if header_idx is not None:
-        lines.insert(header_idx + 1, line)
-        new_text = "".join(lines)
-    else:  # no table yet — start one at EOF
-        new_text = original + ("" if original.endswith("\n") else "\n") + "\n[company_aliases]\n" + line
+
+    if header_idx is None:  # no table yet — create one at EOF
+        block = f"{nl}[company_aliases]{nl}{new_key} = {new_val}  {new_comment}{nl}"
+        new_text = original + ("" if not original or original.endswith("\n") else nl) + block
+    else:
+        end = next((i for i in range(header_idx + 1, len(lines))
+                    if lines[i].lstrip().startswith("[")), len(lines))
+        body = lines[header_idx + 1:end]
+        matched = {i: (m["key"], m["val"], m["comment"])
+                   for i, ln in enumerate(body) if (m := _ALIAS_LINE_RE.match(ln))}
+        pos = sorted(matched)
+        # All aliases (existing + the new one) grouped by canonical then variant — both
+        # case-insensitive — so an employer's variants sit together and canonicals go A->Z.
+        # Sorting the quoted text is fine: the leading quote is constant across entries.
+        rows = list(matched.values()) + [(new_key, new_val, new_comment)]
+        rows.sort(key=lambda e: (e[1].lower(), e[0].lower()))
+        width = max(len(k) for k, _, _ in rows)
+        prefixes = [f"{k}{' ' * (width - len(k))} = {v}" for k, v, _ in rows]
+        comment_col = max(len(p) for p in prefixes) + 2  # aligned comment column
+        emitted = [
+            (p + (" " * (comment_col - len(p)) + c if c else "")) + nl
+            for p, (_, _, c) in zip(prefixes, rows)
+        ]
+        # Preserve any non-entry lines (blank/standalone-comment) around the block; only
+        # the alias rows are re-ordered.
+        preamble  = body[:pos[0]] if pos else []
+        between   = [body[j] for j in range(pos[0] + 1, pos[-1]) if j not in matched] if pos else []
+        trailing  = body[pos[-1] + 1:] if pos else body
+        new_body  = preamble + emitted + between + trailing
+        new_text = "".join(lines[:header_idx + 1] + new_body + lines[end:])
+
     try:
-        tomllib.loads(new_text)  # never write something that won't parse back
+        parsed = tomllib.loads(new_text)  # never write something that won't parse back
     except tomllib.TOMLDecodeError as e:
         return False, f"refused: edit would not parse as TOML ({e})"
+    # Semantic guard: the alias set must be exactly what it was plus this one entry.
+    if parsed.get("company_aliases", {}) != {**old_aliases, variant: canonical}:
+        return False, "refused: re-format would have changed existing aliases"
     tmp = _config_path.with_name(_config_path.name + ".tmp")
     tmp.write_text(new_text, encoding="utf-8")
     os.replace(tmp, _config_path)

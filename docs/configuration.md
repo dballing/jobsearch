@@ -190,8 +190,11 @@ display all use one consistent name.
 - Aliases are **not chained**: map every variant directly to the final name (an `X → Y`
   and `Y → Z` pair does not turn `X` into `Z`).
 - This table is also **written by the web app**: the preview panel's "change the
-  underlying company name" option appends an entry here (with an `# Added YYYY-MM-DD via
-  web app.` end-of-line comment) and rewrites the existing rows in one step. The insert
-  is byte-preserving — your other keys, comments, and the API key are untouched.
+  underlying company name" option adds an entry here (with an `# Added YYYY-MM-DD via web
+  app.` end-of-line comment) and rewrites the existing rows in one step. It re-emits the
+  block in a tidy, sorted style — entries **grouped by canonical** (an employer's variants
+  together), canonicals **A→Z**, and the `=` and EOL comments each **column-aligned** — and
+  touches nothing outside the table, so your other keys, comments, and the API key are left
+  as-is. (Editing by hand still works; the next web-app add just re-tidies the block.)
 
 See [Features → Company name normalization](features.md#company-name-normalization).
