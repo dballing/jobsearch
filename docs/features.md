@@ -83,6 +83,8 @@ When a job is posted by a third party (e.g. a job board or recruiting firm) rath
 - Viability scoring sends both names to the AI with the same "posted via" note.
 - The override is cleared by deleting the field contents and saving. The original ingested name is always preserved.
 
+**Canonical rename (change the underlying name).** The same editor has a checkbox, **"Change the underlying company name everywhere (adds a permanent alias)"** — off by default. With it checked, Save doesn't set a per-job "(via …)" override; instead it treats the typed value as the employer's real name and, in one step: (1) rewrites the scraped `company` on **every** job with that name, flagging each for rescoring and logging a `company_renamed` history event; and (2) appends the mapping to `[company_aliases]` in `config.toml` (with an `# Added YYYY-MM-DD via web app.` comment) so future ingests normalize it too — that alias is what keeps the rewrite from reverting on the next re-scrape. The feed's original spelling is still preserved in each job's `raw`. Use this for a genuine variant spelling ("X, LLC" → "X"); use the plain override for a third-party "posted via" correction.
+
 ### Company website link
 
 Ingest records the employer's own site in a `company_url` column, taken from the feed (preferring the real domain — LinkedIn's `linkedin_org_url` / careersite's `domain_derived` — and falling back to the source's `organization_url`, i.e. a LinkedIn/ATS company page). It's surfaced in three places:

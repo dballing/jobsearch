@@ -1402,6 +1402,98 @@ def set_company_actual(job_id: str):
     return "", 204
 
 
+def _toml_basic_string(s: str) -> str:
+    """Encode s as a TOML basic (double-quoted) string with the standard escapes —
+    needed because company names contain spaces/commas/quotes and can't be bare keys."""
+    out = (s.replace("\\", "\\\\").replace('"', '\\"')
+            .replace("\n", "\\n").replace("\t", "\\t").replace("\r", "\\r"))
+    return f'"{out}"'
+
+
+def add_company_alias(variant: str, canonical: str) -> tuple[bool, str | None]:
+    """Append `variant = canonical` to [company_aliases] in config.toml with an EOL
+    "# Added YYYY-MM-DD via web app." comment, so future ingests normalize the variant.
+
+    Byte-preserving: inserts a single line rather than round-tripping the whole document,
+    so existing comments, the API key, and prompts are left untouched. Validates the
+    result parses as TOML before writing, then writes atomically (temp + os.replace).
+
+    Returns (added, error): (True, None) on success; (False, None) if an equivalent alias
+    was already present (idempotent no-op); (False, msg) if it refused and wrote nothing
+    (variant already maps elsewhere, or the edit wouldn't parse)."""
+    try:
+        original = _config_path.read_text(encoding="utf-8")
+    except OSError as e:
+        return False, f"could not read config.toml: {e}"
+    existing = tomllib.loads(original).get("company_aliases", {})
+    v_key = variant.strip().lower()
+    for k, val in existing.items():
+        if str(k).strip().lower() == v_key:
+            if str(val).strip() == canonical.strip():
+                return False, None  # already aliased to the same name — nothing to write
+            return False, (f"'{variant}' already maps to '{val}' in config.toml; "
+                           "edit it there to change the target.")
+    line = (f"{_toml_basic_string(variant)} = {_toml_basic_string(canonical)}"
+            f"  # Added {datetime.now().strftime('%Y-%m-%d')} via web app.\n")
+    lines = original.splitlines(keepends=True)
+    header_idx = next((i for i, ln in enumerate(lines) if ln.strip() == "[company_aliases]"), None)
+    if header_idx is not None:
+        lines.insert(header_idx + 1, line)
+        new_text = "".join(lines)
+    else:  # no table yet — start one at EOF
+        new_text = original + ("" if original.endswith("\n") else "\n") + "\n[company_aliases]\n" + line
+    try:
+        tomllib.loads(new_text)  # never write something that won't parse back
+    except tomllib.TOMLDecodeError as e:
+        return False, f"refused: edit would not parse as TOML ({e})"
+    tmp = _config_path.with_name(_config_path.name + ".tmp")
+    tmp.write_text(new_text, encoding="utf-8")
+    os.replace(tmp, _config_path)
+    return True, None
+
+
+@app.route("/job/<job_id>/company_rename", methods=["POST"])
+def company_rename(job_id: str):
+    """Canonically rename an employer — the "change the underlying name" fork of the
+    company editor (vs. the per-job "on behalf of" company_actual override).
+
+    Rewrites the scraped `company` on *every* job with this name and adds a permanent
+    [company_aliases] entry so future ingests normalize it too (that alias is what keeps
+    the rewrite from reverting on the next re-scrape). Each affected job gets a
+    `company_renamed` history event and is flagged for rescoring. The feed's original
+    name is still preserved in each job's `raw`."""
+    to_name = request.form.get("new_name", "").strip()
+    if not to_name:
+        return "A new company name is required.", 400
+    db = get_db()
+    row = db.execute("SELECT company FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    if not row:
+        return "Not found", 404
+    from_name = (row["company"] or "").strip()
+    if not from_name:
+        return "This job has no scraped company name to rename.", 400
+    if from_name.lower() == to_name.lower():
+        return "The new name matches the current company name.", 400
+    # Add the alias first: if it refuses (variant already maps elsewhere), change nothing.
+    added, err = add_company_alias(from_name, to_name)
+    if err:
+        return err, 409
+    affected = [r["job_id"] for r in db.execute(
+        "SELECT job_id FROM jobs WHERE lower(trim(company)) = lower(trim(?))", (from_name,)
+    ).fetchall()]
+    db.execute(
+        "UPDATE jobs SET company = ?, needs_rescored = 1 "
+        "WHERE lower(trim(company)) = lower(trim(?))",
+        (to_name, from_name),
+    )
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for jid in affected:
+        append_history(db, jid, {"ts": ts, "event": "company_renamed",
+                                 "from": from_name, "to": to_name, "via": "web"})
+    db.commit()
+    return {"renamed": len(affected), "alias_added": added}, 200
+
+
 def _parse_salary_field(raw: str) -> int | None:
     """Parse a salary input into an annual integer, or None if blank.
 

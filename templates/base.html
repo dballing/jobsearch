@@ -431,6 +431,7 @@
             else if (e.event === 'unlinked')        desc = 'Unlinked from canonical';
             else if (e.event === 'company_actual')  desc = e.to ? `Company override set: <strong>${escHtml(e.to)}</strong>` : 'Company override cleared';
             else if (e.event === 'company_normalized') desc = `Company normalized: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong> <span class="text-muted fst-italic">(auto)</span>`;
+            else if (e.event === 'company_renamed') desc = `Company renamed: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong> <span class="text-muted fst-italic">(manual — canonical + alias)</span>`;
             else if (e.event === 'salary_actual') {
               const fmtSal = a => (a && (a[0] != null || a[1] != null))
                 ? '$' + (a[0] != null ? a[0].toLocaleString() : '?') + '–$' + (a[1] != null ? a[1].toLocaleString() : '?')
@@ -456,7 +457,7 @@
         if (existingEditor) existingEditor.remove();
         const editorDiv = document.createElement('div');
         editorDiv.id = 'companyActualEditor';
-        editorDiv.className = 'px-3 py-2 border-bottom d-flex align-items-center gap-2 small';
+        editorDiv.className = 'px-3 py-2 border-bottom d-flex align-items-center gap-2 small flex-wrap';
         const inputEl = document.createElement('input');
         inputEl.type = 'text';
         inputEl.className = 'form-control form-control-sm';
@@ -471,6 +472,19 @@
         clearBtn.textContent = 'Clear';
         const feedbackEl = document.createElement('span');
         feedbackEl.className = 'text-success small';
+
+        // Canonical-rename toggle. Off = per-job "on behalf of" override (company_actual,
+        // shown as "(via …)"). On = rewrite the scraped name on every job that has it AND
+        // add a permanent config alias (POST /job/<id>/company_rename). On its own line.
+        const renameWrap = document.createElement('label');
+        renameWrap.className = 'small text-muted d-flex align-items-center gap-1 w-100';
+        renameWrap.style.cursor = 'pointer';
+        const renameCheck = document.createElement('input');
+        renameCheck.type = 'checkbox';
+        renameCheck.className = 'form-check-input mt-0';
+        renameCheck.title = 'Renames every job with this scraped company name and adds a permanent alias to config.toml';
+        renameWrap.append(renameCheck,
+          document.createTextNode('Change the underlying company name everywhere (adds a permanent alias)'));
 
         async function saveCompanyActual(value) {
           const body = new URLSearchParams({company_actual: value});
@@ -495,11 +509,32 @@
           }
         }
 
-        saveBtn.addEventListener('click', () => saveCompanyActual(inputEl.value.trim()));
-        clearBtn.addEventListener('click', () => { inputEl.value = ''; saveCompanyActual(''); });
+        // Canonical rename: rewrite the scraped name everywhere + add a permanent alias.
+        async function renameCompany(value) {
+          if (!value) { feedbackEl.className = 'text-danger small'; feedbackEl.textContent = 'Enter the new name.'; return; }
+          if (!confirm(`Rename every job whose company is "${job.company}" to "${value}", and add a permanent alias to config.toml?`)) return;
+          const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/company_rename`,
+            {method: 'POST', body: new URLSearchParams({new_name: value})});
+          if (resp.ok) {
+            const data = await resp.json();
+            feedbackEl.className = 'text-success small';
+            feedbackEl.textContent = `Renamed ${data.renamed} job(s).`;
+            setTimeout(() => location.reload(), 700);
+          } else {
+            feedbackEl.className = 'text-danger small';
+            feedbackEl.textContent = (await resp.text()) || 'Rename failed.';
+          }
+        }
+
+        // Save routes to the override or the canonical rename depending on the checkbox.
+        saveBtn.addEventListener('click', () => {
+          const v = inputEl.value.trim();
+          renameCheck.checked ? renameCompany(v) : saveCompanyActual(v);
+        });
+        clearBtn.addEventListener('click', () => { inputEl.value = ''; renameCheck.checked = false; saveCompanyActual(''); });
         inputEl.addEventListener('keydown', e => { if (e.key === 'Enter') saveBtn.click(); });
 
-        editorDiv.append(inputEl, saveBtn, clearBtn, feedbackEl);
+        editorDiv.append(inputEl, saveBtn, clearBtn, feedbackEl, renameWrap);
         metaEl.insertAdjacentElement('afterend', editorDiv);
 
         // Salary override editor — for when the feed is missing (or wrong) but the

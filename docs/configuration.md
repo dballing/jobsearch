@@ -189,5 +189,9 @@ display all use one consistent name.
   its posting reappears in a feed.
 - Aliases are **not chained**: map every variant directly to the final name (an `X → Y`
   and `Y → Z` pair does not turn `X` into `Z`).
+- This table is also **written by the web app**: the preview panel's "change the
+  underlying company name" option appends an entry here (with an `# Added YYYY-MM-DD via
+  web app.` end-of-line comment) and rewrites the existing rows in one step. The insert
+  is byte-preserving — your other keys, comments, and the API key are untouched.
 
 See [Features → Company name normalization](features.md#company-name-normalization).
