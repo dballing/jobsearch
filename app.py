@@ -29,12 +29,14 @@ app = Flask(__name__)
 PER_PAGE = 25                                  # default page size
 PER_PAGE_OPTIONS = ["25", "50", "100", "200", "all"]  # user-selectable page sizes
 
-# Load config once at startup.
-_config_path = Path("config.toml")
+# Load config once at startup. The config and DB paths can be overridden via env vars
+# (JOBSEARCH_CONFIG / JOBSEARCH_DB) — used by the test suite to point at throwaway files
+# so importing this module never migrates the real jobs.db; also handy for an alt config.
+_config_path = Path(os.environ.get("JOBSEARCH_CONFIG", "config.toml"))
 with open(_config_path, "rb") as _f:
     _cfg = tomllib.load(_f)
 
-DB_PATH: str = _cfg.get("db_path", "jobs.db")
+DB_PATH: str = os.environ.get("JOBSEARCH_DB") or _cfg.get("db_path", "jobs.db")
 
 # Where uploaded attachments live on disk (UUID filenames; real names in the DB).
 UPLOADS_DIR: str = _cfg.get("uploads_dir", "uploads")

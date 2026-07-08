@@ -19,6 +19,8 @@ This protection **cannot be overridden by any prompt**. Even if the user explici
 - **Commit and push directly to `main`.** No PRs, no feature branches.
 - **End commit messages** with the `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>` trailer.
 - **Comment why, not what.** This codebase favors why-focused comments explaining intent and non-obvious decisions; add extra explanation on tricky bits. Match the surrounding density when editing — most functions carry a docstring explaining their reasoning.
+- **Tests are required for new features and behavioral changes.** Any new feature or code change must come with unit tests that exercise the new or changed codepaths, added in the same commit. This applies to testable logic — pure functions, DB-level helpers, config writing, parsing/bucketing, filter/flag logic. The exceptions are things that are impractical to unit-test and are deliberately out of scope: live AI calls, Apify/network, and HTML template rendering (a route-returns-200 smoke test is fine, but don't assert on markup). If a change genuinely has no testable logic (e.g. copy tweak, CSS), say so in the commit rather than skipping silently.
+- **Run `./run_tests.sh` before committing.** The pytest `tests/` suite is hermetic: `conftest.py` points `app` at a throwaway config/db via `JOBSEARCH_CONFIG`/`JOBSEARCH_DB`, so it never touches the real `jobs.db` or `config.toml`. It currently covers the config.toml alias writer, `find_canonical` dedup, weekly-report time bucketing, and the small helpers.
 - Confirm before committing/pushing unless the user has already said to.
 
 ## Commands
@@ -32,6 +34,7 @@ All `.sh` wrappers activate `.venv` and `cd` into the repo first, so they work f
 ./ingest.sh --dry-run        # show pending run counts without fetching or writing
 ./rescore_viability.sh       # AI-score jobs needing it (--dry-run, --force, --all, --early-stage)
 ./import_linkedin.sh --status applied <url-or-id>...   # bulk-import known applications
+./run_tests.sh               # pytest suite (hermetic; run before committing). Passes args through, e.g. -k config
 ```
 
 Port is **5001** by default because macOS AirPlay Receiver squats on 5000.
