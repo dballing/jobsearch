@@ -139,6 +139,12 @@ The green **Add job** button in the toolbar opens a form for jobs that didn't co
 
 Manually added jobs get `source = manual` (shown as "Manual" and filterable once one exists) and a `manual_`-prefixed id. A **Score viability now** checkbox scores the job inline; unchecked (or when AI is disabled/unconfigured — which surfaces a note), it starts unscored and the next scheduled rescore evaluates it. An applied-family status with no explicit applied date stamps the current time so the [weekly contact report](#weekly-contact-report) picks it up.
 
+### Company hotlist
+
+Employers you're especially keen on can be **hotlisted** so their fresh openings stand out. In the preview panel, click the **Hotlist ☆** star next to the company controls to toggle the employer on/off the list (workspace-wide, stored in the DB; matched case-insensitively on the effective company name).
+
+While a hotlisted employer has a job in an **actionable** state — `new` or `reviewing` — that row is given a soft warm background tint in the jobs table (across flat, matched-group, and employer-grouped views). Once the job moves on (applied, rejected, etc.) it reverts to the normal look, so the highlight only ever flags employers with something new to act on.
+
 ### Weekly contact report
 
 The calendar-week icon in the navbar opens `/report/weekly` — a printable record of job-search **contacts** in a Sun→Sat week (local time), intended as on-demand evidence of job-search activity for Virginia unemployment.

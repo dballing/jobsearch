@@ -345,6 +345,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
            )"""
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_attach_aid ON job_attachments(attachment_id)")
+    # Company hotlist: employers the user is especially interested in. A new/reviewing job
+    # from one is highlighted in the table. name_key is the lower-cased effective company
+    # name (case-insensitive match); display_name keeps the casing it was starred under.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS company_hotlist (
+               name_key     TEXT PRIMARY KEY,
+               display_name TEXT NOT NULL,
+               added_at     TEXT NOT NULL
+           )"""
+    )
     conn.commit()
     if needs_history_bootstrap:
         bootstrap_history(conn)
@@ -503,7 +513,22 @@ def decode_labels(raw: str | None) -> list[str]:
     return [LABEL_NAMES.get(r, r.upper()) for r in json.loads(raw or "[]")]
 
 
-def process_job_row(row: sqlite3.Row | dict) -> dict:
+# A job is "hot" only while it's actionable at a hotlisted employer — once it leaves
+# these statuses it reverts to the normal visual state.
+HOT_STATUSES = {"new", "reviewing"}
+
+
+def _company_key(company_actual: object, company: object) -> str:
+    """Lower-cased, trimmed *effective* employer name — the hotlist match key."""
+    return str(company_actual or company or "").strip().lower()
+
+
+def get_hotlist(db: sqlite3.Connection) -> set[str]:
+    """Set of hotlisted company keys (lower-cased effective names)."""
+    return {r["name_key"] for r in db.execute("SELECT name_key FROM company_hotlist")}
+
+
+def process_job_row(row: sqlite3.Row | dict, hotlist: "set[str] | frozenset" = frozenset()) -> dict:
     """Decorate a raw jobs row with everything the templates need for display.
 
     Adds decoded labels, effective + feed salary (with display strings and an override
@@ -516,6 +541,9 @@ def process_job_row(row: sqlite3.Row | dict) -> dict:
     j["company_actual"]   = j.get("company_actual")
     j["company_display"]  = j.get("company_actual") or j.get("company") or ""
     j["status_color"]     = STATUS_COLORS.get(j.get("status", "new"), "secondary")
+    # Hot = actionable (new/reviewing) job at a hotlisted employer → row tint.
+    j["is_hot"] = (j.get("status") in HOT_STATUSES
+                   and _company_key(j.get("company_actual"), j.get("company")) in hotlist)
     # Effective salary: manual override wins over the feed. Preserve the feed values
     # (salary_*_feed) so the UI can show "originally listed as" on an override.
     j["salary_min_feed"]  = j.get("salary_min")
@@ -600,7 +628,8 @@ def group_member_ids(db: sqlite3.Connection, job_id: str) -> list[str]:
 
 
 def fetch_sub_rows(db: sqlite3.Connection, group_key: str,
-                   where: str, params: list) -> list[dict]:
+                   where: str, params: list,
+                   hotlist: "set[str] | frozenset" = frozenset()) -> list[dict]:
     """Fetch all jobs belonging to a canonical group.
 
     A group contains:
@@ -613,7 +642,7 @@ def fetch_sub_rows(db: sqlite3.Connection, group_key: str,
         "(canonical_id = ? OR (canonical_id IS NULL AND job_id = ?)) ORDER BY location",
         params + [group_key, group_key],
     ).fetchall()
-    return [process_job_row(r) for r in rows]
+    return [process_job_row(r, hotlist) for r in rows]
 
 
 def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
@@ -664,6 +693,8 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
         # Group-level employer site: first sub-row that has one (members of a real
         # employer group share it; a mixed fuzzy group just links whichever resolves).
         "company_url":      next((s.get("company_url") for s in sub_rows if s.get("company_url")), None),
+        # Group is hot if any member is a new/reviewing job at a hotlisted employer.
+        "is_hot":           any(s.get("is_hot") for s in sub_rows),
         "location_count":   h["location_count"],
         # Group's aggregate comp band (MIN low / MAX high); for a uniform group
         # this is the shared range, used by the salary-cell comp-search icon.
@@ -807,6 +838,7 @@ def index():
     branches reuse build_where/process_job_row/build_grouped_job so they stay consistent.
     """
     db = get_db()
+    hotlist = get_hotlist(db)  # employer keys to highlight new/reviewing jobs for
 
     label         = request.args.get("label", "")
     q             = request.args.get("q", "").strip()
@@ -925,7 +957,7 @@ def index():
                     GROUPED_HEADERS_EMP.format(where=where, having=having, order=order),
                     params + hparams + [-1, 0]).fetchall()
                 emp_jobs = [
-                    build_grouped_job(h, fetch_sub_rows(db, h["group_key"], where, params))
+                    build_grouped_job(h, fetch_sub_rows(db, h["group_key"], where, params, hotlist))
                     for h in headers
                 ]
                 job_count = sum(j["location_count"] for j in emp_jobs)
@@ -933,7 +965,7 @@ def index():
                 ewhere, eparams = employer_where(where, params, employer)
                 rows = db.execute(FLAT_SELECT.format(where=ewhere, order=order),
                                   eparams + [-1, 0]).fetchall()
-                emp_jobs = [process_job_row(r) for r in rows]
+                emp_jobs = [process_job_row(r, hotlist) for r in rows]
                 job_count = len(emp_jobs)
             employer_groups.append({
                 "employer_name": employer or "(no company)",
@@ -945,14 +977,14 @@ def index():
         headers = db.execute(GROUPED_HEADERS.format(where=where, order=order),
                              params + [limit, offset]).fetchall()
         jobs = [
-            build_grouped_job(h, fetch_sub_rows(db, h["group_key"], where, params))
+            build_grouped_job(h, fetch_sub_rows(db, h["group_key"], where, params, hotlist))
             for h in headers
         ]
     else:
         total = db.execute(FLAT_COUNT.format(where=where), params).fetchone()[0]
         rows  = db.execute(FLAT_SELECT.format(where=where, order=order),
                            params + [limit, offset]).fetchall()
-        jobs  = [process_job_row(r) for r in rows]
+        jobs  = [process_job_row(r, hotlist) for r in rows]
 
     total_pages          = 1 if per_page == "all" else max(1, math.ceil(total / limit))
     labels               = available_labels(db)
@@ -1283,6 +1315,7 @@ def get_job(job_id: str):
         "company":          job["company"],
         "company_actual":   job.get("company_actual"),
         "company_url":      job.get("company_url"),
+        "company_hotlisted": _company_key(job.get("company_actual"), job.get("company")) in get_hotlist(db),
         "location":         job["location"],
         "job_url":          job["job_url"],
         "apply_url":        job["apply_url"],
@@ -1536,6 +1569,30 @@ def company_rename(job_id: str):
                                  "from": from_name, "to": to_name, "via": "web"})
     db.commit()
     return {"renamed": len(affected), "alias_added": added}, 200
+
+
+@app.route("/company/hotlist", methods=["POST"])
+def toggle_hotlist():
+    """Add/remove an employer from the hotlist. `company` is the effective employer name;
+    `on` = 1/0. Keyed case-insensitively so any spelling of the same employer matches.
+    Highlighting is a display concern, so this is workspace-wide, not per-job."""
+    company = request.form.get("company", "").strip()
+    if not company:
+        return "Company required.", 400
+    on = request.form.get("on") in ("1", "true", "on")
+    key = company.lower()
+    db = get_db()
+    if on:
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        db.execute(
+            "INSERT INTO company_hotlist (name_key, display_name, added_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(name_key) DO UPDATE SET display_name = excluded.display_name",
+            (key, company, ts),
+        )
+    else:
+        db.execute("DELETE FROM company_hotlist WHERE name_key = ?", (key,))
+    db.commit()
+    return {"company": company, "hot": on}, 200
 
 
 def _parse_salary_field(raw: str) -> int | None:

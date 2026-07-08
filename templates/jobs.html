@@ -214,7 +214,7 @@
 {% macro render_job_rows(job, gindex) %}
         {% if view == 'grouped' and job.multi %}
           {# ── Multi-location grouped header row ── #}
-          <tr class="table-group-header">
+          <tr class="table-group-header{{ ' row-hot' if job.is_hot }}">
             <td class="job-title fw-medium">
               {{ job.title or '(no title)' }}
               {% if job.sub_rows | selectattr('refreshed_at') | list %}<span class="text-warning ms-1" title="One or more postings had their description changed and were reset to new"><i class="bi bi-arrow-repeat"></i></span>{% endif %}
@@ -290,7 +290,7 @@
           </tr>
           {# ── Per-location sub-rows ── #}
           {% for sub in job.sub_rows %}
-          <tr class="group-child group-child-{{ gindex }} d-none">
+          <tr class="group-child group-child-{{ gindex }} d-none{{ ' row-hot' if sub.is_hot }}">
             <td class="small">
               {% if job.is_fuzzy_group %}
                 {% if sub.job_url %}<a href="{{ sub.job_url }}" target="_blank" rel="noopener">{{ sub.title or '(no title)' }}</a>
@@ -338,7 +338,7 @@
 
         {% else %}
           {# ── Single-location row (grouped or flat) ── #}
-          <tr>
+          <tr class="{{ 'row-hot' if job.is_hot }}">
             <td class="job-title">
               {% set url = job.get('job_url') %}
               {% if url %}<a href="{{ url }}" target="_blank" rel="noopener">{{ job.title or '(no title)' }}</a>

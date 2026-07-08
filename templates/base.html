@@ -39,6 +39,9 @@
     .group-child > td:first-child { padding-left: 1.5rem; }
     /* Under an employer a matched sub-row is nested twice → double indent. */
     tbody.employer-section > tr.group-child > td:first-child { padding-left: 3rem; }
+    /* Hotlist: a new/reviewing job at a starred employer gets a warm, theme-aware tint.
+       !important beats the striped/sub-row background layering. */
+    .table tr.row-hot > td { background-color: var(--bs-warning-bg-subtle) !important; }
   </style>
 </head>
 <body>
@@ -458,6 +461,26 @@
         const editorDiv = document.createElement('div');
         editorDiv.id = 'companyActualEditor';
         editorDiv.className = 'px-3 py-2 border-bottom d-flex align-items-center gap-2 small flex-wrap';
+        // Hotlist star: toggles this employer on/off the hotlist (workspace-wide). A
+        // new/reviewing job at a hotlisted employer is tinted in the jobs table.
+        const hotWrap = document.createElement('span');
+        hotWrap.className = 'd-flex align-items-center gap-1 me-1';
+        const hotLabel = document.createElement('span');
+        hotLabel.className = 'text-muted'; hotLabel.textContent = 'Hotlist:';
+        const hotBtn = document.createElement('button');
+        hotBtn.type = 'button'; hotBtn.className = 'btn btn-sm btn-link p-0';
+        const renderHot = () => {
+          hotBtn.innerHTML = `<i class="bi ${job.company_hotlisted ? 'bi-star-fill text-warning' : 'bi-star text-muted'}"></i>`;
+          hotBtn.title = job.company_hotlisted ? 'On the hotlist — click to remove' : 'Add this employer to the hotlist';
+        };
+        renderHot();
+        hotBtn.addEventListener('click', async () => {
+          const on = !job.company_hotlisted;
+          const resp = await fetch('/company/hotlist', {method: 'POST',
+            body: new URLSearchParams({company: job.company_actual || job.company || '', on: on ? '1' : '0'})});
+          if (resp.ok) { job.company_hotlisted = on; renderHot(); }
+        });
+        hotWrap.append(hotLabel, hotBtn);
         const inputEl = document.createElement('input');
         inputEl.type = 'text';
         inputEl.className = 'form-control form-control-sm';
@@ -534,7 +557,7 @@
         clearBtn.addEventListener('click', () => { inputEl.value = ''; renameCheck.checked = false; saveCompanyActual(''); });
         inputEl.addEventListener('keydown', e => { if (e.key === 'Enter') saveBtn.click(); });
 
-        editorDiv.append(inputEl, saveBtn, clearBtn, feedbackEl, renameWrap);
+        editorDiv.append(hotWrap, inputEl, saveBtn, clearBtn, feedbackEl, renameWrap);
         metaEl.insertAdjacentElement('afterend', editorDiv);
 
         // Salary override editor — for when the feed is missing (or wrong) but the
