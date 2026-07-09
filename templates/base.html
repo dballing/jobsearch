@@ -42,6 +42,12 @@
     /* Hotlist: a new/reviewing job at a starred employer gets a warm, theme-aware tint.
        !important beats the striped/sub-row background layering. */
     .table tr.row-hot > td { background-color: var(--bs-warning-bg-subtle) !important; }
+    /* Jobs table scroll pane: the table body scrolls within a bounded height while the
+       column headers stay pinned to the top. The offset leaves room for the navbar,
+       filter toolbar, and pagination; the pane also keeps horizontal scroll on narrow
+       viewports. table-dark gives the sticky th an opaque background already. */
+    .jobs-table-pane { max-height: calc(100vh - 200px); overflow: auto; }
+    .jobs-table-pane thead th { position: sticky; top: 0; z-index: 2; }
   </style>
 </head>
 <body>
