@@ -439,6 +439,7 @@
             else if (e.event === 'linked')     desc = `Linked to canonical`;
             else if (e.event === 'unlinked')        desc = 'Unlinked from canonical';
             else if (e.event === 'company_actual')  desc = e.to ? `Company override set: <strong>${escHtml(e.to)}</strong>` : 'Company override cleared';
+            else if (e.event === 'work_arrangement') desc = e.to ? `Work arrangement override: <strong>${escHtml(e.to)}</strong>` : 'Work arrangement override cleared';
             else if (e.event === 'company_normalized') desc = `Company normalized: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong> <span class="text-muted fst-italic">(auto)</span>`;
             else if (e.event === 'company_renamed') desc = `Company renamed: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong> <span class="text-muted fst-italic">(manual — canonical + alias)</span>`;
             else if (e.event === 'salary_actual') {
@@ -617,6 +618,37 @@
         salMax.addEventListener('keydown', e => { if (e.key === 'Enter') salSave.click(); });
         salEditor.append(salLabel, salMin, salDash, salMax, salSave, salClear, salHint, salFb);
         editorDiv.insertAdjacentElement('afterend', salEditor);
+
+        // Work-arrangement override — for when the feed's classification is wrong (e.g. a
+        // recruiter confirms hybrid though the posting reads on-site). Wins in viability
+        // scoring; blank = use the feed's value. Options come from the server (/job).
+        const existingWaEditor = document.getElementById('workArrangementEditor');
+        if (existingWaEditor) existingWaEditor.remove();
+        const waEditor = document.createElement('div');
+        waEditor.id = 'workArrangementEditor';
+        waEditor.className = 'px-3 py-2 border-bottom d-flex align-items-center gap-2 small flex-wrap';
+        const waLabel = document.createElement('span');
+        waLabel.className = 'text-muted'; waLabel.textContent = 'Work arrangement:';
+        const waSelect = document.createElement('select');
+        waSelect.className = 'form-select form-select-sm'; waSelect.style.width = 'auto';
+        waSelect.add(new Option(
+          job.work_arrangement_feed ? `— feed: ${job.work_arrangement_feed} —` : '— feed default —', ''));
+        (job.work_arrangement_options || []).forEach(o => waSelect.add(new Option(o, o)));
+        waSelect.value = job.work_arrangement_actual || '';
+        const waFb = document.createElement('span'); waFb.className = 'text-success small';
+        waSelect.addEventListener('change', async () => {
+          const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/work_arrangement`,
+            {method: 'POST', body: new URLSearchParams({work_arrangement: waSelect.value})});
+          if (resp.ok) {
+            job.work_arrangement_actual = waSelect.value || null;
+            waFb.className = 'text-success small'; waFb.textContent = 'Saved!';
+            setTimeout(() => { waFb.textContent = ''; }, 1500);
+          } else {
+            waFb.className = 'text-danger small'; waFb.textContent = 'Save failed.';
+          }
+        });
+        waEditor.append(waLabel, waSelect, waFb);
+        salEditor.insertAdjacentElement('afterend', waEditor);
 
         bodyEl.innerHTML =
           '<div class="mb-3">'

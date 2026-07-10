@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     company_actual        TEXT,
     salary_min_actual     INTEGER,
     salary_max_actual     INTEGER,
+    work_arrangement_actual TEXT,
     needs_rescored        INTEGER NOT NULL DEFAULT 0,
     job_description_formatted TEXT,
     description_hash          TEXT,
@@ -218,6 +219,9 @@ def open_db(path: str) -> sqlite3.Connection:
         conn.commit()
     if "company_url" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN company_url TEXT")
+        conn.commit()
+    if "work_arrangement_actual" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN work_arrangement_actual TEXT")
         conn.commit()
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_jobs_description_hash ON jobs(description_hash)"

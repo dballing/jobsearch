@@ -95,6 +95,10 @@ Ingest records the employer's own site in a `company_url` column, taken from the
 
 The icon/link only appears when a URL is known (~99.7% of listings; roughly 82% resolve to the employer's own site, the rest to a company page).
 
+### Work arrangement override
+
+The feed classifies each job's work arrangement (remote / hybrid / on-site), and that classification is sent to the viability scorer since remote status often decides fit. When the feed is wrong or absent — e.g. a recruiter confirms a role is hybrid though the posting reads on-site — the preview panel's **Work arrangement** dropdown overrides it (On-site / Hybrid / Fully remote / Remote-hybrid-if-near-an-office; blank uses the feed's value, shown as a hint). The override wins in scoring and flags the job for rescoring. It's per-job (not fanned out across a matched group).
+
 ### Company name normalization
 
 Feeds spell the same employer inconsistently (e.g. "Sirius XM" vs "Sirius XM Radio"). The optional `[company_aliases]` config table maps variant spellings to one canonical name, applied automatically at ingest — so the stored value, and therefore grouping, employer search, viability scoring, and display, all use a single consistent name. See [Configuration](configuration.md#company-name-normalization-company_aliases).

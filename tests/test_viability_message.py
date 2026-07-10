@@ -81,6 +81,24 @@ def test_work_arrangement_omitted_when_absent():
         assert "Work arrangement:" not in viability.build_score_message(job)
 
 
+def test_work_arrangement_override_wins_over_feed():
+    # Feed says On-site; a recruiter-confirmed Hybrid override must win, sent verbatim.
+    raw = _json.dumps({"ai_work_arrangement": "On-site"})
+    job = {"title": "T", "company": "Apple", "raw": raw, "work_arrangement_actual": "Hybrid"}
+    assert "Work arrangement: Hybrid" in viability.build_score_message(job)
+
+
+def test_work_arrangement_override_used_when_no_feed():
+    job = {"title": "T", "company": "C", "work_arrangement_actual": "Fully remote"}
+    assert "Work arrangement: Fully remote" in viability.build_score_message(job)
+
+
+def test_blank_override_falls_back_to_feed():
+    raw = _json.dumps({"ai_work_arrangement": "Hybrid", "ai_work_arrangement_office_days": 2})
+    job = {"title": "T", "company": "C", "raw": raw, "work_arrangement_actual": ""}
+    assert "Work arrangement: Hybrid — 2 days/week in office" in viability.build_score_message(job)
+
+
 def test_has_title_and_company_lines():
     msg = viability.build_score_message({"title": "Staff PM", "company": "Acme"})
     assert "Job title: Staff PM" in msg and "Company: Acme" in msg

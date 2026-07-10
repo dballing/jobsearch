@@ -84,11 +84,17 @@ def _work_arrangement(job: dict) -> str | None:
     leaving the model to infer it from the prose. None when the feed didn't classify it
     (e.g. manual jobs).
 
-    The feed emits terse enums ("Remote OK", "Remote Solely") whose meaning — and whose
-    office-days semantics — aren't self-evident, so they're glossed into plain English:
-    for "Remote OK" the office-days apply only if you live near the office; for "Hybrid"
-    they're required. An unrecognized value is passed through so nothing is lost.
+    A manual override (work_arrangement_actual — set when the feed is wrong, e.g. a
+    recruiter says a role is hybrid though the posting reads on-site) wins and is sent
+    verbatim. Otherwise the feed emits terse enums ("Remote OK", "Remote Solely") whose
+    meaning — and whose office-days semantics — aren't self-evident, so they're glossed
+    into plain English: for "Remote OK" the office-days apply only if you live near the
+    office; for "Hybrid" they're required. An unrecognized value is passed through so
+    nothing is lost.
     """
+    override = str(job.get("work_arrangement_actual") or "").strip()
+    if override:
+        return override
     try:
         raw = json.loads(job.get("raw") or "{}")
     except (json.JSONDecodeError, TypeError):

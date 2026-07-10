@@ -23,7 +23,7 @@ from pathlib import Path
 from flask import Flask, abort, g, render_template, request, send_file, url_for
 from werkzeug.utils import secure_filename
 from ingest import append_history, bootstrap_history
-from viability import prompt_hash, score_job
+from viability import _work_arrangement, prompt_hash, score_job
 
 app = Flask(__name__)
 PER_PAGE = 25                                  # default page size
@@ -90,6 +90,11 @@ STATUSES = [
     "applied", "rejected", "ghosted", "interviewing", "offered",
     "withdrawn", "closed",
 ]
+
+# Manual work-arrangement override options (self-explanatory phrasings sent verbatim to
+# the viability scorer — see viability._work_arrangement). The preview panel serves these
+# to its dropdown via /job/<id>; the endpoint validates against this exact set.
+WORK_ARRANGEMENTS = ["On-site", "Hybrid", "Fully remote", "Remote (hybrid if near an office)"]
 
 STATUS_COLORS = {
     "new":          "primary",
@@ -330,6 +335,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # Employer's own site (from the feed's linkedin_org_url/domain_derived/
         # organization_url); populated at ingest by ingest.extract_company_url.
         conn.execute("ALTER TABLE jobs ADD COLUMN company_url TEXT")
+    if "work_arrangement_actual" not in cols:
+        # Manual override of the feed's ai_work_arrangement (e.g. recruiter says a role
+        # is hybrid though the posting reads on-site); wins in viability scoring.
+        conn.execute("ALTER TABLE jobs ADD COLUMN work_arrangement_actual TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_jobs_description_hash ON jobs(description_hash)"
     )
@@ -1318,6 +1327,10 @@ def get_job(job_id: str):
         "company_actual":   job.get("company_actual"),
         "company_url":      job.get("company_url"),
         "company_hotlisted": _company_key(job.get("company_actual"), job.get("company")) in get_hotlist(db),
+        "work_arrangement_actual":  job.get("work_arrangement_actual"),
+        # What the feed says (glossed), shown as a hint next to the override control.
+        "work_arrangement_feed":    _work_arrangement({**job, "work_arrangement_actual": None}),
+        "work_arrangement_options": WORK_ARRANGEMENTS,
         "location":         job["location"],
         "job_url":          job["job_url"],
         "apply_url":        job["apply_url"],
@@ -1434,6 +1447,29 @@ def set_company_actual(job_id: str):
     )
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     append_history(db, job_id, {"ts": ts, "event": "company_actual", "from": old, "to": value})
+    db.commit()
+    return "", 204
+
+
+@app.route("/job/<job_id>/work_arrangement", methods=["POST"])
+def set_work_arrangement(job_id: str):
+    """Override the feed's work arrangement for a job (e.g. a recruiter confirms hybrid
+    though the posting reads on-site). Empty clears it. The override wins in viability
+    scoring, so flag the job for rescoring."""
+    value = request.form.get("work_arrangement", "").strip() or None
+    if value is not None and value not in WORK_ARRANGEMENTS:
+        return "Invalid work arrangement.", 400
+    db = get_db()
+    row = db.execute("SELECT work_arrangement_actual FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    if not row:
+        return "Not found", 404
+    old = row["work_arrangement_actual"]
+    db.execute(
+        "UPDATE jobs SET work_arrangement_actual = ?, needs_rescored = 1 WHERE job_id = ?",
+        (value, job_id),
+    )
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    append_history(db, job_id, {"ts": ts, "event": "work_arrangement", "from": old, "to": value})
     db.commit()
     return "", 204
 
