@@ -41,6 +41,29 @@ def test_location_omitted_when_absent():
         assert "Location:" not in viability.build_score_message(job)
 
 
+def test_work_arrangement_sent_with_office_days():
+    import json
+    raw = json.dumps({"ai_work_arrangement": "Remote OK", "ai_work_arrangement_office_days": 3})
+    msg = viability.build_score_message({"title": "TPM", "company": "Transform9", "raw": raw})
+    assert "Work arrangement: Remote OK (3 office days/week)" in msg
+
+
+def test_work_arrangement_without_office_days():
+    import json
+    raw = json.dumps({"ai_work_arrangement": "Remote Solely", "ai_work_arrangement_office_days": 0})
+    msg = viability.build_score_message({"title": "T", "company": "C", "raw": raw})
+    assert "Work arrangement: Remote Solely" in msg
+    assert "office days" not in msg
+
+
+def test_work_arrangement_omitted_when_absent():
+    import json
+    for job in ({"title": "T", "company": "C"},
+                {"title": "T", "company": "C", "raw": json.dumps({"ai_work_arrangement": "None"})},
+                {"title": "T", "company": "C", "raw": json.dumps({})}):
+        assert "Work arrangement:" not in viability.build_score_message(job)
+
+
 def test_has_title_and_company_lines():
     msg = viability.build_score_message({"title": "Staff PM", "company": "Acme"})
     assert "Job title: Staff PM" in msg and "Company: Acme" in msg

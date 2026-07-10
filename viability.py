@@ -36,8 +36,9 @@ _SYSTEM_BOILERPLATE = (
 # build_score_message). It's folded into prompt_hash so that changing *what the model
 # sees for each job* invalidates prior scores just like editing the prompt does. Bump it
 # whenever build_score_message changes materially. History: 2 = added the Location line;
-# 3 = send *all* of a job's locations, not just the first.
-_SCORING_INPUT_VERSION = "3"
+# 3 = send *all* of a job's locations, not just the first; 4 = added the Work arrangement
+# (remote/hybrid/on-site) line.
+_SCORING_INPUT_VERSION = "4"
 
 # Cap on locations included in the scoring message — bounds token cost for the rare job
 # posted across dozens of sites, while staying generous enough to almost never truncate
@@ -76,6 +77,26 @@ def _job_locations(job: dict) -> list[str]:
     return [one] if one else []
 
 
+def _work_arrangement(job: dict) -> str | None:
+    """Work-arrangement summary (remote / hybrid / on-site) from the feed's AI-extracted
+    `ai_work_arrangement` plus office-days. Remote status often drives fit — a remote-OK
+    role is viable regardless of the office city — so send it explicitly rather than
+    leaving the model to infer it from the prose. None when the feed didn't classify it
+    (e.g. manual jobs)."""
+    try:
+        raw = json.loads(job.get("raw") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return None
+    arrangement = str(raw.get("ai_work_arrangement") or "").strip()
+    if not arrangement or arrangement.lower() in ("none", "null"):
+        return None
+    try:
+        days = int(raw.get("ai_work_arrangement_office_days"))
+    except (TypeError, ValueError):
+        days = 0
+    return f"{arrangement} ({days} office days/week)" if days > 0 else arrangement
+
+
 def _location_line(job: dict) -> str:
     """The 'Location: …' line for the scoring message (all locations, capped), or ''."""
     locs = _job_locations(job)
@@ -91,9 +112,10 @@ def build_score_message(job: dict) -> str:
 
     Location matters to viability (commute/remote fit) and is a first-class field, so it's
     sent explicitly — and *all* of a job's locations are sent (see _job_locations), so a
-    multi-site posting isn't judged on just its first city. Fields that are genuinely
-    absent are omitted rather than sent blank, so the candidate prompt handles the neutral
-    case.
+    multi-site posting isn't judged on just its first city. Work arrangement (remote /
+    hybrid / on-site) is sent too, since remote status can make a role viable regardless of
+    the office city. Fields that are genuinely absent are omitted rather than sent blank,
+    so the candidate prompt handles the neutral case.
     """
     title       = (job.get("title")    or "(no title)").strip()
     company_raw = (job.get("company")  or "(unknown company)").strip()
@@ -125,6 +147,7 @@ def build_score_message(job: dict) -> str:
         f"Job title: {title}\n"
         f"Company: {company}\n"
         + _location_line(job)
+        + (f"Work arrangement: {wa}\n" if (wa := _work_arrangement(job)) else "")
         + (f"{salary_line}\n" if salary_line else "")
         + f"\nDescription:\n{description}"
     )
