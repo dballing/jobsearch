@@ -26,6 +26,29 @@ uploads_dir = "uploads"
 # experience. I want IC or tech-lead roles at Series A–C startups. No Java-only
 # shops, no more than 10% travel."
 # """
+#
+# Optional: geographic preferences. When set, each job's location(s) are matched
+# against this by a focused, single-purpose AI call, and only the resulting verdict
+# ("Geographic fit: PREFERRED/GOOD/ACCEPTABLE/POOR", best→worst) is fed to the main
+# scorer — which scores geography far more reliably than making the main call parse a
+# multi-city list itself. The four tiers are generic ordinal rungs; YOUR prompt decides
+# which locations earn which tier. Put ALL location/remote judgments here (nothing is
+# assumed in code), and keep geography OUT of the `prompt` above so it isn't double-judged.
+#
+# Tip: if your ingest tasks already restrict searches to specific geographies (locationSearch),
+# a posting whose only stated location is a bare country ("United States") almost certainly
+# still falls within one of your target areas — the feed wouldn't have returned it otherwise.
+# You can encode that so such vague postings don't get dinged as out-of-area (see last line).
+# location_prompt = """
+# PREFERRED: DC Metro / Northern Virginia; also fully remote.
+# GOOD: Raleigh/RTP and elsewhere in North Carolina.
+# ACCEPTABLE: South Carolina.
+# POOR: on-site/hybrid whose only locations are outside VA/DC/NC/SC, unless fully remote.
+# If a posting's ONLY location is an entire country (e.g. "United States") with no state or
+# city, assume it falls within my target areas (my searches are already geographically
+# pre-filtered to the tiers above) and treat it as at least ACCEPTABLE.
+# """
+# location_model = "claude-haiku-4-5"        # optional; defaults to [ai].model (the sub-call is cheap)
 
 # AI description reformatting (optional) — at ingest time, hand each description to
 # the model and store a cleaned Markdown version that the UI shows instead of the

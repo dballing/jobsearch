@@ -23,7 +23,9 @@ from pathlib import Path
 from flask import Flask, abort, g, render_template, request, send_file, url_for
 from werkzeug.utils import secure_filename
 from ingest import append_history, bootstrap_history
-from viability import _work_arrangement, prompt_hash, score_job
+from viability import (
+    _work_arrangement, assess_location_fit, geo_note, prompt_hash, score_job,
+)
 
 app = Flask(__name__)
 PER_PAGE = 25                                  # default page size
@@ -59,8 +61,12 @@ def _current_viability_hash() -> str | None:
             _cfg_mtime = mtime
             with open(_config_path, "rb") as _rf:
                 _live_cfg = tomllib.load(_rf)
-            p = _live_cfg.get("viability", {}).get("prompt", "").strip()
-            _viability_hash_cache = prompt_hash(p) if p else None
+            _vcfg = _live_cfg.get("viability", {})
+            p = _vcfg.get("prompt", "").strip()
+            # location_prompt is folded into the hash too (it drives the geographic verdict
+            # the scorer sees), so a geography-prefs edit correctly flags scores stale.
+            lp = _vcfg.get("location_prompt", "").strip()
+            _viability_hash_cache = prompt_hash(p, lp) if p else None
     except OSError:
         pass
     return _viability_hash_cache
@@ -1671,17 +1677,25 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
     prompt = vcfg.get("prompt", "").strip()
     if not prompt:
         return False, "no viability prompt configured"
-    from ai_config import resolve_ai_settings
+    # Optional geographic-preferences prompt (see rescore_viability.py). When set, run the
+    # focused location sub-call and feed its verdict to the scorer in place of raw locations.
+    location_prompt = vcfg.get("location_prompt", "").strip()
+    from ai_config import DEFAULT_MODEL, resolve_ai_settings
     api_key, model = resolve_ai_settings(cfg, "viability")
     if not api_key:
         return False, "no Anthropic API key configured"
+    geo_model = vcfg.get("location_model") or cfg.get("ai", {}).get("model") or DEFAULT_MODEL
     row = db.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
     if not row:
         return False, "job not found"
     try:
         import anthropic
         client = anthropic.Anthropic(api_key=api_key)
-        rating, reason, _usage = score_job(client, prompt, dict(row), model=model)
+        gnote = None
+        if location_prompt:
+            fit, match, _gu = assess_location_fit(client, location_prompt, dict(row), model=geo_model)
+            gnote = geo_note(fit, match)
+        rating, reason, _usage = score_job(client, prompt, dict(row), model=model, geo_note=gnote)
     except Exception as e:  # network/SDK/config errors — stay fail-soft
         return False, f"scoring call failed: {e}"
     if rating is None:
@@ -1689,7 +1703,7 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
     db.execute(
         "UPDATE jobs SET viability = ?, viability_reason = ?, "
         "viability_prompt_hash = ?, needs_rescored = 0 WHERE job_id = ?",
-        (rating, reason, prompt_hash(prompt), job_id),
+        (rating, reason, prompt_hash(prompt, location_prompt), job_id),
     )
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     append_history(db, job_id, {"ts": ts, "event": "viability", "rating": rating, "reason": reason})

@@ -143,11 +143,118 @@ def test_field_order():
         < msg.index("Salary:") < msg.index("Description:")
 
 
+# ── Geographic pre-assessment: the verdict replaces the raw Location line ──────
+def test_geo_note_replaces_location_line():
+    # With a pre-assessed verdict, the scorer must see the authoritative 'Geographic fit'
+    # line and NOT the raw location list (which it read unreliably).
+    import json
+    raw = json.dumps({"locations_derived": ["Phoenix, AZ, US",
+                                             "Washington, District of Columbia, US"]})
+    msg = viability.build_score_message(
+        {"title": "T", "company": "C", "raw": raw},
+        geo_note="PREFERRED (best match: Washington, District of Columbia, US)")
+    assert "Geographic fit" in msg
+    assert "PREFERRED (best match: Washington, District of Columbia, US)" in msg
+    assert "Location:" not in msg          # raw list suppressed
+    assert "Phoenix" not in msg            # the buried non-preferred city isn't shown
+
+
+def test_no_geo_note_keeps_raw_location_line():
+    # Legacy path (no location_prompt configured / sub-call failed): fall back to raw list.
+    msg = viability.build_score_message({"title": "T", "company": "C", "location": "Cary, NC"})
+    assert "Location: Cary, NC" in msg
+    assert "Geographic fit" not in msg
+
+
+def test_geo_note_precedes_work_arrangement_and_salary():
+    import json
+    raw = json.dumps({"ai_work_arrangement": "Hybrid", "ai_work_arrangement_office_days": 2})
+    msg = viability.build_score_message(
+        {"title": "T", "company": "C", "raw": raw, "salary_min": 150000},
+        geo_note="ACCEPTABLE (best match: Raleigh, NC)")
+    assert msg.index("Geographic fit") < msg.index("Work arrangement:") < msg.index("Salary:")
+
+
+# ── geo_note(): compose the verdict phrase from a (fit, match) pair ────────────
+def test_geo_note_tiers():
+    assert viability.geo_note("preferred", "Washington, DC") == "PREFERRED (best match: Washington, DC)"
+    # The 'good' rung distinguishes a second-preference region (e.g. NC) from merely-acceptable.
+    assert viability.geo_note("good", "Raleigh, NC") == "GOOD (best match: Raleigh, NC)"
+    assert viability.geo_note("acceptable", "Aiken, SC") == "ACCEPTABLE (best match: Aiken, SC)"
+    assert viability.geo_note("preferred", "") == "PREFERRED"   # no match string → tier only
+    assert "POOR" in viability.geo_note("poor", "")
+    # Anything not a recognized tier → None, so the caller falls back to the raw list.
+    assert viability.geo_note(None, "x") is None
+    assert viability.geo_note("great", "x") is None
+
+
+# ── assess_location_fit(): the focused sub-call (fake client, no network) ──────
+class _FakeUsage:
+    input_tokens = output_tokens = cache_creation_input_tokens = cache_read_input_tokens = 0
+
+
+class _FakeClient:
+    """Minimal stand-in: records the create() kwargs and returns a canned JSON reply."""
+    def __init__(self, reply_text):
+        self._reply = reply_text
+        self.last_kwargs = None
+        self.messages = self
+
+    def create(self, **kwargs):
+        self.last_kwargs = kwargs
+        msg = type("M", (), {})()
+        msg.content = [type("C", (), {"text": self._reply})()]
+        msg.usage = _FakeUsage()
+        return msg
+
+
+def test_assess_location_fit_parses_verdict_and_sends_prefs_and_locations():
+    raw = _json.dumps({"locations_derived": ["Phoenix, AZ, US", "Washington, District of Columbia, US"],
+                       "ai_work_arrangement": "On-site"})
+    client = _FakeClient('{"fit": "preferred", "match": "Washington, District of Columbia, US"}')
+    fit, match, usage = viability.assess_location_fit(
+        client, "DC strongly preferred; AZ poor.", {"title": "T", "company": "C", "raw": raw})
+    assert fit == "preferred" and match == "Washington, District of Columbia, US"
+    assert usage is not None
+    # The candidate's location_prompt rides in the (cached) system block…
+    assert "DC strongly preferred" in client.last_kwargs["system"][0]["text"]
+    # …and every job location + work arrangement is in the user message.
+    user = client.last_kwargs["messages"][0]["content"]
+    assert "Phoenix, AZ, US" in user and "Washington, District of Columbia, US" in user
+    assert "On-site" in user
+
+
+def test_assess_location_fit_rejects_invalid_fit():
+    client = _FakeClient('{"fit": "maybe", "match": "somewhere"}')
+    assert viability.assess_location_fit(client, "prefs", {"location": "Cary, NC"}) == (None, None, None)
+
+
+def test_assess_location_fit_unparseable_reply():
+    client = _FakeClient("I could not determine the fit.")
+    assert viability.assess_location_fit(client, "prefs", {"location": "Cary, NC"}) == (None, None, None)
+
+
+def test_assess_location_fit_skips_when_nothing_to_judge():
+    # No locations and no work arrangement → don't spend a call; return the fallback sentinel.
+    client = _FakeClient('{"fit": "preferred", "match": "x"}')
+    assert viability.assess_location_fit(client, "prefs", {"title": "T", "company": "C"}) == (None, None, None)
+    assert client.last_kwargs is None  # never called the API
+
+
 # ── prompt_hash: staleness change-detector ────────────────────────────────────
 def test_prompt_hash_deterministic_and_prompt_sensitive():
     assert viability.prompt_hash("candidate A") == viability.prompt_hash("candidate A")
     assert viability.prompt_hash("candidate A") != viability.prompt_hash("candidate B")
     assert len(viability.prompt_hash("x")) == 32
+
+
+def test_prompt_hash_folds_in_location_prompt():
+    # Editing geography prefs must flag scores stale even when the candidate prompt is
+    # unchanged, since the geographic verdict the scorer sees depends on location_prompt.
+    base = viability.prompt_hash("same prompt")
+    assert viability.prompt_hash("same prompt", "DC preferred") != base
+    assert viability.prompt_hash("same prompt", "DC preferred") \
+        != viability.prompt_hash("same prompt", "NYC preferred")
 
 
 def test_prompt_hash_folds_in_message_schema_version(monkeypatch):

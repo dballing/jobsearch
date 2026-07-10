@@ -41,10 +41,13 @@ from pathlib import Path
 
 import anthropic
 
-from ai_config import format_token_summary, resolve_ai_settings
+from ai_config import DEFAULT_MODEL, format_token_summary, resolve_ai_settings
 from ingest import append_history
 from runlock import acquire_run_lock
-from viability import prompt_hash, score_job
+from viability import (
+    _job_locations, _work_arrangement, assess_location_fit, geo_note,
+    prompt_hash, score_job,
+)
 
 # Numeric ranking of ratings. Used two ways: to compare a score against the auto-skip
 # threshold, and to decide whether a re-evaluated duplicate scored *strictly better*
@@ -214,6 +217,15 @@ def main() -> None:
             'Add a [viability] prompt = """...""" section to config.toml.'
         )
 
+    # Optional geographic-preferences prompt. When set, each job gets a focused location
+    # sub-call (assess_location_fit) whose verdict is fed to the main scorer in place of the
+    # raw location list. Empty → geography stays inline in the main message (legacy path).
+    location_prompt = viability_cfg.get("location_prompt", "").strip()
+    # The location sub-call is a trivial classification, so default it to the cheap [ai]
+    # model (haiku) even when the main scorer runs on a pricier model; override with
+    # [viability] location_model if desired.
+    geo_model = viability_cfg.get("location_model") or config.get("ai", {}).get("model") or DEFAULT_MODEL
+
     # api_key/model resolve from [viability] -> [ai] -> ANTHROPIC_API_KEY env.
     api_key, model = resolve_ai_settings(config, "viability")
     if not api_key:
@@ -232,7 +244,9 @@ def main() -> None:
     auto_skip_threshold = VIABILITY_RANK[auto_skip_conf_raw]
     db_path = config.get("db_path", "jobs.db")
 
-    current_hash = prompt_hash(viability_prompt)
+    # Fold location_prompt into the hash too: the geographic verdict the scorer sees depends
+    # on it, so editing geography prefs must mark scores stale even when `prompt` is unchanged.
+    current_hash = prompt_hash(viability_prompt, location_prompt)
     conn = open_db(db_path)
 
     # Build the selection WHERE clause: which jobs need (re)scoring this run. Two
@@ -304,6 +318,16 @@ def main() -> None:
     tok_output  = 0
     tok_write   = 0
     tok_read    = 0
+    # Location sub-call tokens are tracked separately: it may run on a different (cheaper)
+    # model than the main scorer, so its cost must be priced against geo_model, not model.
+    geo_input   = 0
+    geo_output  = 0
+    geo_write   = 0
+    geo_read    = 0
+    # Cache geo verdicts within a run keyed on (locations, work arrangement): many jobs
+    # share a location set (single-city employers, fully-remote roles), so this avoids
+    # paying for an identical sub-call repeatedly. location_prompt is constant per run.
+    geo_cache: dict[tuple, tuple[str | None, str | None]] = {}
     interactive = not args.verbose and sys.stdout.isatty()
 
     # Score each selected job, then for each success: persist the rating, record a
@@ -320,7 +344,26 @@ def main() -> None:
             # \r returns to start of line; \033[K erases to end of line.
             print(f"\r\033[K  [{i}/{count}] Scoring: {label}", end="", flush=True)
 
-        rating, reason, usage = score_job(client, viability_prompt, dict(row), model=model)
+        job = dict(row)
+        # Focused geographic pre-assessment (only when a location_prompt is configured).
+        # Its verdict replaces the raw location list in the scorer message; on any failure
+        # geo_note is None and the scorer falls back to the raw list. Cache by location set.
+        gnote = None
+        if location_prompt:
+            geo_key = (tuple(_job_locations(job)), _work_arrangement(job))
+            if geo_key in geo_cache:
+                fit, match = geo_cache[geo_key]
+            else:
+                fit, match, gusage = assess_location_fit(client, location_prompt, job, model=geo_model)
+                geo_cache[geo_key] = (fit, match)
+                if gusage is not None:
+                    geo_input  += getattr(gusage, "input_tokens",                0) or 0
+                    geo_output += getattr(gusage, "output_tokens",               0) or 0
+                    geo_write  += getattr(gusage, "cache_creation_input_tokens", 0) or 0
+                    geo_read   += getattr(gusage, "cache_read_input_tokens",     0) or 0
+            gnote = geo_note(fit, match)
+
+        rating, reason, usage = score_job(client, viability_prompt, job, model=model, geo_note=gnote)
 
         if rating is None:
             if args.verbose:
@@ -443,6 +486,14 @@ def main() -> None:
     )
     if summary:
         print("  " + summary)
+    # Separate line for the location sub-call: it may run on a different model, so its cost
+    # is priced independently. Only shown when the sub-call actually ran (tokens spent).
+    geo_summary = format_token_summary(
+        geo_model, input=geo_input, output=geo_output,
+        cache_write=geo_write, cache_read=geo_read,
+    )
+    if geo_summary:
+        print(f"  Location pre-assessment ({geo_model}): {geo_summary}")
     print()
 
 
