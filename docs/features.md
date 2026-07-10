@@ -259,10 +259,15 @@ Or chain after ingestion in cron:
 | Flag | Effect |
 |------|--------|
 | `--dry-run` | Show how many jobs would be scored without scoring them |
-| `--early-stage` | Score only `new`/`reviewing` jobs (narrower than the default active filter) |
+| `--early-stage` | Score only `new`/`reviewing`/`deferred` jobs (narrower than the default active filter) |
+| `--autoskipped` | Score only `autoskipped` jobs (not plain `skipped`); any that no longer score at/below the auto-skip threshold are surfaced back to `new` (logged to `viability.log` and job history). Meant for after a prompt change — pair with `--force` if the prompt is unchanged |
 | `--force` | Rescore all matching jobs even if the prompt hash is current |
 | `--all` | Also score closed/ghosted/skipped jobs (default: exclude them) |
+| `--since YYYY-MM-DD` | Only jobs first ingested (UTC) on that date or later |
+| `--previous_days N` | Only jobs first ingested within the trailing N days |
 | `--config PATH` | Use a different config file |
+
+`--early-stage`/`--all`/`--autoskipped` are mutually exclusive, as are `--since`/`--previous_days`. A typical post-prompt-change sweep of what was auto-skipped: `./rescore_viability.sh --autoskipped`.
 
 ### How it works
 
