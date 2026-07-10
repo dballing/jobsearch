@@ -145,6 +145,17 @@ def open_db(path: str) -> sqlite3.Connection:
     return conn
 
 
+def rescore_change_note(label: str, old: str | None, new: str) -> str | None:
+    """One-line 'Rescored' note for the log when a job's score *changed* value, else None.
+
+    Returns None on a first-time score (old is None) or an unchanged re-score, so a tailed
+    viability.log surfaces only the records that actually moved.
+    """
+    if old is None or old == new:
+        return None
+    return f"  Rescored: {label} : {old} → {new}"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Re-score job viability against the current candidate description."
@@ -339,6 +350,12 @@ def main() -> None:
                 append_history(conn, row["job_id"], {
                     "ts": ts, "event": "rescore", "from": old_rating, "to": rating, "reason": reason,
                 })
+            # Note score changes in the log so a tail can spot records that moved. In
+            # verbose mode the transition is shown on the per-job line below instead; in
+            # interactive mode, clear the transient progress line first so it persists.
+            change_note = rescore_change_note(label, old_rating, rating)
+            if change_note and not args.verbose:
+                print(f"\r\033[K{change_note}" if interactive else change_note, flush=True)
 
             # Auto-skip: if enabled and job is new/reviewing and score is at or below
             # the configured threshold, move it to autoskipped.
@@ -401,7 +418,10 @@ def main() -> None:
                         if args.verbose:
                             print(f"    → reset to new (scores higher than canonical {row['canonical_id']})")
             if args.verbose:
-                print(f"{rating} → autoskipped" if did_autoskip else rating)
+                # Show the transition when the score changed (e.g. "medium → high"),
+                # else just the (unchanged / first-time) rating.
+                shown = f"{old_rating} → {rating}" if old_rating and old_rating != rating else rating
+                print(f"{shown} → autoskipped" if did_autoskip else shown)
             conn.commit()
             scored += 1
 
