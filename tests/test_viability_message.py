@@ -41,26 +41,43 @@ def test_location_omitted_when_absent():
         assert "Location:" not in viability.build_score_message(job)
 
 
-def test_work_arrangement_sent_with_office_days():
-    import json
-    raw = json.dumps({"ai_work_arrangement": "Remote OK", "ai_work_arrangement_office_days": 3})
-    msg = viability.build_score_message({"title": "TPM", "company": "Transform9", "raw": raw})
-    assert "Work arrangement: Remote OK (3 office days/week)" in msg
+import json as _json
 
 
-def test_work_arrangement_without_office_days():
-    import json
-    raw = json.dumps({"ai_work_arrangement": "Remote Solely", "ai_work_arrangement_office_days": 0})
-    msg = viability.build_score_message({"title": "T", "company": "C", "raw": raw})
-    assert "Work arrangement: Remote Solely" in msg
-    assert "office days" not in msg
+def _wa(arrangement, days=None):
+    raw = {"ai_work_arrangement": arrangement}
+    if days is not None:
+        raw["ai_work_arrangement_office_days"] = days
+    msg = viability.build_score_message({"title": "T", "company": "C", "raw": _json.dumps(raw)})
+    return next((l for l in msg.splitlines() if l.startswith("Work arrangement:")), None)
+
+
+def test_remote_ok_is_glossed_not_raw_enum():
+    # The Transform9 case: "Remote OK" + office days must read as remote-with-near-office
+    # caveat, not the bare (ambiguous) enum.
+    line = _wa("Remote OK", 3)
+    assert "Remote OK (3" not in line  # not the raw enum text
+    assert "Remote-friendly" in line and "near the office" in line and "3 days/week" in line
+
+
+def test_remote_solely_is_fully_remote():
+    assert _wa("Remote Solely", 0) == "Work arrangement: Fully remote"
+
+
+def test_hybrid_and_onsite_glosses():
+    assert _wa("Hybrid", 3) == "Work arrangement: Hybrid — 3 days/week in office"
+    assert _wa("Hybrid") == "Work arrangement: Hybrid"
+    assert _wa("On-site", 5) == "Work arrangement: On-site"
+
+
+def test_unknown_arrangement_passes_through():
+    assert _wa("Flexible", 2) == "Work arrangement: Flexible (2 days/week in office)"
 
 
 def test_work_arrangement_omitted_when_absent():
-    import json
     for job in ({"title": "T", "company": "C"},
-                {"title": "T", "company": "C", "raw": json.dumps({"ai_work_arrangement": "None"})},
-                {"title": "T", "company": "C", "raw": json.dumps({})}):
+                {"title": "T", "company": "C", "raw": _json.dumps({"ai_work_arrangement": "None"})},
+                {"title": "T", "company": "C", "raw": _json.dumps({})}):
         assert "Work arrangement:" not in viability.build_score_message(job)
 
 

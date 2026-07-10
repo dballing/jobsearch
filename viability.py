@@ -37,8 +37,8 @@ _SYSTEM_BOILERPLATE = (
 # sees for each job* invalidates prior scores just like editing the prompt does. Bump it
 # whenever build_score_message changes materially. History: 2 = added the Location line;
 # 3 = send *all* of a job's locations, not just the first; 4 = added the Work arrangement
-# (remote/hybrid/on-site) line.
-_SCORING_INPUT_VERSION = "4"
+# (remote/hybrid/on-site) line; 5 = gloss the arrangement enum into plain English.
+_SCORING_INPUT_VERSION = "5"
 
 # Cap on locations included in the scoring message — bounds token cost for the rare job
 # posted across dozens of sites, while staying generous enough to almost never truncate
@@ -82,7 +82,13 @@ def _work_arrangement(job: dict) -> str | None:
     `ai_work_arrangement` plus office-days. Remote status often drives fit — a remote-OK
     role is viable regardless of the office city — so send it explicitly rather than
     leaving the model to infer it from the prose. None when the feed didn't classify it
-    (e.g. manual jobs)."""
+    (e.g. manual jobs).
+
+    The feed emits terse enums ("Remote OK", "Remote Solely") whose meaning — and whose
+    office-days semantics — aren't self-evident, so they're glossed into plain English:
+    for "Remote OK" the office-days apply only if you live near the office; for "Hybrid"
+    they're required. An unrecognized value is passed through so nothing is lost.
+    """
     try:
         raw = json.loads(job.get("raw") or "{}")
     except (json.JSONDecodeError, TypeError):
@@ -94,7 +100,20 @@ def _work_arrangement(job: dict) -> str | None:
         days = int(raw.get("ai_work_arrangement_office_days"))
     except (TypeError, ValueError):
         days = 0
-    return f"{arrangement} ({days} office days/week)" if days > 0 else arrangement
+    days_wk = f"{days} day{'' if days == 1 else 's'}/week"
+
+    key = arrangement.lower()
+    if key == "remote solely":
+        return "Fully remote"
+    if key == "remote ok":
+        return (f"Remote-friendly (fully remote unless you live near the office, then ~{days_wk} on-site)"
+                if days > 0 else "Remote-friendly (fully remote; no office requirement)")
+    if key == "hybrid":
+        return f"Hybrid — {days_wk} in office" if days > 0 else "Hybrid"
+    if key == "on-site":
+        return "On-site"
+    # Unrecognized enum from the feed — pass through so the signal isn't dropped.
+    return f"{arrangement} ({days_wk} in office)" if days > 0 else arrangement
 
 
 def _location_line(job: dict) -> str:
