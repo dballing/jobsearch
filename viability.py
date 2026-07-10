@@ -32,16 +32,70 @@ _SYSTEM_BOILERPLATE = (
 )
 
 
-def prompt_hash(prompt: str) -> str:
-    """Return a stable 32-char hex digest of the full scoring prompt.
+# Version of the per-job message schema (which fields we send and how — see
+# build_score_message). It's folded into prompt_hash so that changing *what the model
+# sees for each job* invalidates prior scores just like editing the prompt does. Bump it
+# whenever build_score_message changes materially. History: 2 = added the Location line.
+_SCORING_INPUT_VERSION = "2"
 
-    Hashes both the fixed system boilerplate and the candidate description so that
-    changes to either (config edits OR code-level boilerplate updates) correctly
-    invalidate existing scores. Truncated to 32 hex chars purely to keep the stored
-    value compact — collision resistance is irrelevant here (it's a change-detector,
-    not a security hash).
+
+def prompt_hash(prompt: str) -> str:
+    """Return a stable 32-char hex digest of everything that determines a job's score.
+
+    Covers the fixed system boilerplate, the candidate description, AND the per-job
+    message schema version — so a config edit, a boilerplate change, OR a change to which
+    fields we send (e.g. adding Location) all correctly mark existing scores stale. The
+    version is hashed but never sent to the model. Truncated to 32 hex chars purely to
+    keep the stored value compact — collision resistance is irrelevant (it's a
+    change-detector, not a security hash).
     """
-    return hashlib.sha256((_SYSTEM_BOILERPLATE + prompt).encode()).hexdigest()[:32]
+    material = f"{_SCORING_INPUT_VERSION}\x00{_SYSTEM_BOILERPLATE}{prompt}"
+    return hashlib.sha256(material.encode()).hexdigest()[:32]
+
+
+def build_score_message(job: dict) -> str:
+    """Build the per-job user message the scorer sends (title/company/location/salary +
+    description). Pure and self-contained so it can be unit-tested without an API call.
+
+    Location matters to viability (commute/remote fit) and is a first-class field, so it's
+    sent explicitly — the model was otherwise dinging jobs for "no location" whenever the
+    prose didn't restate it. Fields that are genuinely absent are omitted rather than sent
+    blank, so the candidate prompt handles the neutral case.
+    """
+    title       = (job.get("title")    or "(no title)").strip()
+    company_raw = (job.get("company")  or "(unknown company)").strip()
+    company_actual = (job.get("company_actual") or "").strip()
+    # If a company-name override exists, show both — the model needs the real employer to
+    # judge fit, but seeing the posting agent (recruiter/aggregator) adds context.
+    company = (f"{company_actual} (posted via {company_raw})"
+               if company_actual and company_actual != company_raw else company_raw)
+    location = (job.get("location") or "").strip()
+    # Cap the description for scoring: the model only needs the gist to rate fit, and this
+    # bounds token cost per job. (Reformatting, by contrast, sends the full text.)
+    description = (job.get("job_description") or "").strip()[:4000]
+    # Manual salary override (salary_*_actual) wins over the feed value. The override is an
+    # all-or-nothing pair: if either bound is set, use the override pair (a blank bound
+    # stays open-ended) rather than mixing an overridden bound with a feed bound.
+    if job.get("salary_min_actual") is not None or job.get("salary_max_actual") is not None:
+        sal_min, sal_max = job.get("salary_min_actual"), job.get("salary_max_actual")
+    else:
+        sal_min, sal_max = job.get("salary_min"), job.get("salary_max")
+    if sal_min and sal_max:
+        salary_line = f"Salary: ${sal_min:,} – ${sal_max:,}"
+    elif sal_min:
+        salary_line = f"Salary: ${sal_min:,}+"
+    elif sal_max:
+        salary_line = f"Salary: up to ${sal_max:,}"
+    else:
+        salary_line = None
+
+    return (
+        f"Job title: {title}\n"
+        f"Company: {company}\n"
+        + (f"Location: {location}\n" if location else "")
+        + (f"{salary_line}\n" if salary_line else "")
+        + f"\nDescription:\n{description}"
+    )
 
 
 def score_job(
@@ -61,31 +115,6 @@ def score_job(
     a run, so it's marked for ephemeral prompt caching — only the per-job user message
     is uncached, making a full rescore cheap after the first call.
     """
-    title          = (job.get("title")           or "(no title)").strip()
-    company_raw    = (job.get("company")         or "(unknown company)").strip()
-    company_actual = (job.get("company_actual")  or "").strip()
-    # If a company-name override exists, show both — the model needs the real employer
-    # to judge fit, but seeing the posting agent (recruiter/aggregator) adds context.
-    company        = f"{company_actual} (posted via {company_raw})" if company_actual and company_actual != company_raw else company_raw
-    # Cap the description for scoring: the model only needs the gist to rate fit, and
-    # this bounds token cost per job. (Reformatting, by contrast, sends the full text.)
-    description    = (job.get("job_description") or "").strip()[:4000]
-    # Manual salary override (salary_*_actual) wins over the feed value. The override
-    # is an all-or-nothing pair: if either bound is set, use the override pair (a blank
-    # bound stays open-ended) rather than mixing an overridden bound with a feed bound.
-    if job.get("salary_min_actual") is not None or job.get("salary_max_actual") is not None:
-        sal_min, sal_max = job.get("salary_min_actual"), job.get("salary_max_actual")
-    else:
-        sal_min, sal_max = job.get("salary_min"), job.get("salary_max")
-    if sal_min and sal_max:
-        salary_line = f"Salary: ${sal_min:,} – ${sal_max:,}"
-    elif sal_min:
-        salary_line = f"Salary: ${sal_min:,}+"
-    elif sal_max:
-        salary_line = f"Salary: up to ${sal_max:,}"
-    else:
-        salary_line = None  # absent — say nothing; candidate prompt handles the neutral case
-
     system_text = _SYSTEM_BOILERPLATE + f"Candidate description:\n{viability_prompt}"
 
     try:
@@ -108,12 +137,7 @@ def score_job(
             }],
             messages=[{
                 "role": "user",
-                "content": (
-                    f"Job title: {title}\n"
-                    f"Company: {company}\n"
-                    + (f"{salary_line}\n" if salary_line else "")
-                    + f"\nDescription:\n{description}"
-                ),
+                "content": build_score_message(job),
             }],
         )
         raw = message.content[0].text.strip()
