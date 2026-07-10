@@ -35,8 +35,14 @@ _SYSTEM_BOILERPLATE = (
 # Version of the per-job message schema (which fields we send and how — see
 # build_score_message). It's folded into prompt_hash so that changing *what the model
 # sees for each job* invalidates prior scores just like editing the prompt does. Bump it
-# whenever build_score_message changes materially. History: 2 = added the Location line.
-_SCORING_INPUT_VERSION = "2"
+# whenever build_score_message changes materially. History: 2 = added the Location line;
+# 3 = send *all* of a job's locations, not just the first.
+_SCORING_INPUT_VERSION = "3"
+
+# Cap on locations included in the scoring message — bounds token cost for the rare job
+# posted across dozens of sites, while staying generous enough to almost never truncate
+# (the candidate only needs their target region to be among those listed).
+_MAX_SCORE_LOCATIONS = 40
 
 
 def prompt_hash(prompt: str) -> str:
@@ -53,14 +59,41 @@ def prompt_hash(prompt: str) -> str:
     return hashlib.sha256(material.encode()).hexdigest()[:32]
 
 
+def _job_locations(job: dict) -> list[str]:
+    """All locations for a job. The feed lists every site under raw.locations_derived, but
+    the `location` column keeps only the first — which made a multi-site job (e.g. one
+    open in SC *and* CT) look single-site to the scorer, so it judged only that one region.
+    Falls back to the `location` column when there's no raw list (e.g. manual jobs)."""
+    try:
+        locs = json.loads(job.get("raw") or "{}").get("locations_derived")
+    except (json.JSONDecodeError, TypeError):
+        locs = None
+    if isinstance(locs, list):
+        cleaned = [str(loc).strip() for loc in locs if str(loc).strip()]
+        if cleaned:
+            return cleaned
+    one = (job.get("location") or "").strip()
+    return [one] if one else []
+
+
+def _location_line(job: dict) -> str:
+    """The 'Location: …' line for the scoring message (all locations, capped), or ''."""
+    locs = _job_locations(job)
+    if not locs:
+        return ""
+    shown, extra = locs[:_MAX_SCORE_LOCATIONS], len(locs) - _MAX_SCORE_LOCATIONS
+    return "Location: " + "; ".join(shown) + (f" (+{extra} more)" if extra > 0 else "") + "\n"
+
+
 def build_score_message(job: dict) -> str:
     """Build the per-job user message the scorer sends (title/company/location/salary +
     description). Pure and self-contained so it can be unit-tested without an API call.
 
     Location matters to viability (commute/remote fit) and is a first-class field, so it's
-    sent explicitly — the model was otherwise dinging jobs for "no location" whenever the
-    prose didn't restate it. Fields that are genuinely absent are omitted rather than sent
-    blank, so the candidate prompt handles the neutral case.
+    sent explicitly — and *all* of a job's locations are sent (see _job_locations), so a
+    multi-site posting isn't judged on just its first city. Fields that are genuinely
+    absent are omitted rather than sent blank, so the candidate prompt handles the neutral
+    case.
     """
     title       = (job.get("title")    or "(no title)").strip()
     company_raw = (job.get("company")  or "(unknown company)").strip()
@@ -69,7 +102,6 @@ def build_score_message(job: dict) -> str:
     # judge fit, but seeing the posting agent (recruiter/aggregator) adds context.
     company = (f"{company_actual} (posted via {company_raw})"
                if company_actual and company_actual != company_raw else company_raw)
-    location = (job.get("location") or "").strip()
     # Cap the description for scoring: the model only needs the gist to rate fit, and this
     # bounds token cost per job. (Reformatting, by contrast, sends the full text.)
     description = (job.get("job_description") or "").strip()[:4000]
@@ -92,7 +124,7 @@ def build_score_message(job: dict) -> str:
     return (
         f"Job title: {title}\n"
         f"Company: {company}\n"
-        + (f"Location: {location}\n" if location else "")
+        + _location_line(job)
         + (f"{salary_line}\n" if salary_line else "")
         + f"\nDescription:\n{description}"
     )

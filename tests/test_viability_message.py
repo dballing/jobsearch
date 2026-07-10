@@ -4,16 +4,40 @@ and worth locking down: location was silently missing, so the model dinged jobs 
 import viability
 
 
-def test_location_included_when_present():
+def test_location_from_column_when_no_raw_list():
     msg = viability.build_score_message(
         {"title": "Sr. TPM, Wallet Services", "company": "Apple", "location": "Cary, NC"})
     assert "Location: Cary, NC" in msg
 
 
+def test_all_locations_sent_from_raw():
+    import json
+    raw = json.dumps({"locations_derived": ["Shelton, Connecticut, United States",
+                                            "Aiken, South Carolina, United States",
+                                            "Solon, Ohio, United States"]})
+    # The `location` column only kept the first — the message must include every site.
+    msg = viability.build_score_message(
+        {"title": "Manager, IT PM", "company": "Hubbell",
+         "location": "Shelton, Connecticut, United States", "raw": raw})
+    line = next(l for l in msg.splitlines() if l.startswith("Location:"))
+    assert "South Carolina" in line and "Connecticut" in line and "Ohio" in line
+    assert line.count(";") == 2  # three locations, semicolon-joined
+
+
+def test_locations_capped_with_more_marker():
+    import json
+    raw = json.dumps({"locations_derived": [f"City {i}, ST, US" for i in range(50)]})
+    msg = viability.build_score_message({"title": "T", "company": "C", "raw": raw})
+    line = next(l for l in msg.splitlines() if l.startswith("Location:"))
+    assert "(+10 more)" in line  # 50 total, capped at 40
+
+
 def test_location_omitted_when_absent():
+    import json
     for job in ({"title": "T", "company": "C"},
                 {"title": "T", "company": "C", "location": ""},
-                {"title": "T", "company": "C", "location": None}):
+                {"title": "T", "company": "C", "location": None},
+                {"title": "T", "company": "C", "raw": json.dumps({"locations_derived": []})}):
         assert "Location:" not in viability.build_score_message(job)
 
 
