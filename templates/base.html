@@ -438,6 +438,8 @@
             else if (e.event === 'refreshed')  desc = 'Description changed';
             else if (e.event === 'linked')     desc = `Linked to canonical`;
             else if (e.event === 'unlinked')        desc = 'Unlinked from canonical';
+            else if (e.event === 'promoted_canonical') desc = 'Promoted to canonical of its matched group';
+            else if (e.event === 'canonical_demoted')  desc = 'Replaced as group canonical by another posting';
             else if (e.event === 'company_actual')  desc = e.to ? `Company override set: <strong>${escHtml(e.to)}</strong>` : 'Company override cleared';
             else if (e.event === 'work_arrangement') desc = e.to ? `Work arrangement override: <strong>${escHtml(e.to)}</strong>` : 'Work arrangement override cleared';
             else if (e.event === 'company_normalized') desc = `Company normalized: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong> <span class="text-muted fst-italic">(auto)</span>`;
@@ -649,6 +651,37 @@
         });
         waEditor.append(waLabel, waSelect, waFb);
         salEditor.insertAdjacentElement('afterend', waEditor);
+
+        // Promote-to-canonical — only shown for a grouped member (one that points at a
+        // canonical). Makes THIS posting the group's root, re-pointing the former root and
+        // all siblings at it. The canonical fronts the group everywhere, so we reload after.
+        const existingPromote = document.getElementById('promoteCanonicalEditor');
+        if (existingPromote) existingPromote.remove();
+        if (job.canonical_id) {
+          const promoteEditor = document.createElement('div');
+          promoteEditor.id = 'promoteCanonicalEditor';
+          promoteEditor.className = 'px-3 py-2 border-bottom d-flex align-items-center gap-2 small flex-wrap';
+          const promoteBtn = document.createElement('button');
+          promoteBtn.type = 'button';
+          promoteBtn.className = 'btn btn-sm btn-outline-secondary';
+          promoteBtn.innerHTML = '<i class="bi bi-arrow-up-circle"></i> Promote to canonical';
+          promoteBtn.title = 'Make this posting the canonical (root) of its matched group';
+          const promoteFb = document.createElement('span');
+          promoteFb.className = 'text-muted small';
+          promoteBtn.addEventListener('click', async () => {
+            if (!confirm('Make this posting the canonical of its matched group? Every other posting in the group will point to it.')) return;
+            const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/promote_canonical`, {method: 'POST'});
+            if (resp.ok) {
+              promoteFb.className = 'text-success small'; promoteFb.textContent = 'Promoted!';
+              setTimeout(() => location.reload(), 500);
+            } else {
+              const data = await resp.json().catch(() => ({}));
+              promoteFb.className = 'text-danger small'; promoteFb.textContent = data.error || 'Failed.';
+            }
+          });
+          promoteEditor.append(promoteBtn, promoteFb);
+          waEditor.insertAdjacentElement('afterend', promoteEditor);
+        }
 
         bodyEl.innerHTML =
           '<div class="mb-3">'

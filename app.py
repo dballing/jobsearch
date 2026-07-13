@@ -1328,6 +1328,9 @@ def get_job(job_id: str):
     ]
     return {
         "job_id":           job["job_id"],
+        # Non-NULL when this posting is a grouped member (points at a canonical root); the
+        # preview pane shows the "Promote to canonical" control only in that case.
+        "canonical_id":     job.get("canonical_id"),
         "title":            job["title"],
         "company":          job["company"],
         "company_actual":   job.get("company_actual"),
@@ -2033,6 +2036,49 @@ def link_job(job_id: str):
 
     db.commit()
     return {"canonical_id": resolved_root}, 200
+
+
+def promote_to_canonical(db: sqlite3.Connection, job_id: str, ts: str) -> tuple[bool, str]:
+    """Make `job_id` the canonical (root) of its fuzzy-match group.
+
+    Re-points the former root AND every other member at this job, then clears this job's
+    own canonical_id so it becomes the root — preserving the one-hop / no-chain invariant
+    (roots have canonical_id IS NULL; members point straight at a root). Pure DB logic (no
+    request/response) so it's unit-testable; the route wraps it and commits.
+
+    Returns (True, old_root) on success, or (False, error_message) if the job doesn't exist
+    or is already a root/standalone (canonical_id IS NULL) and thus has nothing to promote.
+    """
+    row = db.execute("SELECT job_id, canonical_id FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    if not row:
+        return False, "Job not found."
+    old_root = row["canonical_id"]
+    if not old_root:
+        return False, "This job is already the canonical of its group."
+    # Point the old root and all its other members at us. The `AND job_id != ?` guard keeps
+    # us from setting our own canonical_id to ourselves in this sweep; we NULL it next.
+    db.execute(
+        "UPDATE jobs SET canonical_id = ? WHERE (job_id = ? OR canonical_id = ?) AND job_id != ?",
+        (job_id, old_root, old_root, job_id),
+    )
+    db.execute("UPDATE jobs SET canonical_id = NULL WHERE job_id = ?", (job_id,))
+    append_history(db, job_id, {"ts": ts, "event": "promoted_canonical", "from_canonical": old_root})
+    append_history(db, old_root, {"ts": ts, "event": "canonical_demoted", "to_canonical": job_id})
+    return True, old_root
+
+
+@app.route("/job/<job_id>/promote_canonical", methods=["POST"])
+def promote_canonical(job_id: str):
+    """Promote this posting to be its group's canonical/root. The canonical is the group's
+    representative everywhere (jobs list, dedup resolution, rescore canonical-promotion), so
+    this changes which posting fronts the group. Only valid for a grouped member."""
+    db = get_db()
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ok, result = promote_to_canonical(db, job_id, ts)
+    if not ok:
+        return {"error": result}, (404 if result == "Job not found." else 400)
+    db.commit()
+    return {"canonical_id": None, "old_canonical": result}, 200
 
 
 if __name__ == "__main__":

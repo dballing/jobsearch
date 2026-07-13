@@ -235,6 +235,8 @@ If the job being linked has `new` or `reviewing` status, it inherits the canonic
 
 To **unlink** a job, click its 🔗 icon (blue when a link is active) and click **Unlink**.
 
+**Promote to canonical.** The *canonical* is the group's root — the posting that represents the group in the jobs list, that new duplicates resolve to, and that viability's canonical-promotion compares against. When fuzzy matching (or a manual link) picks a canonical you'd rather wasn't the representative, open any grouped member's preview pane and click **Promote to canonical**: that posting becomes the root, and the former root and every sibling are re-pointed at it (one hop, no chains). The change is recorded in History (`Promoted to canonical…` on the new root, `Replaced as group canonical…` on the old).
+
 ---
 
 ## Viability scoring
