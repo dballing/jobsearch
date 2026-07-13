@@ -275,7 +275,7 @@ Or chain after ingestion in cron:
 - A SHA-256 hash of the prompt is stored with each score. On subsequent runs, only jobs with a missing or stale hash are re-scored.
 - Jobs with `NULL` viability are always scored regardless of status (they may have inherited a status from a canonical without ever being evaluated).
 - Jobs are also flagged for re-scoring when a viability-relevant field changes independently of the prompt — currently a manual [salary override](#salary-override) or [company override](#company-name-override). Such a flagged job is re-scored on the next run even if its prompt hash is current and even if it is `skipped`/`closed` (so a correction that improves it can resurface it). The flag clears once the job is successfully re-scored.
-- When a linked (`skipped`/`autoskipped`) job scores strictly better than both its canonical and its own previous score, it is automatically reset to `new` for human review — unless `auto_skip` is enabled and the score is still below the threshold, in which case it updates to `autoskipped` instead.
+- When a linked (`skipped`/`autoskipped`) job scores strictly better than both its canonical and its own previous score, it is automatically reset to `new` for human review — unless `auto_skip` is enabled and the score is still below the threshold, in which case it updates to `autoskipped` instead. This only fires when the canonical's own score is **current** (its prompt hash matches this run's): a stale canonical score is an apples-to-oranges yardstick that would spuriously promote duplicates purely because of a prompt change, so the comparison waits until the canonical is itself re-scored.
 
 ### Auto-skip
 

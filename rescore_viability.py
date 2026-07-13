@@ -199,6 +199,35 @@ def should_unskip(rating: str, auto_skip_threshold: int) -> bool:
     return VIABILITY_RANK.get(rating, -1) > auto_skip_threshold
 
 
+def canonical_promotion_applies(
+    *,
+    new_rating: str,
+    prev_rating: str | None,
+    canon_rating: str | None,
+    canon_hash: str | None,
+    current_hash: str,
+) -> bool:
+    """Whether a skipped/autoskipped duplicate should be reconsidered because it now
+    out-scores its canonical.
+
+    Requires the canonical's stored score to be CURRENT (its prompt hash matches this
+    run's). A stale canonical score is an unfair, apples-to-oranges yardstick — e.g. the
+    canonical was last scored under an older prompt, so a fresh duplicate score will often
+    look 'better' purely because of the prompt change, not real merit, and the duplicate
+    gets spuriously surfaced. When the canonical is stale we hold off; it'll be re-scored on
+    its own eventually, and the comparison can happen then against like-for-like scores.
+
+    Beyond currency, promotion needs the new score to beat BOTH the canonical's and the
+    duplicate's own prior score (a strict improvement over the status quo).
+    """
+    if not canon_hash or canon_hash != current_hash:
+        return False
+    new_rank   = VIABILITY_RANK.get(new_rating, -1)
+    prev_rank  = VIABILITY_RANK.get(prev_rating or "", -1)
+    canon_rank = VIABILITY_RANK.get(canon_rating or "", -1)
+    return new_rank > canon_rank and new_rank > prev_rank
+
+
 def build_selection(
     *,
     current_hash: str,
@@ -546,16 +575,22 @@ def main() -> None:
             # the group and worth a fresh look. Surface it (→ new) unless auto-skip is
             # on and it's still at/below threshold (then just re-record it). The
             # `elif` means this never runs for a job already auto-skipped above.
+            # Gated on the canonical's score being CURRENT (see canonical_promotion_applies):
+            # comparing a fresh duplicate score against a stale canonical score spuriously
+            # promotes duplicates purely because of a prompt change, not real merit.
             elif row["canonical_id"] and current_status in ("skipped", "autoskipped"):
                 canonical = conn.execute(
-                    "SELECT viability FROM jobs WHERE job_id = ?",
+                    "SELECT viability, viability_prompt_hash FROM jobs WHERE job_id = ?",
                     (row["canonical_id"],),
                 ).fetchone()
                 canon_viability = canonical["viability"] if canonical else None
-                new_rank   = VIABILITY_RANK.get(rating, -1)
-                prev_rank  = VIABILITY_RANK.get(old_rating or "", -1)
-                canon_rank = VIABILITY_RANK.get(canon_viability or "", -1)
-                if new_rank > canon_rank and new_rank > prev_rank:
+                canon_hash      = canonical["viability_prompt_hash"] if canonical else None
+                new_rank        = VIABILITY_RANK.get(rating, -1)
+                if canonical_promotion_applies(
+                    new_rating=rating, prev_rating=old_rating,
+                    canon_rating=canon_viability, canon_hash=canon_hash,
+                    current_hash=current_hash,
+                ):
                     if auto_skip and new_rank <= auto_skip_threshold:
                         # Score improved but still at/below threshold — update to
                         # autoskipped to record the re-evaluation.

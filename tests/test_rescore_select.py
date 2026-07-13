@@ -97,6 +97,45 @@ def test_should_unskip_unknown_rating_never_promotes():
     assert rv.should_unskip("garbage", rv.VIABILITY_RANK["low"]) is False
 
 
+# ── canonical_promotion_applies: don't promote against a stale canonical ───────
+CUR = "hash-current"
+
+
+def test_promotion_requires_current_canonical_hash():
+    # New 'medium' beats canonical 'low', but the canonical's score is STALE (old prompt),
+    # so it must NOT promote — this is the Chime OMX SOTO case.
+    assert rv.canonical_promotion_applies(
+        new_rating="medium", prev_rating=None, canon_rating="low",
+        canon_hash="hash-OLD", current_hash=CUR) is False
+
+
+def test_promotion_fires_when_canonical_current_and_strictly_better():
+    assert rv.canonical_promotion_applies(
+        new_rating="medium", prev_rating=None, canon_rating="low",
+        canon_hash=CUR, current_hash=CUR) is True
+
+
+def test_no_promotion_when_not_beating_current_canonical():
+    # Current canonical, but the duplicate only ties it (medium vs medium) → no promotion.
+    assert rv.canonical_promotion_applies(
+        new_rating="medium", prev_rating=None, canon_rating="medium",
+        canon_hash=CUR, current_hash=CUR) is False
+
+
+def test_no_promotion_when_not_beating_own_prior():
+    # Beats the canonical but not its own prior score (already high) → no churn.
+    assert rv.canonical_promotion_applies(
+        new_rating="high", prev_rating="high", canon_rating="low",
+        canon_hash=CUR, current_hash=CUR) is False
+
+
+def test_no_promotion_when_canonical_never_scored():
+    # Canonical has no hash yet (NULL) → not a valid yardstick → hold off.
+    assert rv.canonical_promotion_applies(
+        new_rating="high", prev_rating=None, canon_rating=None,
+        canon_hash=None, current_hash=CUR) is False
+
+
 # ── argparse type validators ──────────────────────────────────────────────────
 def test_valid_since_date_accepts_iso_and_rejects_junk():
     assert rv.valid_since_date("2026-07-10") == "2026-07-10"
