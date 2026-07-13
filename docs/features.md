@@ -11,7 +11,7 @@
 
 ### Searching
 
-The search box matches job title and company. A plain **Search** keeps your current filters applied (search *within* the filtered set).
+The search box matches job title and company. Multiple words are matched independently (each must appear, in any order); wrap a phrase in quotes (`"senior tpm"`) to match it as a unit. Matching is whitespace-insensitive, so a search built from a displayed title still finds its stored original even if that has irregular spacing. A plain **Search** keeps your current filters applied (search *within* the filtered set).
 
 **Search all** runs the same term against **every** job with a clean slate — all statuses, default grouping and sort — so nothing is hidden behind your filters. This is handy when a job looks familiar and you want to find its potential duplicate to [link manually](#manual-linking), without losing your place. While in this mode a banner shows "your filters are paused"; click the **✕ / Restore filters** button (or run a normal search) to return to exactly the filtered view you came from. Your prior view is remembered in the URL, so linking a job (which reloads the page) doesn't lose it.
 

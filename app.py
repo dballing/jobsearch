@@ -445,6 +445,30 @@ def inject_nav_timestamps() -> dict:
     }
 
 
+def search_token_where(q: str, columns: list[str]) -> tuple[str, list]:
+    """Build a free-text search clause: split ``q`` into tokens (quoted phrases stay whole)
+    and require every token to substring-match at least one of ``columns`` (AND across
+    tokens, OR across columns). Returns ("", []) when the query is empty.
+
+    Tokenizing makes the search whitespace-insensitive — a query built from a displayed,
+    whitespace-normalized title still matches its raw stored original even when that has
+    irregular spacing (e.g. a double space "AI  (Remote)"), which a single whole-string
+    LIKE '%…%' silently fails to find. Shared by the jobs list and the link-picker
+    autocomplete so both search identically.
+    """
+    try:
+        tokens = shlex.split(q)      # quoted phrases ("senior tpm") count as one token
+    except ValueError:
+        tokens = q.split()           # unclosed quote → fall back to a plain split
+    tokens = [t for t in tokens if t]
+    if not tokens:
+        return "", []
+    per_token = "(" + " OR ".join(f"{c} LIKE ?" for c in columns) + ")"
+    clause    = "(" + " AND ".join(per_token for _ in tokens) + ")"
+    params    = [f"%{t}%" for t in tokens for _ in columns]
+    return clause, params
+
+
 def build_where(label: str, status_filter: str, q: str = "", source: str = "",
                 viability: str = "", comp_active: bool = False,
                 comp_min: int | None = None, comp_max: int | None = None) -> tuple[str, list]:
@@ -478,8 +502,12 @@ def build_where(label: str, status_filter: str, q: str = "", source: str = "",
         conditions.append("viability = ?")
         params.append(viability)
     if q:
-        conditions.append("(title LIKE ? OR company LIKE ? OR company_actual LIKE ?)")
-        params.extend([f"%{q}%", f"%{q}%", f"%{q}%"])
+        # Tokenized (whitespace-insensitive) so a search built from a displayed,
+        # whitespace-normalized title still finds its raw stored original.
+        q_clause, q_params = search_token_where(q, ["title", "company", "company_actual"])
+        if q_clause:
+            conditions.append(q_clause)
+            params.extend(q_params)
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     return where, params
 
@@ -1949,19 +1977,12 @@ def jobs_autocomplete():
     if not q:
         return []
     db = get_db()
-    # Quoted phrases ("senior tpm") count as one token; unquoted words split normally.
-    # Fall back to plain split if the user leaves a quote unclosed.
-    try:
-        tokens = shlex.split(q)
-    except ValueError:
-        tokens = q.split()
-    if not tokens:
+    # Same tokenized search as the jobs list (quoted phrases stay whole; each token must
+    # match title OR company; AND across tokens). Empty/whitespace-only → no results.
+    token_clauses, token_params = search_token_where(
+        q, ["j.title", "j.company", "COALESCE(j.company_actual, j.company)"])
+    if not token_clauses:
         return []
-    # Each token must appear in title OR company (AND across tokens).
-    token_clauses = " AND ".join(
-        "(j.title LIKE ? OR j.company LIKE ? OR COALESCE(j.company_actual, j.company) LIKE ?)" for _ in tokens
-    )
-    token_params  = [p for t in tokens for p in (f"%{t}%", f"%{t}%", f"%{t}%")]
     rows = db.execute(
         f"""SELECT j.job_id, j.title,
                    COALESCE(j.company_actual, j.company) AS company,
