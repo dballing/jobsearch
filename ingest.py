@@ -476,6 +476,31 @@ def is_expired(item: dict) -> bool:
         return False
 
 
+# How close to the match threshold the first description-direction must score before we
+# bother computing the reverse direction (the autojunk-asymmetry guard). The measured
+# asymmetry gap between the two directions is small (< 0.07), so this margin is generous
+# headroom: a candidate scoring further than this below the threshold can't be a match.
+_REVERSE_MARGIN = 0.15
+
+# Word-shingle Jaccard floor: a cheap, order-sensitive pre-gate before the O(n*m) description
+# compare. Genuine near-duplicates (SequenceMatcher >= 0.85) share almost all their word
+# 3-grams (measured Jaccard >= 0.87); postings that merely reuse the same role boilerplate
+# share vocabulary but not phrase order, which fools the char-multiset quick_ratio but not
+# shingles. Set FAR below the true-match floor so it only discards candidates with virtually
+# no shared phrasing — anything with real overlap still goes to the full SequenceMatcher.
+_SHINGLE_K = 3
+_JACCARD_GATE = 0.2
+
+
+def _word_shingles(text: str, k: int = _SHINGLE_K) -> set | None:
+    """Set of contiguous word k-grams in `text`, or None when it has fewer than k words
+    (too short for a meaningful shingle overlap — the caller then skips the gate)."""
+    words = text.split()
+    if len(words) < k:
+        return None
+    return {tuple(words[i:i + k]) for i in range(len(words) - k + 1)}
+
+
 def find_canonical(
     conn: sqlite3.Connection,
     job_id: str,
@@ -504,14 +529,26 @@ def find_canonical(
     """
     if not description or not title:
         return []
+    # Project only the columns the matcher and the caller need — NOT SELECT * — so we don't
+    # marshal the large per-row blobs (raw JSON, history, formatted description) for all
+    # ~thousands of postings on every new job. The caller reads job_id/title/company/
+    # company_actual/status/applied_at off the returned canonical; the rest are for matching.
     candidates = conn.execute(
-        "SELECT * FROM jobs WHERE job_id != ?",
+        "SELECT job_id, title, company, company_actual, status, applied_at, "
+        "job_description, canonical_id, first_seen FROM jobs WHERE job_id != ?",
         (job_id,),
     ).fetchall()
+    desc_len = len(description)
     # Distinct canonical roots we matched, keyed by root job_id. A member match
     # contributes its root; the first time we see a root we resolve and cache its row.
     roots: dict[str, sqlite3.Row] = {}
     row_by_id: dict[str, sqlite3.Row] = {c["job_id"]: c for c in candidates}
+    # Cache the NEW description as seq2 once. difflib builds its expensive b2j chain only on
+    # seq2, so setting it once and swapping seq1 per candidate (its recommended one-vs-many
+    # pattern) avoids rebuilding that chain for every one of thousands of candidates.
+    new_sm = SequenceMatcher(None)
+    new_sm.set_seq2(description)
+    new_shingles = _word_shingles(description)  # None if the new desc is too short to gate
     for candidate in candidates:
         if not candidate["title"] or not candidate["job_description"]:
             continue
@@ -521,19 +558,47 @@ def find_canonical(
             continue
         if title_m.ratio() < title_threshold:
             continue
-        # Description check. SequenceMatcher.ratio() is asymmetric — autojunk (difflib's
-        # default speed heuristic) only applies to the *second* sequence — so the same
-        # pair can score differently depending on argument order, which let cross-source
-        # duplicates slip through based on ingest order. Disabling autojunk fixes the
-        # asymmetry but is ~50x slower on multi-KB descriptions (full O(n*m)), so instead
-        # keep autojunk on and neutralize the asymmetry by checking the reverse direction
-        # only when the first falls short.
-        desc_m = SequenceMatcher(None, description, candidate["job_description"])
-        if desc_m.quick_ratio() < threshold:
+        cand_desc = candidate["job_description"]
+        # Cheap length-ratio pre-gate before the O(n*m) description compare. ratio() = 2*M/
+        # (la+lb) with M (matched chars) <= min(la, lb), so 2*min/(la+lb) is a hard upper
+        # bound (difflib's own real_quick_ratio). If even that can't reach the threshold, the
+        # real ratio can't either — skip without constructing a SequenceMatcher. This prunes
+        # the many same-title, different-length descriptions a common title (e.g. "…Program
+        # Manager") surfaces, which otherwise dominate ingest time as the DB grows.
+        cl = len(cand_desc)
+        if 2.0 * min(desc_len, cl) / (desc_len + cl) < threshold:
             continue
-        ratio = desc_m.ratio()
-        if ratio < threshold:
-            ratio = SequenceMatcher(None, candidate["job_description"], description).ratio()
+        # Word-shingle Jaccard pre-gate: discards candidates with virtually no shared phrase
+        # order (role boilerplate that shares vocabulary but isn't a near-duplicate) before
+        # the expensive compare. Skipped when either description is too short for reliable
+        # shingles — those are cheap to compare directly anyway.
+        if new_shingles is not None:
+            cand_shingles = _word_shingles(cand_desc)
+            if cand_shingles is not None:
+                union = len(new_shingles | cand_shingles)
+                if union and len(new_shingles & cand_shingles) / union < _JACCARD_GATE:
+                    continue
+        # Swap only seq1 (the candidate); the new description stays cached as seq2. quick_ratio
+        # is a cheap symmetric upper bound on ratio — skip before the O(n*m) work when it can't
+        # reach the threshold.
+        new_sm.set_seq1(cand_desc)
+        if new_sm.quick_ratio() < threshold:
+            continue
+        # Description check. SequenceMatcher.ratio() is asymmetric — autojunk (difflib's
+        # default speed heuristic) only applies to the *second* sequence — so the same pair
+        # can score differently depending on argument order, which let cross-source duplicates
+        # slip through based on ingest order. Neutralize it by taking either direction: with
+        # the new desc as seq2, new_sm.ratio() is one direction; on a near-miss compute the
+        # other (candidate as seq2). Match if EITHER reaches the threshold — same result as
+        # the old ratio-then-reverse, just with seq2 cached for the common direction.
+        ratio = new_sm.ratio()
+        # Only pay for the reverse direction when the first is within a margin of the
+        # threshold. The autojunk asymmetry gap is small (measured < 0.07), so a candidate
+        # scoring well below the threshold one way can't cross it the other — computing the
+        # reverse for the many clear non-matches is pure waste. The 0.15 margin is generous
+        # headroom over the observed gap.
+        if threshold - _REVERSE_MARGIN <= ratio < threshold:
+            ratio = SequenceMatcher(None, description, cand_desc).ratio()
         if ratio < threshold:
             continue
         # Resolve a matched member to its canonical root so we return roots, not members.

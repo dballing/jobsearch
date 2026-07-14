@@ -58,3 +58,29 @@ def test_does_not_match_itself(jobs_db):
     _insert(jobs_db, "P", "Staff TPM", DESC_A)
     matches = ingest.find_canonical(jobs_db, "P", "Staff TPM", "Acme", DESC_A, 0.85)
     assert matches == []
+
+
+# ── Fast-path gates (length / shingle Jaccard / reverse) must not change results ──
+def test_reworded_near_duplicate_still_matches(jobs_db):
+    # A near-identical repost with a few words changed still scores >= 0.85, so the cheap
+    # shingle pre-gate must NOT discard it — guards against the gate being too aggressive.
+    edited = DESC_A.replace("cross-functional", "multi-functional")
+    _insert(jobs_db, "A", "Staff TPM", DESC_A)
+    matches = ingest.find_canonical(jobs_db, "P", "Staff TPM", "Acme", edited, 0.85)
+    assert [m["job_id"] for m in matches] == ["A"]
+
+
+def test_shingle_gate_rejects_boilerplate_sharing_non_dup(jobs_db):
+    # Shares vocabulary/boilerplate but not phrase order → must stay rejected (the char
+    # multiset quick_ratio can be fooled here; the shingle gate + threshold are not).
+    shuffled = " ".join(reversed(DESC_A.split()))
+    _insert(jobs_db, "A", "Staff TPM", DESC_A)
+    matches = ingest.find_canonical(jobs_db, "P", "Staff TPM", "Acme", shuffled, 0.85)
+    assert matches == []
+
+
+def test_word_shingles():
+    assert ingest._word_shingles("a b c d", k=3) == {("a", "b", "c"), ("b", "c", "d")}
+    assert ingest._word_shingles("a b c", k=3) == {("a", "b", "c")}
+    assert ingest._word_shingles("a b", k=3) is None      # fewer than k words → no gate
+    assert ingest._word_shingles("", k=3) is None
