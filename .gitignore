@@ -2,6 +2,8 @@
 config.toml
 *.backup
 *.db
+# SQLite WAL-mode sidecars (jobs.db-wal / jobs.db-shm) — transient
+*.db-*
 uploads/
 __pycache__/
 *.pyc
