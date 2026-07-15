@@ -1112,6 +1112,75 @@ def _parse_utc(ts: str | None) -> datetime | None:
     return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
 
 
+# Statuses that terminate an application, for the "interviewing → outcome" timing. An
+# outcome is any of these reached after the interviewing stage began.
+_OUTCOME_STATUSES = {"offered", "rejected", "withdrawn", "ghosted"}
+
+
+def _status_timeline(history: list) -> list[tuple]:
+    """(datetime, to_status) for each status-change event in a job's history, ascending in
+    time. Events whose ts is missing or unparseable are dropped so they can't distort deltas."""
+    tl = []
+    for ev in history:
+        if ev.get("event") != "status":
+            continue
+        dt = _parse_utc(ev.get("ts"))
+        to = ev.get("to")
+        if dt and to:
+            tl.append((dt, to))
+    tl.sort(key=lambda x: x[0])
+    return tl
+
+
+def _first_reach(timeline: list, statuses: set, after: datetime | None = None) -> datetime | None:
+    """Earliest datetime the job entered any of `statuses`, at/after `after` when given."""
+    for dt, to in timeline:
+        if after is not None and dt < after:
+            continue
+        if to in statuses:
+            return dt
+    return None
+
+
+def transition_time_stats(histories) -> dict:
+    """Average elapsed days for key application transitions, from job status histories.
+
+    For each job's status-event timeline, when both endpoints exist and are correctly
+    ordered we add its elapsed days to the relevant bucket; each average carries its sample
+    size `n` (small samples are common early in a search, so surfacing n matters). A job
+    missing an endpoint simply doesn't contribute to that bucket. Pure/self-contained so
+    the timing logic is unit-testable without the DB. Transitions:
+      - applied → interviewing
+      - interviewing → outcome (first offered/rejected/withdrawn/ghosted after it)
+      - applied → rejected
+    """
+    buckets: dict[str, list] = {
+        "applied_to_interviewing": [],
+        "interviewing_to_outcome": [],
+        "applied_to_rejected": [],
+    }
+    for history in histories:
+        tl = _status_timeline(history)
+        if not tl:
+            continue
+        applied      = _first_reach(tl, {"applied"})
+        interviewing = _first_reach(tl, {"interviewing"})
+        rejected     = _first_reach(tl, {"rejected"})
+        if applied and interviewing and interviewing >= applied:
+            buckets["applied_to_interviewing"].append((interviewing - applied).total_seconds() / 86400)
+        if applied and rejected and rejected >= applied:
+            buckets["applied_to_rejected"].append((rejected - applied).total_seconds() / 86400)
+        if interviewing:
+            outcome = _first_reach(tl, _OUTCOME_STATUSES, after=interviewing)
+            if outcome:
+                buckets["interviewing_to_outcome"].append((outcome - interviewing).total_seconds() / 86400)
+
+    def _summary(vals: list) -> dict:
+        return {"avg_days": round(sum(vals) / len(vals), 1) if vals else None, "n": len(vals)}
+
+    return {k: _summary(v) for k, v in buckets.items()}
+
+
 def _local_naive(dt: datetime) -> datetime:
     """Convert an aware UTC datetime to the server's local wall-clock time, naive.
 
@@ -1300,6 +1369,26 @@ def stats():
         f"AND (viability_prompt_hash != ? OR needs_rescored = 1) AND {active_condition}",
         (current_hash,),
     ).fetchone()[0] if current_hash else 0
+    # Application-pipeline timing, from status-event histories. Narrow to jobs that reached
+    # applied or interviewing (every measured transition starts at one of those) so we don't
+    # parse history for the thousands of skipped/new postings that can't contribute.
+    hist_rows = db.execute(
+        "SELECT history FROM jobs "
+        "WHERE history LIKE '%\"to\":\"applied\"%' OR history LIKE '%\"to\":\"interviewing\"%'"
+    ).fetchall()
+    transition_times = transition_time_stats(
+        json.loads(r["history"] or "[]") for r in hist_rows
+    )
+    # Polite vs rude: of closed-out negative outcomes, how many employers said no (rejected)
+    # vs went silent (ghosted). Withdrawn is your choice, not theirs, so it's excluded.
+    rejected_n = by_status.get("rejected", 0)
+    ghosted_n  = by_status.get("ghosted", 0)
+    negatives  = rejected_n + ghosted_n
+    outcome_split = {
+        "rejected":   rejected_n,
+        "ghosted":    ghosted_n,
+        "polite_pct": round(rejected_n / negatives * 100, 1) if negatives else None,
+    }
     return {
         "total": total,
         "by_status": by_status,
@@ -1307,6 +1396,8 @@ def stats():
         "by_label": by_label,
         "by_viability": by_viability,
         "viability_stale": viability_stale,
+        "transition_times": transition_times,
+        "outcome_split": outcome_split,
     }
 
 
@@ -1336,6 +1427,52 @@ def stats_history():
         "updated":   [r["updated"]   for r in rows],
         "unchanged": [r["unchanged"] for r in rows],
     }
+
+
+def viability_day_series(rows) -> dict:
+    """Turn (day, viability, count) rows into aligned per-day high/medium/low arrays for the
+    viability-over-time chart. A (day, level) combo absent from the rows becomes 0 so the
+    three series stay the same length and index-align with `days`. Pure/testable."""
+    by_day: dict[str, dict] = {}
+    for day, viability, cnt in rows:
+        bucket = by_day.setdefault(day, {"high": 0, "medium": 0, "low": 0})
+        if viability in bucket:
+            bucket[viability] = cnt
+    days = sorted(by_day)
+    return {
+        "days":   days,
+        "high":   [by_day[d]["high"]   for d in days],
+        "medium": [by_day[d]["medium"] for d in days],
+        "low":    [by_day[d]["low"]    for d in days],
+    }
+
+
+@app.route("/stats/viability_by_day")
+def stats_viability_by_day():
+    """Per-day counts of scored jobs by current viability (high/medium/low), bucketed by
+    first_seen over the last 30 days — data for the viability-over-time stacked chart.
+    Absolute counts only; the client derives the percentage view. Unscored jobs excluded.
+
+    Optional ?label=<key> narrows to jobs carrying that label (e.g. 'nc', 'remote'), so the
+    chart can show how one geography/tag is scoring. Filtered via the same labels-LIKE
+    pattern the jobs list uses."""
+    db = get_db()
+    label = request.args.get("label", "").strip()
+    params: list = []
+    label_clause = ""
+    if label:
+        label_clause = "AND labels LIKE ?"
+        params.append(f'%"{label}"%')
+    rows = db.execute(
+        f"""SELECT DATE(first_seen) AS day, viability, COUNT(*) AS cnt
+            FROM jobs
+            WHERE viability IN ('high', 'medium', 'low')
+              AND first_seen >= datetime('now', '-30 days')
+              {label_clause}
+            GROUP BY DATE(first_seen), viability""",
+        params,
+    ).fetchall()
+    return viability_day_series([(r["day"], r["viability"], r["cnt"]) for r in rows])
 
 
 @app.route("/job/<job_id>")

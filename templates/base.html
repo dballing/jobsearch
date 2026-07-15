@@ -101,6 +101,23 @@
         <div class="modal-body" id="statsModalBody">
           <div class="text-center py-4"><div class="spinner-border text-secondary" role="status"></div></div>
         </div>
+        <div class="modal-footer flex-column align-items-stretch border-top pt-3" id="statsViabilityChartSection" style="display:none!important">
+          <div class="d-flex align-items-center justify-content-between mb-2 flex-wrap gap-2">
+            <span class="small fw-semibold text-muted">Viability by day <span class="fw-normal">(ingested, last 30d)</span></span>
+            <div class="d-flex gap-2 flex-wrap">
+              {# Label filter (All + one button per label) — populated by showStats(). #}
+              <div class="btn-group btn-group-sm" role="group" id="viabLabelToggle" aria-label="Label filter"></div>
+              <div class="btn-group btn-group-sm" role="group" id="viabModeToggle" aria-label="Absolute or percentage">
+                <input type="radio" class="btn-check" name="viabMode" id="viabModeAbs" value="abs">
+                <label class="btn btn-outline-secondary" for="viabModeAbs" title="Absolute counts">#</label>
+                <input type="radio" class="btn-check" name="viabMode" id="viabModePct" value="pct" checked>
+                <label class="btn btn-outline-secondary" for="viabModePct" title="Percentage of each day's total">%</label>
+              </div>
+            </div>
+          </div>
+          <div style="height:260px"><canvas id="statsViabChart"></canvas></div>
+          <div id="viabEmptyNote" class="text-muted small text-center py-4" style="display:none">No scored jobs for this filter in the last 30 days.</div>
+        </div>
         <div class="modal-footer flex-column align-items-stretch border-top pt-3" id="statsChartSection" style="display:none!important">
           <div id="statsChartWarning" class="alert alert-warning py-2 small mb-2" style="display:none">
             ⚠️ Fewer than 7 days of ingestion history available — chart may not be representative yet.
@@ -802,8 +819,82 @@
   }
   </script>
   <script>
-  // Reused Chart.js instance — destroyed/recreated each open so the canvas doesn't leak.
+  // Reused Chart.js instances — destroyed/recreated each open so the canvas doesn't leak.
   let _statsChart = null;
+  let _statsViabChart = null;
+  let _statsViabData  = null;   // raw {days, high, medium, low} for the currently-selected label
+  let _viabLabel      = '';     // '' = all labels; else a label key (e.g. 'nc')
+
+  // Fetch the viability-by-day data for a label filter ('' = all) and (re)draw in the
+  // current #/% mode. Re-fetches per label so each series carries only its own active days.
+  function loadViabChart(label) {
+    _viabLabel = label;
+    const q = label ? '?label=' + encodeURIComponent(label) : '';
+    fetch('/stats/viability_by_day' + q)
+      .then(r => r.json())
+      .then(v => {
+        _statsViabData = v;
+        renderViabChart(document.querySelector('#viabModeToggle input:checked')?.value || 'pct');
+      })
+      .catch(() => {});
+  }
+
+  // Draw the viability-by-day stacked chart in 'abs' (counts) or 'pct' (100%-stacked) mode.
+  function renderViabChart(mode) {
+    const v      = _statsViabData;
+    const note   = document.getElementById('viabEmptyNote');
+    const canvas = document.getElementById('statsViabChart');
+    if (!v || !v.days.length) {
+      // No data for this filter → drop any chart and show the note instead of a stale chart.
+      if (_statsViabChart) { _statsViabChart.destroy(); _statsViabChart = null; }
+      note.style.display = '';
+      canvas.style.display = 'none';
+      return;
+    }
+    note.style.display = 'none';
+    canvas.style.display = '';
+    let high = v.high, medium = v.medium, low = v.low;
+    if (mode === 'pct') {
+      high = []; medium = []; low = [];
+      for (let i = 0; i < v.days.length; i++) {
+        const tot = (v.high[i] + v.medium[i] + v.low[i]) || 1;  // guard 0-total days
+        high.push(v.high[i]   / tot * 100);
+        medium.push(v.medium[i] / tot * 100);
+        low.push(v.low[i]     / tot * 100);
+      }
+    }
+    if (_statsViabChart) _statsViabChart.destroy();
+    _statsViabChart = new Chart(document.getElementById('statsViabChart'), {
+      type: 'bar',
+      data: { labels: v.days, datasets: [
+        { label: 'High',   data: high,   backgroundColor: '#198754' },
+        { label: 'Medium', data: medium, backgroundColor: '#ffc107' },
+        { label: 'Low',    data: low,    backgroundColor: '#dc3545' },
+      ]},
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,   // fill the taller fixed-height container
+        // Hover the whole day's column (not a single segment) so the tooltip lists all
+        // three scores at once — no need to find the thin low/medium sliver to see it.
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { position: 'bottom' },
+          tooltip: mode === 'pct'
+            ? { callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y.toFixed(0)}%` } }
+            : {},
+        },
+        scales: {
+          x: { stacked: true },
+          y: { stacked: true, beginAtZero: true,
+               max: mode === 'pct' ? 100 : undefined,
+               ticks: mode === 'pct' ? { callback: val => val + '%' } : {} },
+        },
+      },
+    });
+  }
+  // Toggle wiring (static radios, present at load) — re-render in the chosen mode.
+  document.querySelectorAll('#viabModeToggle input[name="viabMode"]').forEach(r =>
+    r.addEventListener('change', e => renderViabChart(e.target.value)));
 
   // Open the stats modal: fetch /stats (totals + breakdowns) and /stats/history (7-day
   // activity), render the summary, and draw the activity chart.
@@ -815,9 +906,9 @@
     chartSection.style.display = 'none';
     bootstrap.Modal.getOrCreateInstance(document.getElementById('statsModal')).show();
 
-    Promise.all([fetch('/stats'), fetch('/stats/history')])
-      .then(rs => { if (!rs[0].ok || !rs[1].ok) throw new Error(); return Promise.all(rs.map(r => r.json())); })
-      .then(([s, h]) => {
+    Promise.all([fetch('/stats'), fetch('/stats/history'), fetch('/stats/viability_by_day')])
+      .then(rs => { if (rs.some(r => !r.ok)) throw new Error(); return Promise.all(rs.map(r => r.json())); })
+      .then(([s, h, v]) => {
         const statusOrder = [
           'new','reviewing','deferred','applied','interviewing','offered','rejected','withdrawn','skipped','closed'
         ];
@@ -837,6 +928,27 @@
         const staleNote = s.viability_stale
           ? `<div class="text-muted small mt-1"><i class="bi bi-exclamation-circle"></i> ${s.viability_stale} active job${s.viability_stale === 1 ? '' : 's'} stale</div>`
           : '';
+
+        // Application-pipeline timing + polite/ghosted split. Each timing shows its sample
+        // size; a null average (no jobs have made that transition yet) renders as "—".
+        const tt = s.transition_times || {};
+        const fmtDays = t => (t && t.avg_days != null)
+          ? `${t.avg_days} <span class="text-muted fw-normal">day${t.avg_days === 1 ? '' : 's'} (n=${t.n})</span>`
+          : '<span class="text-muted">—</span>';
+        const os = s.outcome_split || {};
+        const politeCell = (os.polite_pct != null)
+          ? `${os.polite_pct}% replied <span class="text-muted fw-normal">(${os.rejected} rejected, ${os.ghosted} ghosted)</span>`
+          : '<span class="text-muted">—</span>';
+        const timingSection = `
+          <div class="mt-3">
+            <div class="small fw-semibold text-muted mb-1">Application pipeline</div>
+            <table class="table table-sm table-borderless mb-0">
+              <tr><td>Applied → Interviewing</td><td class="text-end">${fmtDays(tt.applied_to_interviewing)}</td></tr>
+              <tr><td>Interviewing → Outcome</td><td class="text-end">${fmtDays(tt.interviewing_to_outcome)}</td></tr>
+              <tr><td>Applied → Rejected</td><td class="text-end">${fmtDays(tt.applied_to_rejected)}</td></tr>
+              <tr><td>Employer replied vs ghosted</td><td class="text-end">${politeCell}</td></tr>
+            </table>
+          </div>`;
 
         body.innerHTML = `
           <div class="row g-3 mb-3 text-center">
@@ -865,7 +977,26 @@
               <div class="small fw-semibold text-muted mb-1">By label</div>
               <table class="table table-sm table-borderless mb-0">${labelRows}</table>
             </div>` : ''}
-          </div>`;
+          </div>
+          ${timingSection}`;
+
+        // Viability-by-day chart + its label filter. The section is always shown (it holds
+        // the toggles); an empty filter just shows the "no data" note. Start on "All".
+        const viabSection = document.getElementById('statsViabilityChartSection');
+        viabSection.style.removeProperty('display');
+        _viabLabel = '';
+        // Build the label filter: All + one button per label present in the DB.
+        const labelToggle = document.getElementById('viabLabelToggle');
+        const labelOpts = [{key: '', display: 'All'}].concat(
+          (s.by_label || []).map(l => ({key: l.label, display: l.display})));
+        labelToggle.innerHTML = labelOpts.map((o, i) => `
+          <input type="radio" class="btn-check" name="viabLabel" id="viabLabel_${i}"
+                 value="${escHtml(o.key)}" ${o.key === _viabLabel ? 'checked' : ''}>
+          <label class="btn btn-outline-secondary" for="viabLabel_${i}">${escHtml(o.display)}</label>`).join('');
+        labelToggle.querySelectorAll('input[name="viabLabel"]').forEach(r =>
+          r.addEventListener('change', e => loadViabChart(e.target.value)));
+        _statsViabData = v;
+        renderViabChart(document.querySelector('#viabModeToggle input:checked')?.value || 'pct');
 
         // Chart
         if (h.days.length > 0) {
