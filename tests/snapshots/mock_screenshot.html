@@ -1,0 +1,3291 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+  
+  <script>(function(){document.documentElement.setAttribute('data-bs-theme',localStorage.getItem('theme')||'light');})();</script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jobs (16)</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+  <style>
+    body { background-color: var(--bs-body-bg); }
+    .table td { vertical-align: middle; }
+    .job-title { font-weight: 500; }
+    .salary { white-space: nowrap; }
+    #jobPreview { width: min(46rem, 95vw); }
+    .job-description-text { font-size: 0.875rem; line-height: 1.6; }
+    .job-description-text p  { margin-bottom: 0.4rem; }
+    .job-description-text ul,
+    .job-description-text ol { margin-bottom: 0.5rem; padding-left: 1.4rem; }
+    .job-description-text li { margin-bottom: 0.15rem; }
+    /* Sub-rows: use theme-aware indented shade instead of table-secondary's hardcoded light color */
+    [data-bs-theme="dark"]  .table .group-child { --bs-table-bg: rgba(255,255,255,0.06); color: var(--bs-body-color); }
+    [data-bs-theme="light"] .table .group-child { --bs-table-bg: rgba(0,0,0,0.04); }
+    /* Employer sections collapse independently of the inner match-group collapse. */
+    tbody.employer-section.collapsed > tr:not(.employer-header) { display: none !important; }
+    .employer-header td { cursor: pointer; }
+    /* Subordinate the postings to the employer header: smaller font + indented
+       first column, mirroring how expanded fuzzy-match sub-rows are nested. */
+    tbody.employer-section > tr:not(.employer-header) td { font-size: 0.875rem; }
+    tbody.employer-section > tr:not(.employer-header) > td:first-child { padding-left: 1.5rem; }
+    /* Expanded fuzzy-match sub-rows indent their first column to nest under the group. */
+    .group-child > td:first-child { padding-left: 1.5rem; }
+    /* Under an employer a matched sub-row is nested twice → double indent. */
+    tbody.employer-section > tr.group-child > td:first-child { padding-left: 3rem; }
+    /* Hotlist: a new/reviewing job at a starred employer gets a warm, theme-aware tint.
+       !important beats the striped/sub-row background layering. */
+    .table tr.row-hot > td { background-color: var(--bs-warning-bg-subtle) !important; }
+    /* Jobs table scroll pane: the table body scrolls within a bounded height while the
+       column headers stay pinned to the top. The offset leaves room for the navbar,
+       filter toolbar, and pagination; the pane also keeps horizontal scroll on narrow
+       viewports. table-dark gives the sticky th an opaque background already. */
+    .jobs-table-pane { max-height: calc(100vh - 200px); overflow: auto; }
+    .jobs-table-pane thead th { position: sticky; top: 0; z-index: 2; }
+  </style>
+</head>
+<body>
+  <nav class="navbar navbar-dark bg-dark mb-4">
+    <div class="container-fluid">
+      <a class="navbar-brand" href="/">Job Search - Listings</a>
+      <div class="d-flex align-items-center gap-3">
+        
+        <div class="text-white-50 small" style="display:grid;grid-template-columns:max-content auto;column-gap:0.35rem;line-height:1.4">
+          
+          <span class="text-end">Data:</span>
+          <span id="lastDataLabel" data-ts="2026-06-15T12:00:00Z">2026-06-15 12:00 UTC</span>
+          
+          
+          <span class="text-end">Synced:</span>
+          <span id="lastSyncedLabel" data-ts="2026-06-15T12:05:00Z">2026-06-15 12:05 UTC</span>
+          
+        </div>
+        
+        <button id="themeToggle" class="btn btn-sm btn-outline-secondary" title="Toggle dark mode">
+          <i class="bi bi-moon"></i>
+        </button>
+        <button class="btn btn-sm btn-outline-secondary" onclick="showStats()" title="Stats">
+          <i class="bi bi-bar-chart"></i>
+        </button>
+        <a href="/report/weekly" class="btn btn-sm btn-outline-secondary"
+           title="Weekly job-search contact report">
+          <i class="bi bi-calendar-week"></i>
+        </a>
+        <a href="https://github.com/dballing/jobsearch" target="_blank" rel="noopener"
+           class="btn btn-sm btn-outline-secondary" title="GitHub">
+          <i class="bi bi-github"></i>
+        </a>
+        <a href="https://github.com/dballing/jobsearch/issues/new" target="_blank" rel="noopener"
+           class="btn btn-sm btn-outline-secondary" title="Report an issue">
+          <i class="bi bi-bug"></i>
+        </a>
+      </div>
+    </div>
+  </nav>
+
+  
+  <div class="modal fade" id="statsModal" tabindex="-1" aria-labelledby="statsModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h6 class="modal-title fw-semibold" id="statsModalLabel">Database Stats</h6>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body" id="statsModalBody">
+          <div class="text-center py-4"><div class="spinner-border text-secondary" role="status"></div></div>
+        </div>
+        <div class="modal-footer flex-column align-items-stretch border-top pt-3" id="statsViabilityChartSection" style="display:none!important">
+          <div class="d-flex align-items-center justify-content-between mb-2 flex-wrap gap-2">
+            <span class="small fw-semibold text-muted">Viability by day <span class="fw-normal">(ingested, last 30d)</span></span>
+            <div class="d-flex gap-2 flex-wrap">
+              
+              <div class="btn-group btn-group-sm" role="group" id="viabLabelToggle" aria-label="Label filter"></div>
+              <div class="btn-group btn-group-sm" role="group" id="viabModeToggle" aria-label="Absolute or percentage">
+                <input type="radio" class="btn-check" name="viabMode" id="viabModeAbs" value="abs">
+                <label class="btn btn-outline-secondary" for="viabModeAbs" title="Absolute counts">#</label>
+                <input type="radio" class="btn-check" name="viabMode" id="viabModePct" value="pct" checked>
+                <label class="btn btn-outline-secondary" for="viabModePct" title="Percentage of each day's total">%</label>
+              </div>
+            </div>
+          </div>
+          <div style="height:260px"><canvas id="statsViabChart"></canvas></div>
+          <div id="viabEmptyNote" class="text-muted small text-center py-4" style="display:none">No scored jobs for this filter in the last 30 days.</div>
+        </div>
+        <div class="modal-footer flex-column align-items-stretch border-top pt-3" id="statsChartSection" style="display:none!important">
+          <div id="statsChartWarning" class="alert alert-warning py-2 small mb-2" style="display:none">
+            ⚠️ Fewer than 7 days of ingestion history available — chart may not be representative yet.
+          </div>
+          <canvas id="statsChart" height="120"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="container-fluid px-4">
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="modal fade" id="linkModal" tabindex="-1" aria-labelledby="linkModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title fw-semibold" id="linkModalLabel">Link job to canonical</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted small mb-3" id="linkModalContext"></p>
+
+        <div id="linkCurrentGroup" class="mb-3 d-none">
+          <div class="small fw-semibold text-muted mb-1">Currently grouped under</div>
+          <div class="d-flex align-items-center justify-content-between border rounded px-2 py-1">
+            <span id="linkCurrentGroupName" class="small"></span>
+            <button class="btn btn-sm btn-outline-danger ms-2" id="linkUnlinkBtn">Unlink</button>
+          </div>
+        </div>
+
+        <label class="form-label small fw-semibold">Search for canonical</label>
+        <input type="search" id="linkSearchInput" class="form-control form-control-sm mb-2"
+               placeholder='Search title / company — words narrow results; "phrase" for exact match…' autocomplete="off">
+        <div id="linkResults" class="list-group list-group-flush small"></div>
+
+        <div id="linkWarning" class="alert alert-warning py-2 small mt-2 d-none"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-sm btn-primary" id="linkConfirmBtn" disabled>Link to selected ▸</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+
+<div class="modal fade" id="addJobModal" tabindex="-1" aria-labelledby="addJobModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title fw-semibold" id="addJobModalLabel">Add a job manually</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form id="addJobForm" onsubmit="return submitManualJob(event)">
+        <div class="modal-body">
+          <div id="addJobError" class="alert alert-danger py-2 small d-none"></div>
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label small fw-semibold">Title <span class="text-danger">*</span></label>
+              <input type="text" name="title" class="form-control form-control-sm" required>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small fw-semibold">Company <span class="text-danger">*</span></label>
+              <input type="text" name="company" class="form-control form-control-sm" required>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small fw-semibold">Location</label>
+              <input type="text" name="location" class="form-control form-control-sm" placeholder="e.g. Remote, or McLean, VA">
+            </div>
+            <div class="col-md-3">
+              <label class="form-label small fw-semibold">Status</label>
+              <select name="status" class="form-select form-select-sm">
+                <option value="new" selected>new</option><option value="skipped" >skipped</option><option value="autoskipped" >autoskipped</option><option value="reviewing" >reviewing</option><option value="deferred" >deferred</option><option value="applied" >applied</option><option value="rejected" >rejected</option><option value="ghosted" >ghosted</option><option value="interviewing" >interviewing</option><option value="offered" >offered</option><option value="withdrawn" >withdrawn</option><option value="closed" >closed</option>
+              </select>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label small fw-semibold">Applied at</label>
+              <input type="datetime-local" name="applied_at" class="form-control form-control-sm"
+                     title="Optional. Left blank, an applied-family status stamps now.">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small fw-semibold">Job URL <span class="text-danger">*</span></label>
+              <input type="url" name="job_url" class="form-control form-control-sm" placeholder="https://…" required>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small fw-semibold">Apply URL</label>
+              <input type="url" name="apply_url" class="form-control form-control-sm" placeholder="https://…">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small fw-semibold">Company website <span class="text-danger">*</span></label>
+              <input type="url" name="company_url" class="form-control form-control-sm" placeholder="https://…" required>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label small fw-semibold">Salary min</label>
+              <input type="text" name="salary_min" class="form-control form-control-sm" placeholder="e.g. 150000 or 150k">
+            </div>
+            <div class="col-md-4">
+              <label class="form-label small fw-semibold">Salary max</label>
+              <input type="text" name="salary_max" class="form-control form-control-sm" placeholder="e.g. 200000 or 200k">
+            </div>
+            <div class="col-md-4">
+              <label class="form-label small fw-semibold">Currency</label>
+              <input type="text" name="salary_currency" class="form-control form-control-sm" placeholder="USD">
+            </div>
+            <div class="col-md-4">
+              <label class="form-label small fw-semibold">Posted date</label>
+              <input type="date" name="posted_date" class="form-control form-control-sm">
+            </div>
+            
+            <div class="col-12">
+              <label class="form-label small fw-semibold">Description</label>
+              <textarea name="job_description" class="form-control form-control-sm" rows="6"
+                        placeholder="Paste the job description — used for viability scoring."></textarea>
+            </div>
+            <div class="col-12">
+              <label class="form-label small fw-semibold">Notes</label>
+              <textarea name="notes" class="form-control form-control-sm" rows="2"></textarea>
+            </div>
+            <div class="col-12">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="rescore" value="1" id="addJobRescore" checked>
+                <label class="form-check-label small" for="addJobRescore">
+                  Score viability now (otherwise it's scored on the next scheduled run)
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-sm btn-success" id="addJobSubmitBtn">Add job</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="d-flex flex-wrap align-items-center gap-3 mb-3">
+
+  <form class="d-flex align-items-center gap-2" method="get" action="/">
+    <input type="hidden" name="sort"          value="first_seen">
+    <input type="hidden" name="dir"           value="desc">
+    <input type="hidden" name="group_match"    value="0">
+    <input type="hidden" name="group_employer" value="0">
+    
+    <input type="hidden" name="status_filter" value="all">
+    
+    
+    
+    
+    <input type="hidden" name="per_page" value="200">
+    <input type="search" class="form-control form-control-sm" name="q"
+           placeholder="Search title / company…" value="" style="width:220px">
+    <button type="submit" class="btn btn-sm btn-outline-secondary">Search</button>
+    <button type="button" class="btn btn-sm btn-outline-primary" onclick="searchAllJobs(this)"
+            title="Search every job, ignoring all current filters — the ✕ restores your filters afterward">Search all</button>
+    
+  </form>
+
+  <div class="d-flex align-items-center gap-2">
+    <span class="text-muted small">Label:</span>
+    <div class="btn-group btn-group-sm" role="group">
+      <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=all"
+         class="btn btn-primary">All</a>
+      
+      <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=all&amp;label=dc&amp;page=1"
+         class="btn btn-outline-primary">DC</a>
+      
+      <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=all&amp;label=nc&amp;page=1"
+         class="btn btn-outline-primary">NC</a>
+      
+      <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=all&amp;label=remote&amp;page=1"
+         class="btn btn-outline-primary">REMOTE</a>
+      
+      <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=all&amp;label=sc&amp;page=1"
+         class="btn btn-outline-primary">SC</a>
+      
+    </div>
+  </div>
+
+  
+  <div class="d-flex align-items-center gap-2">
+    <span class="text-muted small">Source:</span>
+    <div class="btn-group btn-group-sm" role="group">
+      <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=all&amp;page=1"
+         class="btn btn-info">All</a>
+      
+      <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=all&amp;source=careersite&amp;page=1"
+         class="btn btn-outline-info">Career Sites</a>
+      
+      <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=all&amp;source=linkedin&amp;page=1"
+         class="btn btn-outline-info">LinkedIn</a>
+      
+      <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=all&amp;source=manual&amp;page=1"
+         class="btn btn-outline-info">Manual</a>
+      
+    </div>
+  </div>
+  
+
+  
+  <div class="d-flex align-items-center gap-2">
+    <span class="text-muted small">Viability:</span>
+    <div class="btn-group btn-group-sm" role="group">
+      <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=all&amp;page=1"
+         class="btn btn-secondary">All</a>
+      <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=all&amp;viability=high&amp;page=1"
+         class="btn btn-outline-success">High</a>
+      <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=all&amp;viability=medium&amp;page=1"
+         class="btn btn-outline-warning">Medium</a>
+      <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=all&amp;viability=low&amp;page=1"
+         class="btn btn-outline-danger">Low</a>
+      <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=all&amp;viability=unscored&amp;page=1"
+         class="btn btn-outline-secondary">Unscored</a>
+    </div>
+  </div>
+  
+
+  <div class="d-flex align-items-center gap-2">
+    <span class="text-muted small">Status:</span>
+    <div class="btn-group btn-group-sm" role="group">
+      
+      <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=new&amp;page=1"
+         class="btn btn-outline-success">New</a>
+      
+      <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=reviewing&amp;page=1"
+         class="btn btn-outline-success">Reviewing</a>
+      
+      <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=deferred&amp;page=1"
+         class="btn btn-outline-success">Deferred</a>
+      
+      <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=active&amp;page=1"
+         class="btn btn-outline-success">Active</a>
+      
+      <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=applied&amp;page=1"
+         class="btn btn-outline-success">Applied</a>
+      
+      <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=interview&amp;page=1"
+         class="btn btn-outline-success">Interview Process</a>
+      
+      <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=rejected&amp;page=1"
+         class="btn btn-outline-success">Rejected</a>
+      
+      <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=all&amp;page=1"
+         class="btn btn-success">All</a>
+      
+    </div>
+  </div>
+
+  <div class="d-flex align-items-center gap-2">
+    <span class="text-muted small">Group&nbsp;by:</span>
+    <div class="btn-group btn-group-sm" role="group">
+      <a href="/?sort=first_seen&amp;dir=desc&amp;status_filter=all&amp;group_match=1&amp;group_employer=0&amp;per_page=200&amp;page=1"
+         class="btn btn-outline-secondary"
+         title="Collapse fuzzy-matched duplicate postings into one row">Matched-Jobs</a>
+      <a href="/?sort=first_seen&amp;dir=desc&amp;status_filter=all&amp;group_match=0&amp;group_employer=1&amp;per_page=200&amp;page=1"
+         class="btn btn-outline-secondary"
+         title="Group postings under their employer">Employer</a>
+    </div>
+  </div>
+
+  <div class="dropdown">
+    <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
+            id="colPickerBtn" data-bs-toggle="dropdown" data-bs-auto-close="outside"
+            aria-expanded="false" title="Show/hide columns">
+      <i class="bi bi-layout-three-columns"></i>
+    </button>
+    <ul class="dropdown-menu" id="colPickerMenu" aria-labelledby="colPickerBtn"></ul>
+  </div>
+
+  <button type="button" class="btn btn-sm btn-success" data-bs-toggle="modal"
+          data-bs-target="#addJobModal" title="Manually add a job not from a feed">
+    <i class="bi bi-plus-lg"></i> Add job
+  </button>
+
+  <div class="d-flex align-items-center gap-1">
+    <span class="text-muted small">Per&nbsp;page:</span>
+    <select class="form-select form-select-sm" style="width:auto" onchange="setPerPage(this.value)" title="Rows per page">
+      
+      <option value="25" >25</option>
+      
+      <option value="50" >50</option>
+      
+      <option value="100" >100</option>
+      
+      <option value="200" selected>200</option>
+      
+      <option value="all" >All</option>
+      
+    </select>
+  </div>
+
+  
+  <button id="bulk-skip-btn" class="btn btn-sm btn-outline-danger d-none">
+    <i class="bi bi-x-circle"></i> Skip <span id="bulk-skip-count"></span> low &amp; new
+  </button>
+  
+
+  <span class="text-muted small ms-auto">
+    16 postings
+    &mdash; page 1 of 1
+  </span>
+
+</div>
+
+
+
+<!-- snapshot:jobs-table:start -->
+<div class="table-responsive jobs-table-pane">
+  <table class="table table-striped table-hover table-sm align-middle">
+    <thead class="table-dark">
+      <tr>
+        
+        
+
+        
+          <th>
+            <a href="/?sort=title&amp;dir=asc&amp;group_match=0&amp;group_employer=0&amp;status_filter=all&amp;per_page=200&amp;page=1" class="text-white text-decoration-none text-nowrap">
+              Title
+              <span class="text-white opacity-25">⇅</span>
+            </a>
+          </th>
+        
+        
+          <th>
+            <a href="/?sort=company&amp;dir=asc&amp;group_match=0&amp;group_employer=0&amp;status_filter=all&amp;per_page=200&amp;page=1" class="text-white text-decoration-none text-nowrap">
+              Company
+              <span class="text-white opacity-25">⇅</span>
+            </a>
+          </th>
+        
+        
+          <th class="col-location">
+            <a href="/?sort=location&amp;dir=asc&amp;group_match=0&amp;group_employer=0&amp;status_filter=all&amp;per_page=200&amp;page=1" class="text-white text-decoration-none text-nowrap">
+              Location
+              <span class="text-white opacity-25">⇅</span>
+            </a>
+          </th>
+        
+        
+        
+          <th class="col-salary">
+            <a href="/?sort=salary_min&amp;dir=asc&amp;group_match=0&amp;group_employer=0&amp;status_filter=all&amp;per_page=200&amp;page=1" class="text-white text-decoration-none text-nowrap">
+              Salary
+              <span class="text-white opacity-25">⇅</span>
+            </a>
+          </th>
+        
+        <th class="col-viability">Viability</th>
+        <th class="col-label">Label</th>
+        <th class="col-source">Source</th>
+        
+          <th>
+            <a href="/?sort=status&amp;dir=asc&amp;group_match=0&amp;group_employer=0&amp;status_filter=all&amp;per_page=200&amp;page=1" class="text-white text-decoration-none text-nowrap">
+              Status
+              <span class="text-white opacity-25">⇅</span>
+            </a>
+          </th>
+        
+        
+          <th class="col-applied">
+            <a href="/?sort=applied_at&amp;dir=asc&amp;group_match=0&amp;group_employer=0&amp;status_filter=all&amp;per_page=200&amp;page=1" class="text-white text-decoration-none text-nowrap">
+              Applied
+              <span class="text-white opacity-25">⇅</span>
+            </a>
+          </th>
+        
+        
+          <th class="col-posted">
+            <a href="/?sort=posted_date&amp;dir=asc&amp;group_match=0&amp;group_employer=0&amp;status_filter=all&amp;per_page=200&amp;page=1" class="text-white text-decoration-none text-nowrap">
+              Posted
+              <span class="text-white opacity-25">⇅</span>
+            </a>
+          </th>
+        
+        
+          <th class="col-firstseen">
+            <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;status_filter=all&amp;per_page=200&amp;page=1" class="text-white text-decoration-none text-nowrap">
+              First Seen
+              ↓
+              
+            </a>
+          </th>
+        
+      </tr>
+    </thead>
+    
+    
+    
+    
+    
+      <tbody>
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Baker&#39;s Assistant - Cakes</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('cs_stale')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("cs_stale", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Baker\u0027s Assistant - Cakes", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Aperture Science<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Aperture Science", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Remote
+              
+            </td>
+            <td class="text-nowrap col-salary">$160k – $200k<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('160000', '200000', this)"><i class="bi bi-search"></i></button></td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-warning opacity-50"
+                    title="Stale — re-run rescore_viability.sh
+
+Solid fit; re-score pending.">medium</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">REMOTE</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-info text-dark">Career Sites</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="new"
+        data-job-id="cs_stale"
+        data-viability="medium"
+        onchange="updateStatus('cs_stale', this)">
+  
+  <option value="new" selected>new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied">—</td>
+            <td class="text-nowrap col-posted">2026-06-13</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-15 09:00:00">2026-06-15 09:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Human Likeness Sculpting</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('manual_recruiter')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("manual_recruiter", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Human Likeness Sculpting", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Tyrell Corp<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Tyrell Corp", this)'><i class="bi bi-search"></i></button>
+<a href="https://tyrell.example" target="_blank" rel="noopener" class="btn btn-sm btn-link p-0 ms-1 text-muted"
+   title="Open company website — https://tyrell.example"><i class="bi bi-box-arrow-up-right"></i></a>
+</td>
+            <td class="col-location">
+              Washington, DC
+              
+            </td>
+            <td class="text-nowrap col-salary">$220k – $270k<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('220000', '270000', this)"><i class="bi bi-search"></i></button></td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-success"
+                    title="">high</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">DC</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-dark">Manual</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="new"
+        data-job-id="manual_recruiter"
+        data-viability="high"
+        onchange="updateStatus('manual_recruiter', this)">
+  
+  <option value="new" selected>new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied">—</td>
+            <td class="text-nowrap col-posted">2026-06-14</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-15 08:00:00">2026-06-15 08:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Multiverse Science Engineer</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('ln_autoskip')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("ln_autoskip", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Multiverse Science Engineer", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Massive Dynamic<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Massive Dynamic", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Remote
+              
+            </td>
+            <td class="text-nowrap col-salary">—</td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-danger"
+                    title="">low</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">REMOTE</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-primary">LinkedIn</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="autoskipped"
+        data-job-id="ln_autoskip"
+        data-viability="low"
+        onchange="updateStatus('ln_autoskip', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" selected>autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied">—</td>
+            <td class="text-nowrap col-posted">2026-06-03</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-14 15:00:00">2026-06-14 15:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Principal Robotics Research Scientist</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('cs_skipped')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("cs_skipped", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Principal Robotics Research Scientist", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Cyberdyne<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Cyberdyne", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Charleston, SC
+              
+            </td>
+            <td class="text-nowrap col-salary">—</td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-danger"
+                    title="Not a technical PM role.">low</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">SC</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-info text-dark">Career Sites</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="skipped"
+        data-job-id="cs_skipped"
+        data-viability="low"
+        onchange="updateStatus('cs_skipped', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" selected>skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied">—</td>
+            <td class="text-nowrap col-posted">2026-06-01</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-14 14:00:00">2026-06-14 14:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Oompa-Loompa</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('ln_closed')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("ln_closed", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Oompa-Loompa", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Wonka Industries<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Wonka Industries", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Remote
+              
+            </td>
+            <td class="text-nowrap col-salary">—</td>
+            
+            <td class="col-viability">
+              <span class="text-muted">—</span>
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">REMOTE</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-primary">LinkedIn</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="closed"
+        data-job-id="ln_closed"
+        data-viability=""
+        onchange="updateStatus('ln_closed', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" selected>closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied">—</td>
+            <td class="text-nowrap col-posted">2026-05-20</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-14 13:00:00">2026-06-14 13:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Senior Software Engineer - Compression</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('cs_withdrawn')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("cs_withdrawn", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Senior Software Engineer - Compression", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Pied Piper<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Pied Piper", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Alexandria, VA
+              
+            </td>
+            <td class="text-nowrap col-salary">—</td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-danger"
+                    title="">low</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">DC</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-info text-dark">Career Sites</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="withdrawn"
+        data-job-id="cs_withdrawn"
+        data-viability="low"
+        onchange="updateStatus('cs_withdrawn', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" selected>withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied">—</td>
+            <td class="text-nowrap col-posted">2026-05-30</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-14 12:00:00">2026-06-14 12:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Latex Salesperson</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('ln_ghosted')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("ln_ghosted", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Latex Salesperson", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Vandelay<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Vandelay", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Remote
+              
+            </td>
+            <td class="text-nowrap col-salary">$150k – $185k<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('150000', '185000', this)"><i class="bi bi-search"></i></button></td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-warning"
+                    title="">medium</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">REMOTE</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-primary">LinkedIn</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="ghosted"
+        data-job-id="ln_ghosted"
+        data-viability="medium"
+        onchange="updateStatus('ln_ghosted', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" selected>ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied"><span data-utc="2026-06-01">2026-06-01</span></td>
+            <td class="text-nowrap col-posted">2026-05-28</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-14 11:00:00">2026-06-14 11:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Food-Science Experimentation Engineer</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('cs_rejected')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("cs_rejected", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Food-Science Experimentation Engineer", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Soylent<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Soylent", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Durham, NC
+              
+            </td>
+            <td class="text-nowrap col-salary">$100k – $130k<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('100000', '130000', this)"><i class="bi bi-search"></i></button></td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-danger"
+                    title="">low</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">NC</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-info text-dark">Career Sites</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="rejected"
+        data-job-id="cs_rejected"
+        data-viability="low"
+        onchange="updateStatus('cs_rejected', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" selected>rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied"><span data-utc="2026-06-06">2026-06-06</span></td>
+            <td class="text-nowrap col-posted">2026-06-02</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-14 10:00:00">2026-06-14 10:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Sr. Experimental Research Fellow</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('ln_offered')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("ln_offered", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Sr. Experimental Research Fellow", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Stark Industries<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Stark Industries", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Remote
+              
+            </td>
+            <td class="text-nowrap col-salary">$210k – $260k<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('210000', '260000', this)"><i class="bi bi-search"></i></button></td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-success"
+                    title="">high</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">REMOTE</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-primary">LinkedIn</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="offered"
+        data-job-id="ln_offered"
+        data-viability="high"
+        onchange="updateStatus('ln_offered', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" selected>offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied"><span data-utc="2026-06-09">2026-06-09</span></td>
+            <td class="text-nowrap col-posted">2026-06-05</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-14 09:00:00">2026-06-14 09:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Corporate Drone (Posting # AJ49124120Q)</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('cs_applied_ovr')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("cs_applied_ovr", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Corporate Drone (Posting # AJ49124120Q)", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Hooli<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Hooli", this)'><i class="bi bi-search"></i></button>
+<a href="https://hooli.example" target="_blank" rel="noopener" class="btn btn-sm btn-link p-0 ms-1 text-muted"
+   title="Open company website — https://hooli.example"><i class="bi bi-box-arrow-up-right"></i></a>
+</td>
+            <td class="col-location">
+              Remote
+              
+            </td>
+            <td class="text-nowrap col-salary">$160k – $195k<sup title="Manually entered — feed listed $140k – $175k" style="cursor:help">*</sup><button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('160000', '195000', this)"><i class="bi bi-search"></i></button></td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-warning"
+                    title="">medium</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">REMOTE</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-info text-dark">Career Sites</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="applied"
+        data-job-id="cs_applied_ovr"
+        data-viability="medium"
+        onchange="updateStatus('cs_applied_ovr', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" selected>applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied"><span data-utc="2026-06-14">2026-06-14</span></td>
+            <td class="text-nowrap col-posted">2026-06-10</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-14 08:00:00">2026-06-14 08:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Sr. Virologist</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('ln_deferred')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("ln_deferred", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Sr. Virologist", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Umbrella<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Umbrella", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Columbia, SC
+              
+            </td>
+            <td class="text-nowrap col-salary">$120k+<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('120000', '', this)"><i class="bi bi-search"></i></button></td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-danger"
+                    title="Below target scope and comp.">low</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">SC</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-primary">LinkedIn</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="deferred"
+        data-job-id="ln_deferred"
+        data-viability="low"
+        onchange="updateStatus('ln_deferred', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" selected>deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied">—</td>
+            <td class="text-nowrap col-posted">2026-06-11</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-13 13:00:00">2026-06-13 13:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Photocopier Repair Technician</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('cs_review')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("cs_review", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Photocopier Repair Technician", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Initech<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Initech", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Raleigh, NC
+              
+            </td>
+            <td class="text-nowrap col-salary">up to $180k<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('', '180000', this)"><i class="bi bi-search"></i></button></td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-warning"
+                    title="">medium</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">NC</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-info text-dark">Career Sites</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="reviewing"
+        data-job-id="cs_review"
+        data-viability="medium"
+        onchange="updateStatus('cs_review', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" selected>reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied">—</td>
+            <td class="text-nowrap col-posted">2026-06-12</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-13 12:00:00">2026-06-13 12:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="row-hot">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Sr. Problem-Solver (Contract)</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('ln_new_hot')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("ln_new_hot", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Sr. Problem-Solver (Contract)", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Pacific Trident Global<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Pacific Trident Global", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Arlington, VA
+              
+            </td>
+            <td class="text-nowrap col-salary">$170k – $210k<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('170000', '210000', this)"><i class="bi bi-search"></i></button></td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-success"
+                    title="Excellent match.">high</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">DC</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-primary">LinkedIn</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="new"
+        data-job-id="ln_new_hot"
+        data-viability="high"
+        onchange="updateStatus('ln_new_hot', this)">
+  
+  <option value="new" selected>new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied">—</td>
+            <td class="text-nowrap col-posted">2026-06-13</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-13 11:00:00">2026-06-13 11:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Explosives Ordnance Expert</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('ln_mem2')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-info"
+        title="Linked — click to change or unlink"
+        onclick='openLinkModal("ln_mem2", "ln_root", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Explosives Ordnance Expert", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Acme Corp<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Acme Corp", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Remote
+              
+            </td>
+            <td class="text-nowrap col-salary">—</td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-warning"
+                    title="Good fit; scope a touch narrow.">medium</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">DC</span>
+              
+                <span class="badge bg-secondary">REMOTE</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-primary">LinkedIn</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="interviewing"
+        data-job-id="ln_mem2"
+        data-viability="medium"
+        onchange="updateStatus('ln_mem2', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" selected>interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied">—</td>
+            <td class="text-nowrap col-posted">2026-06-09</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-12 10:00:00">2026-06-12 10:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Blacksmithing and Anvil-Casting</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('cs_mem1')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-info"
+        title="Linked — click to change or unlink"
+        onclick='openLinkModal("cs_mem1", "ln_root", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Blacksmithing and Anvil-Casting", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Acme Corp<sup title="Originally listed as: Ladders" style="cursor:help">*</sup><button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Acme Corp", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Washington, DC
+              
+            </td>
+            <td class="text-nowrap col-salary">$190k – $230k<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('190000', '230000', this)"><i class="bi bi-search"></i></button></td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-success"
+                    title="">high</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">DC</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-info text-dark">Career Sites</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="interviewing"
+        data-job-id="cs_mem1"
+        data-viability="high"
+        onchange="updateStatus('cs_mem1', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" selected>interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied">—</td>
+            <td class="text-nowrap col-posted">2026-06-09</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-11 09:00:00">2026-06-11 09:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Rocket Science (Personal Rocket Division)</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('ln_root')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("ln_root", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Rocket Science (Personal Rocket Division)", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Acme Corp<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Acme Corp", this)'><i class="bi bi-search"></i></button>
+<a href="https://acme.example/careers" target="_blank" rel="noopener" class="btn btn-sm btn-link p-0 ms-1 text-muted"
+   title="Open company website — https://acme.example/careers"><i class="bi bi-box-arrow-up-right"></i></a>
+</td>
+            <td class="col-location">
+              Washington, DC
+              
+            </td>
+            <td class="text-nowrap col-salary">$190k – $230k<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('190000', '230000', this)"><i class="bi bi-search"></i></button></td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-success"
+                    title="Strong infra/compliance TPM fit at target comp.">high</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">DC</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-primary">LinkedIn</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="interviewing"
+        data-job-id="ln_root"
+        data-viability="high"
+        onchange="updateStatus('ln_root', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" selected>interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied"><span data-utc="2026-06-12">2026-06-12</span></td>
+            <td class="text-nowrap col-posted">2026-06-08</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-10 08:00:00">2026-06-10 08:00:00</span></td>
+          </tr>
+        
+
+        
+      </tbody>
+    
+  </table>
+</div>
+<!-- snapshot:jobs-table:end -->
+
+
+
+
+
+  </div>
+  
+  <div class="offcanvas offcanvas-end" tabindex="-1" id="jobPreview" aria-labelledby="jobPreviewLabel">
+    <div class="offcanvas-header border-bottom">
+      <h6 class="offcanvas-title fw-semibold" id="jobPreviewLabel">Loading…</h6>
+      <button type="button" class="btn-close" data-bs-dismiss="offcanvas"></button>
+    </div>
+    <div class="offcanvas-body d-flex flex-column p-0">
+      <div id="jobPreviewMeta" class="px-3 py-2 bg-body-secondary border-bottom small text-body-secondary"></div>
+      <div id="jobPreviewBody" class="flex-grow-1 overflow-auto px-3 py-3"></div>
+      <div class="px-3 py-2 border-top d-flex gap-2 align-items-center">
+        <a id="jobPreviewLink" href="#" target="_blank" rel="noopener"
+           class="btn btn-sm btn-outline-primary d-none">View Job</a>
+        <button id="coverLetterBtn" class="btn btn-sm btn-outline-secondary d-none"
+                title="Copy cover letter prompt to clipboard">
+          <i class="bi bi-clipboard"></i> Cover Letter Prompt
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  
+  <script>
+  document.addEventListener('DOMContentLoaded', () => {
+    const fmtOpts = {year:'numeric', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'};
+    ['lastDataLabel', 'lastSyncedLabel'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el && el.dataset.ts) {
+        el.textContent = new Date(el.dataset.ts).toLocaleString([], fmtOpts);
+      }
+    });
+  });
+  </script>
+  
+  <script>
+  // Escape text before inserting it into innerHTML. Used everywhere user/feed-derived
+  // strings are concatenated into markup (titles, companies, notes, filenames, ...).
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function renderDescription(raw) {
+    if (!raw) return '<em class="text-muted">No description available.</em>';
+    const BULLET = /^[•\-\*·–—]\s*(.*)/;
+
+    // Some sources deliver the whole description as one line with bullets embedded
+    // inline as glyphs (e.g. "Desired Background • item • item"). Promote each inline
+    // bullet glyph to the start of its own line so the list logic below can see it.
+    // Only unambiguous bullet glyphs are split on — never -, *, or – which occur in
+    // ordinary prose. A glyph already at line start just gains a harmless blank line.
+    raw = raw.replace(/[ \t]*[•●▪◦‣⁃][ \t]*/g, '\n• ');
+
+    let html = '';
+    let inList = false;
+    let afterHeader = false;
+    let prose = [];
+    let prevWasBlank = true;        // treat start-of-text as blank
+    let proseStartedAfterBlank = false;
+
+    // Detect standalone section headers: Title Case, short, no digits, no sentence punctuation.
+    function isTitleCase(line) {
+      if (line.length > 60 || /[.!]$/.test(line) || /\d/.test(line)) return false;
+      return line.split(/\s+/).every(w => /^[A-Z\-–—&\/\(]/.test(w) || /^\W+$/.test(w));
+    }
+
+    function flushProse(atBlank) {
+      if (!prose.length) return;
+      const isolated = proseStartedAfterBlank && atBlank;
+
+      if (prose.length === 1) {
+        const l = prose[0];
+        if (isolated && isTitleCase(l)) {
+          // Standalone Title Case line between blank lines → implicit section header
+          html += `<p><strong>${escHtml(l)}</strong></p>`;
+          afterHeader = true;
+        } else if (afterHeader && l.length > 200) {
+          // Long prose paragraph inside a header section → render as prose, exit list mode
+          html += `<p>${escHtml(l)}</p>`;
+          afterHeader = false;
+        } else if (afterHeader) {
+          html += `<ul><li>${escHtml(l)}</li></ul>`;
+        } else {
+          const bold = (l.endsWith(':') || l.length <= 60) && !/[.!?]$/.test(l);
+          html += bold ? `<p><strong>${escHtml(l)}</strong></p>` : `<p>${escHtml(l)}</p>`;
+        }
+      } else if (afterHeader) {
+        html += '<ul>' + prose.map(l => `<li>${escHtml(l)}</li>`).join('') + '</ul>';
+      } else {
+        const avg = prose.reduce((s, l) => s + l.length, 0) / prose.length;
+        html += avg <= 80
+          ? '<ul>' + prose.map(l => `<li>${escHtml(l)}</li>`).join('') + '</ul>'
+          : `<p>${escHtml(prose.join(' '))}</p>`;
+      }
+      prose = [];
+      proseStartedAfterBlank = false;
+    }
+
+    // Pass 1 — un-hard-wrap. Many sources wrap body text at a fixed column
+    // (~72–80), so a single paragraph arrives as several short lines. Left as-is,
+    // the structure heuristics below mistake each wrapped fragment for a list item
+    // and bullet flowing prose. Rejoin a line to the previous one when the previous
+    // physical line was "full" (>= WRAP_MIN) — i.e. it wrapped rather than ended a
+    // thought. Blank lines, bullet markers, and "Header:" lines always start fresh.
+    // This also reassembles multi-line bullets into a single item.
+    const WRAP_MIN = 60;
+    const logical = [];   // complete logical lines; '' marks a blank separator
+    let buf = '';
+    let prevLen = 0;      // length of the previous physical (non-blank) line
+    const flush = () => { if (buf) { logical.push(buf); buf = ''; } };
+    for (const rawLine of raw.split('\n')) {
+      const line = rawLine.trim();
+      if (!line) {
+        flush();
+        if (logical.length && logical[logical.length - 1] !== '') logical.push('');
+        prevLen = 0;
+        continue;
+      }
+      if (BULLET.test(line)) {
+        flush();
+        buf = line;                       // keep marker; continuations join below
+      } else if (line.endsWith(':') && line.length <= 80) {
+        flush();
+        logical.push(line);               // standalone header line
+        prevLen = 0;
+        continue;
+      } else if (buf && prevLen >= WRAP_MIN) {
+        buf += ' ' + line;                // soft-wrap continuation
+      } else {
+        flush();
+        buf = line;
+      }
+      prevLen = line.length;
+    }
+    flush();
+
+    // Pass 1b — when the whole posting is one line, only the bullets carry a
+    // delimiter, so the last bullet swallows all trailing prose (the closing
+    // pitch, EEO boilerplate, etc.). Such an item shows up far longer than a real
+    // bullet; split it after its first real sentence boundary (". " before a
+    // capital) and demote the remainder to prose. Real bullets stay well under
+    // MAX_BULLET, so well-formed lists are untouched.
+    const MAX_BULLET = 300;
+    const reflowed = [];
+    for (const ln of logical) {
+      const m = ln.match(BULLET);
+      if (m && m[1].length > MAX_BULLET) {
+        const rel = m[1].search(/[.!?]\s+[A-Z]/);
+        if (rel !== -1) {
+          reflowed.push(ln.slice(0, ln.length - m[1].length) + m[1].slice(0, rel + 1));
+          const tail = m[1].slice(rel + 1).trim();
+          if (tail) { reflowed.push(''); reflowed.push(tail); }
+          continue;
+        }
+      }
+      reflowed.push(ln);
+    }
+
+    // Pass 2 — apply structure heuristics to the reflowed logical lines.
+    for (const rawLine of reflowed) {
+      const line = rawLine.trim();
+      if (!line) {
+        if (inList) { html += '</ul>'; inList = false; }
+        flushProse(true);
+        prevWasBlank = true;
+        continue;
+      }
+      const m = line.match(BULLET);
+      if (m) {
+        flushProse(false);
+        if (!inList) { html += '<ul>'; inList = true; }
+        html += `<li>${escHtml(m[1])}</li>`;
+        afterHeader = false;
+        prevWasBlank = false;
+      } else if (line.endsWith(':')) {
+        if (inList) { html += '</ul>'; inList = false; }
+        flushProse(false);
+        html += `<p><strong>${escHtml(line)}</strong></p>`;
+        afterHeader = true;
+        prevWasBlank = false;
+      } else if (prevWasBlank && isTitleCase(line) && line.split(/\s+/).length >= 3) {
+        // Title Case line (≥3 words) immediately after a blank, not isolated —
+        // treat as inline section header without waiting for flushProse isolation.
+        if (inList) { html += '</ul>'; inList = false; }
+        flushProse(false);
+        html += `<p><strong>${escHtml(line)}</strong></p>`;
+        afterHeader = true;
+        prevWasBlank = false;
+      } else {
+        if (inList) { html += '</ul>'; inList = false; }
+        if (!prose.length) proseStartedAfterBlank = prevWasBlank;
+        prose.push(line);
+        prevWasBlank = false;
+      }
+    }
+
+    if (inList) html += '</ul>';
+    flushProse(true);
+
+    return html || '<em class="text-muted">No description available.</em>';
+  }
+
+  // Human-readable file size (B / KB / MB) for the attachment list.
+  function fmtSize(n) {
+    if (n == null) return '';
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(0) + ' KB';
+    return (n / 1048576).toFixed(1) + ' MB';
+  }
+
+  // Render the attachment list for a job and wire each row's remove button.
+  function renderAttachList(job) {
+    const ul = document.getElementById('jobAttachList');
+    if (!ul) return;
+    const items = job.attachments || [];
+    if (!items.length) {
+      ul.innerHTML = '<li class="list-group-item text-muted py-1">No files attached.</li>';
+      return;
+    }
+    ul.innerHTML = items.map(a =>
+      '<li class="list-group-item d-flex align-items-center justify-content-between py-1">'
+      + `<a href="/job/${encodeURIComponent(job.job_id)}/attachment/${encodeURIComponent(a.attachment_id)}">`
+      + `<i class="bi bi-paperclip"></i> ${escHtml(a.original_name)}</a>`
+      + `<span class="d-flex align-items-center gap-2"><span class="text-muted small">${fmtSize(a.size)}</span>`
+      + `<button class="btn btn-sm btn-link text-danger p-0 attach-remove" data-aid="${escHtml(a.attachment_id)}" title="Remove from this posting">&times;</button></span>`
+      + '</li>'
+    ).join('');
+    ul.querySelectorAll('.attach-remove').forEach(btn =>
+      btn.addEventListener('click', () => removeAttachment(job, btn.dataset.aid)));
+  }
+
+  async function removeAttachment(job, aid) {
+    if (!confirm('Remove this attachment from this posting?')) return;
+    try {
+      const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/attachment/${encodeURIComponent(aid)}/delete`, {method: 'POST'});
+      if (resp.ok) {
+        job.attachments = (job.attachments || []).filter(a => a.attachment_id !== aid);
+        renderAttachList(job);
+      } else {
+        alert(resp.status === 503 ? 'Database busy — try again in a moment.' : 'Remove failed.');
+      }
+    } catch (e) {
+      alert('Remove failed (network error).');
+    }
+  }
+
+  // Open the slide-in preview for one job: fetch GET /job/<id>, then build the meta bar
+  // (title/company/location/salary, viability badge, applied date, history), inject the
+  // company/salary override editors, notes box, attachments list, and the description
+  // (server-formatted HTML when present, else the heuristic renderDescription), and wire
+  // the View Job + Cover Letter buttons. Called from the row preview icons in jobs.html.
+  function showPreview(jobId) {
+    const panel   = document.getElementById('jobPreview');
+    const titleEl = document.getElementById('jobPreviewLabel');
+    const metaEl  = document.getElementById('jobPreviewMeta');
+    const bodyEl  = document.getElementById('jobPreviewBody');
+    const linkEl  = document.getElementById('jobPreviewLink');
+
+    titleEl.textContent = 'Loading…';
+    metaEl.textContent  = '';
+    bodyEl.innerHTML    = '<div class="text-center py-5"><div class="spinner-border text-secondary" role="status"></div></div>';
+    linkEl.classList.add('d-none');
+    document.getElementById('coverLetterBtn').classList.add('d-none');
+    const _prevEditor = document.getElementById('companyActualEditor');
+    if (_prevEditor) _prevEditor.remove();
+    bootstrap.Offcanvas.getOrCreateInstance(panel).show();
+
+    fetch('/job/' + jobId)
+      .then(async r => {
+        if (!r.ok) {
+          const err = new Error((await r.text().catch(() => '')) || 'load failed');
+          err.status = r.status;
+          throw err;
+        }
+        return r.json();
+      })
+      .then(job => {
+        const viabilityColors = {high: 'success', medium: 'warning', low: 'danger'};
+        titleEl.textContent = job.title || '(no title)';
+        // Effective employer name, linked to the company's own site when we have one
+        // (cleaner in the panel than a separate icon). An override keeps its "(via …)" note.
+        const effName = escHtml(job.company_actual || job.company || '');
+        const companyLinked = job.company_url
+          ? `<a href="${escHtml(job.company_url)}" target="_blank" rel="noopener" title="Open company website — ${escHtml(job.company_url)}">${effName}</a>`
+          : effName;
+        const companyHtml = job.company_actual
+          ? `${companyLinked} <span class="text-muted fst-italic" style="font-size:.85em">(via ${escHtml(job.company)})</span>`
+          : companyLinked;
+        const metaParts = [companyHtml, job.location ? escHtml(job.location) : null, job.salary_display ? escHtml(job.salary_display) : null]
+                           .filter(Boolean).join(' · ');
+        let metaHtml = `<div>${metaParts}</div>`;
+        if (job.viability) {
+          const vColor = viabilityColors[job.viability] || 'secondary';
+          const staleCls = job.viability_stale ? ' opacity-50' : '';
+          const staleTitle = job.viability_stale ? ' title="Stale — re-run rescore_viability.sh"' : '';
+          metaHtml += `<div class="mt-1"><span class="badge text-bg-${vColor}${staleCls}"${staleTitle}>${escHtml(job.viability)}</span>`;
+          if (job.viability_stale) {
+            metaHtml += ' <span class="text-muted fst-italic small">(pending rescore)</span>';
+          }
+          if (job.viability_reason) {
+            metaHtml += ` <span class="fst-italic">${escHtml(job.viability_reason)}</span>`;
+          }
+          metaHtml += '</div>';
+        }
+        if (job.applied_at) {
+          metaHtml += `<div class="mt-1 text-muted small">Applied: ${escHtml(job.applied_at)}</div>`;
+        }
+        if (job.history && job.history.length > 0) {
+          const sorted = [...job.history].sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
+          const rows = sorted.map(e => {
+            const ts   = e.ts ? new Date(e.ts).toLocaleString([], {year:'numeric', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit'}) : '?';
+            const apx  = e.approx ? ' <span class="text-warning" title="approximate">~</span>' : '';
+            let desc;
+            if      (e.event === 'ingested')   desc = `Ingested${e.label ? ' [' + escHtml(e.label) + ']' : ''}`;
+            else if (e.event === 'imported')   desc = `Imported${e.stub ? ' (stub)' : ''}`;
+            else if (e.event === 'created')    desc = 'Added manually';
+            else if (e.event === 'status')     desc = `Status: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong>${e.note ? ' <span class="text-muted fst-italic">(' + escHtml(e.note) + ')</span>' : ''}`;
+            else if (e.event === 'viability')  desc = `Scored: <strong>${escHtml(e.rating||'?')}</strong>`;
+            else if (e.event === 'rescore')    desc = `Rescored: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong>`;
+            else if (e.event === 'refreshed')  desc = 'Description changed';
+            else if (e.event === 'linked')     desc = `Linked to canonical`;
+            else if (e.event === 'unlinked')        desc = 'Unlinked from canonical';
+            else if (e.event === 'promoted_canonical') desc = 'Promoted to canonical of its matched group';
+            else if (e.event === 'canonical_demoted')  desc = 'Replaced as group canonical by another posting';
+            else if (e.event === 'company_actual')  desc = e.to ? `Company override set: <strong>${escHtml(e.to)}</strong>` : 'Company override cleared';
+            else if (e.event === 'work_arrangement') desc = e.to ? `Work arrangement override: <strong>${escHtml(e.to)}</strong>` : 'Work arrangement override cleared';
+            else if (e.event === 'company_normalized') desc = `Company normalized: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong> <span class="text-muted fst-italic">(auto)</span>`;
+            else if (e.event === 'company_renamed') desc = `Company renamed: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong> <span class="text-muted fst-italic">(manual — canonical + alias)</span>`;
+            else if (e.event === 'salary_actual') {
+              const fmtSal = a => (a && (a[0] != null || a[1] != null))
+                ? '$' + (a[0] != null ? a[0].toLocaleString() : '?') + '–$' + (a[1] != null ? a[1].toLocaleString() : '?')
+                : 'none';
+              const setOrCleared = (e.to && (e.to[0] != null || e.to[1] != null))
+                ? `Salary override set: <strong>${escHtml(fmtSal(e.to))}</strong>`
+                : 'Salary override cleared';
+              desc = setOrCleared + ((e.origin && e.origin !== job.job_id) ? ' <span class="text-muted fst-italic">(on a grouped posting)</span>' : '');
+            }
+            else if (e.event === 'closed')     desc = 'Auto-closed (expired)';
+            else if (e.event === 'notes')      desc = (e.origin && e.origin !== job.job_id) ? 'Note updated <span class="text-muted fst-italic">(on a grouped posting)</span>' : 'Note updated';
+            else if (e.event === 'attachment_added')   desc = `Attached <strong>${escHtml(e.name||'file')}</strong>` + ((e.origin && e.origin !== job.job_id) ? ' <span class="text-muted fst-italic">(on a grouped posting)</span>' : '');
+            else if (e.event === 'attachment_removed') desc = `Removed attachment <strong>${escHtml(e.name||'file')}</strong>`;
+            else desc = escHtml(e.event);
+            return `<tr><td class="text-muted small text-nowrap pe-3">${escHtml(ts)}${apx}</td><td class="small">${desc}</td></tr>`;
+          }).join('');
+          metaHtml += `<details class="mt-2"><summary class="text-muted small" style="cursor:pointer">History (${job.history.length})</summary><table class="mt-1 w-100">${rows}</table></details>`;
+        }
+        metaEl.innerHTML = metaHtml;
+
+        // Company override editor — injected below the meta bar
+        const existingEditor = document.getElementById('companyActualEditor');
+        if (existingEditor) existingEditor.remove();
+        const editorDiv = document.createElement('div');
+        editorDiv.id = 'companyActualEditor';
+        editorDiv.className = 'px-3 py-2 border-bottom d-flex align-items-center gap-2 small flex-wrap';
+        // Hotlist star: toggles this employer on/off the hotlist (workspace-wide). A
+        // new/reviewing job at a hotlisted employer is tinted in the jobs table.
+        const hotWrap = document.createElement('span');
+        hotWrap.className = 'd-flex align-items-center gap-1 me-1';
+        const hotLabel = document.createElement('span');
+        hotLabel.className = 'text-muted'; hotLabel.textContent = 'Hotlist:';
+        const hotBtn = document.createElement('button');
+        hotBtn.type = 'button'; hotBtn.className = 'btn btn-sm btn-link p-0';
+        const renderHot = () => {
+          hotBtn.innerHTML = `<i class="bi ${job.company_hotlisted ? 'bi-star-fill text-warning' : 'bi-star text-muted'}"></i>`;
+          hotBtn.title = job.company_hotlisted ? 'On the hotlist — click to remove' : 'Add this employer to the hotlist';
+        };
+        renderHot();
+        hotBtn.addEventListener('click', async () => {
+          const on = !job.company_hotlisted;
+          const resp = await fetch('/company/hotlist', {method: 'POST',
+            body: new URLSearchParams({company: job.company_actual || job.company || '', on: on ? '1' : '0'})});
+          if (resp.ok) { job.company_hotlisted = on; renderHot(); }
+        });
+        hotWrap.append(hotLabel, hotBtn);
+        const inputEl = document.createElement('input');
+        inputEl.type = 'text';
+        inputEl.className = 'form-control form-control-sm';
+        inputEl.placeholder = 'Actual company name (if different)…';
+        inputEl.value = job.company_actual || '';
+        inputEl.style.maxWidth = '260px';
+        const saveBtn = document.createElement('button');
+        saveBtn.className = 'btn btn-sm btn-outline-primary';
+        saveBtn.textContent = 'Save';
+        const clearBtn = document.createElement('button');
+        clearBtn.className = 'btn btn-sm btn-outline-secondary' + (job.company_actual ? '' : ' d-none');
+        clearBtn.textContent = 'Clear';
+        const feedbackEl = document.createElement('span');
+        feedbackEl.className = 'text-success small';
+
+        // Canonical-rename toggle. Off = per-job "on behalf of" override (company_actual,
+        // shown as "(via …)"). On = rewrite the scraped name on every job that has it AND
+        // add a permanent config alias (POST /job/<id>/company_rename). On its own line.
+        const renameWrap = document.createElement('label');
+        renameWrap.className = 'small text-muted d-flex align-items-center gap-1 w-100';
+        renameWrap.style.cursor = 'pointer';
+        const renameCheck = document.createElement('input');
+        renameCheck.type = 'checkbox';
+        renameCheck.className = 'form-check-input mt-0';
+        renameCheck.title = 'Renames every job with this scraped company name and adds a permanent alias to config.toml';
+        renameWrap.append(renameCheck,
+          document.createTextNode('Change the underlying company name everywhere (adds a permanent alias)'));
+
+        async function saveCompanyActual(value) {
+          const body = new URLSearchParams({company_actual: value});
+          const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/company_actual`, {method: 'POST', body});
+          if (resp.ok) {
+            job.company_actual = value || null;
+            // Refresh the meta display
+            const updatedCompanyHtml = job.company_actual
+              ? `${escHtml(job.company_actual)} <span class="text-muted fst-italic" style="font-size:.85em">(via ${escHtml(job.company)})</span>`
+              : escHtml(job.company || '');
+            const updatedParts = [updatedCompanyHtml, job.location ? escHtml(job.location) : null, job.salary_display ? escHtml(job.salary_display) : null].filter(Boolean).join(' · ');
+            metaEl.querySelector('div').innerHTML = updatedParts;
+            clearBtn.classList.toggle('d-none', !job.company_actual);
+            feedbackEl.textContent = 'Saved!';
+            // Reflect the override in the table: the company cell + "*" marker, and
+            // — when grouping by employer — the row moving to its new section. These
+            // are recomputed server-side, so refresh once the save has committed.
+            setTimeout(() => location.reload(), 450);
+          } else {
+            feedbackEl.className = 'text-danger small';
+            feedbackEl.textContent = 'Save failed.';
+          }
+        }
+
+        // Canonical rename: rewrite the scraped name everywhere + add a permanent alias.
+        async function renameCompany(value) {
+          if (!value) { feedbackEl.className = 'text-danger small'; feedbackEl.textContent = 'Enter the new name.'; return; }
+          if (!confirm(`Rename every job whose company is "${job.company}" to "${value}", and add a permanent alias to config.toml?`)) return;
+          const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/company_rename`,
+            {method: 'POST', body: new URLSearchParams({new_name: value})});
+          if (resp.ok) {
+            const data = await resp.json();
+            feedbackEl.className = 'text-success small';
+            feedbackEl.textContent = `Renamed ${data.renamed} job(s).`;
+            setTimeout(() => location.reload(), 700);
+          } else {
+            feedbackEl.className = 'text-danger small';
+            feedbackEl.textContent = (await resp.text()) || 'Rename failed.';
+          }
+        }
+
+        // Save routes to the override or the canonical rename depending on the checkbox.
+        saveBtn.addEventListener('click', () => {
+          const v = inputEl.value.trim();
+          renameCheck.checked ? renameCompany(v) : saveCompanyActual(v);
+        });
+        clearBtn.addEventListener('click', () => { inputEl.value = ''; renameCheck.checked = false; saveCompanyActual(''); });
+        inputEl.addEventListener('keydown', e => { if (e.key === 'Enter') saveBtn.click(); });
+
+        editorDiv.append(hotWrap, inputEl, saveBtn, clearBtn, feedbackEl, renameWrap);
+        metaEl.insertAdjacentElement('afterend', editorDiv);
+
+        // Salary override editor — for when the feed is missing (or wrong) but the
+        // figure is in the description. Fans out across the matched group server-side.
+        const existingSalEditor = document.getElementById('salaryActualEditor');
+        if (existingSalEditor) existingSalEditor.remove();
+        const salEditor = document.createElement('div');
+        salEditor.id = 'salaryActualEditor';
+        salEditor.className = 'px-3 py-2 border-bottom d-flex align-items-center gap-2 small flex-wrap';
+        const salLabel = document.createElement('span');
+        salLabel.className = 'text-muted';
+        salLabel.textContent = 'Salary override:';
+        const salMin = document.createElement('input');
+        salMin.type = 'text'; salMin.className = 'form-control form-control-sm';
+        salMin.placeholder = 'min'; salMin.style.maxWidth = '110px';
+        salMin.value = job.salary_min_actual != null ? job.salary_min_actual : '';
+        const salDash = document.createElement('span'); salDash.textContent = '–';
+        const salMax = document.createElement('input');
+        salMax.type = 'text'; salMax.className = 'form-control form-control-sm';
+        salMax.placeholder = 'max'; salMax.style.maxWidth = '110px';
+        salMax.value = job.salary_max_actual != null ? job.salary_max_actual : '';
+        const salSave = document.createElement('button');
+        salSave.className = 'btn btn-sm btn-outline-primary'; salSave.textContent = 'Save';
+        const hasSalOverride = job.salary_min_actual != null || job.salary_max_actual != null;
+        const salClear = document.createElement('button');
+        salClear.className = 'btn btn-sm btn-outline-secondary' + (hasSalOverride ? '' : ' d-none');
+        salClear.textContent = 'Clear';
+        const salHint = document.createElement('span');
+        salHint.className = 'text-muted';
+        salHint.textContent = '(annual; applies to the whole matched group)';
+        const salFb = document.createElement('span');
+        salFb.className = 'small';
+
+        async function saveSalaryActual(minV, maxV) {
+          const body = new URLSearchParams({salary_min: minV, salary_max: maxV});
+          const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/salary_actual`, {method: 'POST', body});
+          if (resp.ok) {
+            salFb.className = 'text-success small';
+            salFb.textContent = 'Saved!';
+            // The override fans out and changes the displayed range + marker, and may
+            // move the row under an exact comp-search; recompute server-side.
+            setTimeout(() => location.reload(), 450);
+          } else {
+            salFb.className = 'text-danger small';
+            salFb.textContent = (await resp.text().catch(() => '')) || 'Save failed.';
+          }
+        }
+        salSave.addEventListener('click', () => saveSalaryActual(salMin.value.trim(), salMax.value.trim()));
+        salClear.addEventListener('click', () => { salMin.value = ''; salMax.value = ''; saveSalaryActual('', ''); });
+        salMin.addEventListener('keydown', e => { if (e.key === 'Enter') salSave.click(); });
+        salMax.addEventListener('keydown', e => { if (e.key === 'Enter') salSave.click(); });
+        salEditor.append(salLabel, salMin, salDash, salMax, salSave, salClear, salHint, salFb);
+        editorDiv.insertAdjacentElement('afterend', salEditor);
+
+        // Work-arrangement override — for when the feed's classification is wrong (e.g. a
+        // recruiter confirms hybrid though the posting reads on-site). Wins in viability
+        // scoring; blank = use the feed's value. Options come from the server (/job).
+        const existingWaEditor = document.getElementById('workArrangementEditor');
+        if (existingWaEditor) existingWaEditor.remove();
+        const waEditor = document.createElement('div');
+        waEditor.id = 'workArrangementEditor';
+        waEditor.className = 'px-3 py-2 border-bottom d-flex align-items-center gap-2 small flex-wrap';
+        const waLabel = document.createElement('span');
+        waLabel.className = 'text-muted'; waLabel.textContent = 'Work arrangement:';
+        const waSelect = document.createElement('select');
+        waSelect.className = 'form-select form-select-sm'; waSelect.style.width = 'auto';
+        waSelect.add(new Option(
+          job.work_arrangement_feed ? `— feed: ${job.work_arrangement_feed} —` : '— feed default —', ''));
+        (job.work_arrangement_options || []).forEach(o => waSelect.add(new Option(o, o)));
+        waSelect.value = job.work_arrangement_actual || '';
+        const waFb = document.createElement('span'); waFb.className = 'text-success small';
+        waSelect.addEventListener('change', async () => {
+          const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/work_arrangement`,
+            {method: 'POST', body: new URLSearchParams({work_arrangement: waSelect.value})});
+          if (resp.ok) {
+            job.work_arrangement_actual = waSelect.value || null;
+            waFb.className = 'text-success small'; waFb.textContent = 'Saved!';
+            setTimeout(() => { waFb.textContent = ''; }, 1500);
+          } else {
+            waFb.className = 'text-danger small'; waFb.textContent = 'Save failed.';
+          }
+        });
+        waEditor.append(waLabel, waSelect, waFb);
+        salEditor.insertAdjacentElement('afterend', waEditor);
+
+        // Promote-to-canonical — only shown for a grouped member (one that points at a
+        // canonical). Makes THIS posting the group's root, re-pointing the former root and
+        // all siblings at it. The canonical fronts the group everywhere, so we reload after.
+        const existingPromote = document.getElementById('promoteCanonicalEditor');
+        if (existingPromote) existingPromote.remove();
+        if (job.canonical_id) {
+          const promoteEditor = document.createElement('div');
+          promoteEditor.id = 'promoteCanonicalEditor';
+          promoteEditor.className = 'px-3 py-2 border-bottom d-flex align-items-center gap-2 small flex-wrap';
+          const promoteBtn = document.createElement('button');
+          promoteBtn.type = 'button';
+          promoteBtn.className = 'btn btn-sm btn-outline-secondary';
+          promoteBtn.innerHTML = '<i class="bi bi-arrow-up-circle"></i> Promote to canonical';
+          promoteBtn.title = 'Make this posting the canonical (root) of its matched group';
+          const promoteFb = document.createElement('span');
+          promoteFb.className = 'text-muted small';
+          promoteBtn.addEventListener('click', async () => {
+            if (!confirm('Make this posting the canonical of its matched group? Every other posting in the group will point to it.')) return;
+            const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/promote_canonical`, {method: 'POST'});
+            if (resp.ok) {
+              promoteFb.className = 'text-success small'; promoteFb.textContent = 'Promoted!';
+              setTimeout(() => location.reload(), 500);
+            } else {
+              const data = await resp.json().catch(() => ({}));
+              promoteFb.className = 'text-danger small'; promoteFb.textContent = data.error || 'Failed.';
+            }
+          });
+          promoteEditor.append(promoteBtn, promoteFb);
+          waEditor.insertAdjacentElement('afterend', promoteEditor);
+        }
+
+        bodyEl.innerHTML =
+          '<div class="mb-3">'
+          + '<label class="form-label small fw-semibold mb-1">Notes <span class="text-muted fw-normal">(shared across the matched group)</span></label>'
+          + '<textarea id="jobNotes" class="form-control form-control-sm" rows="3" placeholder="Notes about this role…"></textarea>'
+          + '<div class="d-flex align-items-center gap-2 mt-1">'
+          + '<button type="button" id="jobNotesSave" class="btn btn-sm btn-outline-primary">Save note</button>'
+          + '<span id="jobNotesFeedback" class="small"></span>'
+          + '</div></div>'
+          + '<div class="mb-3">'
+          + '<label class="form-label small fw-semibold mb-1">Attachments <span class="text-muted fw-normal">(shared across the matched group)</span></label>'
+          + '<ul id="jobAttachList" class="list-group small mb-2"></ul>'
+          + '<div class="d-flex align-items-center gap-2">'
+          + '<input type="file" id="jobAttachFile" class="form-control form-control-sm" style="max-width:240px">'
+          + '<button type="button" id="jobAttachUpload" class="btn btn-sm btn-outline-primary">Upload</button>'
+          + '<span id="jobAttachFeedback" class="small"></span>'
+          + '</div></div>'
+          // Prefer the AI-formatted version (server-rendered + sanitized) when present;
+          // otherwise fall back to the client-side heuristic renderer.
+          + '<div class="job-description-text">'
+          + (job.job_description_html || renderDescription(job.job_description))
+          + '</div>';
+
+        // Notes editor — value set via property (no HTML injection). Notes are
+        // propagated server-side to every current group member.
+        const notesEl = document.getElementById('jobNotes');
+        notesEl.value = job.notes || '';
+        const notesFb = document.getElementById('jobNotesFeedback');
+        document.getElementById('jobNotesSave').addEventListener('click', async () => {
+          try {
+            const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/notes`,
+              {method: 'POST', body: new URLSearchParams({notes: notesEl.value})});
+            if (resp.ok) {
+              job.notes = notesEl.value.trim() || null;
+              notesFb.className = 'text-success small';
+              notesFb.textContent = 'Saved!';
+              setTimeout(() => { notesFb.textContent = ''; }, 2000);
+            } else {
+              notesFb.className = 'text-danger small';
+              notesFb.textContent = resp.status === 503 ? 'Database busy — try again in a moment.' : 'Save failed.';
+            }
+          } catch (e) {
+            notesFb.className = 'text-danger small';
+            notesFb.textContent = 'Save failed (network error).';
+          }
+        });
+
+        // Attachments — render the current list and wire upload.
+        renderAttachList(job);
+        const uploadBtn = document.getElementById('jobAttachUpload');
+        uploadBtn.addEventListener('click', async () => {
+          const fileInput = document.getElementById('jobAttachFile');
+          const fb = document.getElementById('jobAttachFeedback');
+          if (!fileInput.files.length) { fb.className = 'text-danger small'; fb.textContent = 'Choose a file first.'; return; }
+          const fd = new FormData(); fd.append('file', fileInput.files[0]);
+          fb.className = 'text-muted small'; fb.textContent = 'Uploading…';
+          uploadBtn.disabled = true;
+          try {
+            const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/attachment`, {method: 'POST', body: fd});
+            if (resp.ok) {
+              const a = await resp.json();
+              (job.attachments = job.attachments || []).push(a);
+              renderAttachList(job);
+              fileInput.value = '';
+              fb.className = 'text-success small'; fb.textContent = 'Uploaded!';
+              setTimeout(() => { fb.textContent = ''; }, 2000);
+            } else {
+              fb.className = 'text-danger small';
+              fb.textContent = resp.status === 413 ? 'File too large (max 25 MB).'
+                             : resp.status === 503 ? 'Database busy — try again in a moment.'
+                             : 'Upload failed.';
+            }
+          } catch (e) {
+            fb.className = 'text-danger small';
+            fb.textContent = 'Upload failed (network error).';
+          } finally {
+            uploadBtn.disabled = false;
+          }
+        });
+
+        if (job.job_url) {
+          linkEl.href = job.job_url;
+          linkEl.classList.remove('d-none');
+        }
+        // Wire up the cover letter copy button
+        const clBtn = document.getElementById('coverLetterBtn');
+        clBtn.classList.remove('d-none');
+        clBtn.onclick = function() {
+          const parts = [
+            'Please write a cover letter for the following position using our established template and process.\n',
+            `**Job Title:** ${job.title || '(no title)'}`,
+            job.company_actual
+              ? `**Company:** ${job.company_actual} (advertised by ${job.company})`
+              : `**Company:** ${job.company || '(unknown)'}`,
+            job.location ? `**Location:** ${job.location}` : null,
+            job.salary_display ? `**Salary:** ${job.salary_display}` : null,
+            '\n**Job Description:**',
+            job.job_description || '(no description)',
+          ].filter(Boolean).join('\n');
+          navigator.clipboard.writeText(parts).then(() => {
+            const orig = clBtn.innerHTML;
+            clBtn.innerHTML = '<i class="bi bi-check-lg"></i> Copied!';
+            clBtn.classList.replace('btn-outline-secondary', 'btn-outline-success');
+            setTimeout(() => {
+              clBtn.innerHTML = orig;
+              clBtn.classList.replace('btn-outline-success', 'btn-outline-secondary');
+            }, 2000);
+          }).catch(() => alert('Copy failed — your browser may not support clipboard access.'));
+        };
+      })
+      .catch(err => {
+        const busy = err && err.status === 503;
+        titleEl.textContent = busy ? 'Database busy' : 'Error';
+        const msg = busy ? (err.message || 'The database is busy — try again in a moment.')
+                         : 'Failed to load job details.';
+        bodyEl.innerHTML = `<div class="alert ${busy ? 'alert-warning' : 'alert-danger'} m-3">${escHtml(msg)}</div>`;
+      });
+  }
+  </script>
+  <script>
+  // Reused Chart.js instances — destroyed/recreated each open so the canvas doesn't leak.
+  let _statsChart = null;
+  let _statsViabChart = null;
+  let _statsViabData  = null;   // raw {days, high, medium, low} for the currently-selected label
+  let _viabLabel      = '';     // '' = all labels; else a label key (e.g. 'nc')
+
+  // Fetch the viability-by-day data for a label filter ('' = all) and (re)draw in the
+  // current #/% mode. Re-fetches per label so each series carries only its own active days.
+  function loadViabChart(label) {
+    _viabLabel = label;
+    const q = label ? '?label=' + encodeURIComponent(label) : '';
+    fetch('/stats/viability_by_day' + q)
+      .then(r => r.json())
+      .then(v => {
+        _statsViabData = v;
+        renderViabChart(document.querySelector('#viabModeToggle input:checked')?.value || 'pct');
+      })
+      .catch(() => {});
+  }
+
+  // Draw the viability-by-day stacked chart in 'abs' (counts) or 'pct' (100%-stacked) mode.
+  function renderViabChart(mode) {
+    const v      = _statsViabData;
+    const note   = document.getElementById('viabEmptyNote');
+    const canvas = document.getElementById('statsViabChart');
+    if (!v || !v.days.length) {
+      // No data for this filter → drop any chart and show the note instead of a stale chart.
+      if (_statsViabChart) { _statsViabChart.destroy(); _statsViabChart = null; }
+      note.style.display = '';
+      canvas.style.display = 'none';
+      return;
+    }
+    note.style.display = 'none';
+    canvas.style.display = '';
+    let high = v.high, medium = v.medium, low = v.low;
+    if (mode === 'pct') {
+      high = []; medium = []; low = [];
+      for (let i = 0; i < v.days.length; i++) {
+        const tot = (v.high[i] + v.medium[i] + v.low[i]) || 1;  // guard 0-total days
+        high.push(v.high[i]   / tot * 100);
+        medium.push(v.medium[i] / tot * 100);
+        low.push(v.low[i]     / tot * 100);
+      }
+    }
+    if (_statsViabChart) _statsViabChart.destroy();
+    _statsViabChart = new Chart(document.getElementById('statsViabChart'), {
+      type: 'bar',
+      data: { labels: v.days, datasets: [
+        { label: 'High',   data: high,   backgroundColor: '#198754' },
+        { label: 'Medium', data: medium, backgroundColor: '#ffc107' },
+        { label: 'Low',    data: low,    backgroundColor: '#dc3545' },
+      ]},
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,   // fill the taller fixed-height container
+        // Hover the whole day's column (not a single segment) so the tooltip lists all
+        // three scores at once — no need to find the thin low/medium sliver to see it.
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { position: 'bottom' },
+          tooltip: mode === 'pct'
+            ? { callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y.toFixed(0)}%` } }
+            : {},
+        },
+        scales: {
+          x: { stacked: true },
+          y: { stacked: true, beginAtZero: true,
+               max: mode === 'pct' ? 100 : undefined,
+               ticks: mode === 'pct' ? { callback: val => val + '%' } : {} },
+        },
+      },
+    });
+  }
+  // Toggle wiring (static radios, present at load) — re-render in the chosen mode.
+  document.querySelectorAll('#viabModeToggle input[name="viabMode"]').forEach(r =>
+    r.addEventListener('change', e => renderViabChart(e.target.value)));
+
+  // Open the stats modal: fetch /stats (totals + breakdowns) and /stats/history (7-day
+  // activity), render the summary, and draw the activity chart.
+  function showStats() {
+    const body         = document.getElementById('statsModalBody');
+    const chartSection = document.getElementById('statsChartSection');
+    const chartWarning = document.getElementById('statsChartWarning');
+    body.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-secondary" role="status"></div></div>';
+    chartSection.style.display = 'none';
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('statsModal')).show();
+
+    Promise.all([fetch('/stats'), fetch('/stats/history'), fetch('/stats/viability_by_day')])
+      .then(rs => { if (rs.some(r => !r.ok)) throw new Error(); return Promise.all(rs.map(r => r.json())); })
+      .then(([s, h, v]) => {
+        const statusOrder = [
+          'new','reviewing','deferred','applied','interviewing','offered','rejected','withdrawn','skipped','closed'
+        ];
+        const statusRows = statusOrder
+          .filter(st => s.by_status[st])
+          .map(st => `<tr><td class="text-capitalize">${escHtml(st)}</td><td class="text-end">${s.by_status[st]}</td></tr>`)
+          .join('');
+        const labelRows = s.by_label.length
+          ? s.by_label.map(l => `<tr><td>${escHtml(l.display)}</td><td class="text-end">${l.count}</td></tr>`).join('')
+          : '<tr><td colspan="2" class="text-muted">—</td></tr>';
+        const viabilityColors = {high: 'success', medium: 'warning', low: 'danger', unscored: 'secondary'};
+        const viabilityOrder = ['high', 'medium', 'low', 'unscored'];
+        const viabilityRows = viabilityOrder
+          .filter(v => s.by_viability && s.by_viability[v])
+          .map(v => `<tr><td><span class="badge text-bg-${viabilityColors[v]}">${v}</span></td><td class="text-end">${s.by_viability[v]}</td></tr>`)
+          .join('');
+        const staleNote = s.viability_stale
+          ? `<div class="text-muted small mt-1"><i class="bi bi-exclamation-circle"></i> ${s.viability_stale} active job${s.viability_stale === 1 ? '' : 's'} stale</div>`
+          : '';
+
+        // Application-pipeline timing + polite/ghosted split. Each timing shows its sample
+        // size; a null average (no jobs have made that transition yet) renders as "—".
+        const tt = s.transition_times || {};
+        const fmtDays = t => (t && t.avg_days != null)
+          ? `${t.avg_days} <span class="text-muted fw-normal">day${t.avg_days === 1 ? '' : 's'} (n=${t.n})</span>`
+          : '<span class="text-muted">—</span>';
+        const os = s.outcome_split || {};
+        const politeCell = (os.polite_pct != null)
+          ? `${os.polite_pct}% replied <span class="text-muted fw-normal">(${os.rejected} rejected, ${os.ghosted} ghosted)</span>`
+          : '<span class="text-muted">—</span>';
+        const timingSection = `
+          <div class="mt-3">
+            <div class="small fw-semibold text-muted mb-1">Application pipeline</div>
+            <table class="table table-sm table-borderless mb-0">
+              <tr><td>Applied → Interviewing</td><td class="text-end">${fmtDays(tt.applied_to_interviewing)}</td></tr>
+              <tr><td>Interviewing → Outcome</td><td class="text-end">${fmtDays(tt.interviewing_to_outcome)}</td></tr>
+              <tr><td>Applied → Rejected</td><td class="text-end">${fmtDays(tt.applied_to_rejected)}</td></tr>
+              <tr><td>Employer replied vs ghosted</td><td class="text-end">${politeCell}</td></tr>
+            </table>
+          </div>`;
+
+        body.innerHTML = `
+          <div class="row g-3 mb-3 text-center">
+            <div class="col">
+              <div class="fs-3 fw-bold">${s.total}</div>
+              <div class="text-muted small">Total jobs</div>
+            </div>
+            <div class="col">
+              <div class="fs-3 fw-bold">${s.new_last_7_days}</div>
+              <div class="text-muted small">Added last 7 days</div>
+            </div>
+          </div>
+          <div class="row g-3">
+            <div class="col">
+              <div class="small fw-semibold text-muted mb-1">By status</div>
+              <table class="table table-sm table-borderless mb-0">${statusRows}</table>
+            </div>
+            ${viabilityRows ? `
+            <div class="col">
+              <div class="small fw-semibold text-muted mb-1">By viability</div>
+              <table class="table table-sm table-borderless mb-0">${viabilityRows}</table>
+              ${staleNote}
+            </div>` : ''}
+            ${s.by_label.length ? `
+            <div class="col">
+              <div class="small fw-semibold text-muted mb-1">By label</div>
+              <table class="table table-sm table-borderless mb-0">${labelRows}</table>
+            </div>` : ''}
+          </div>
+          ${timingSection}`;
+
+        // Viability-by-day chart + its label filter. The section is always shown (it holds
+        // the toggles); an empty filter just shows the "no data" note. Start on "All".
+        const viabSection = document.getElementById('statsViabilityChartSection');
+        viabSection.style.removeProperty('display');
+        _viabLabel = '';
+        // Build the label filter: All + one button per label present in the DB.
+        const labelToggle = document.getElementById('viabLabelToggle');
+        const labelOpts = [{key: '', display: 'All'}].concat(
+          (s.by_label || []).map(l => ({key: l.label, display: l.display})));
+        labelToggle.innerHTML = labelOpts.map((o, i) => `
+          <input type="radio" class="btn-check" name="viabLabel" id="viabLabel_${i}"
+                 value="${escHtml(o.key)}" ${o.key === _viabLabel ? 'checked' : ''}>
+          <label class="btn btn-outline-secondary" for="viabLabel_${i}">${escHtml(o.display)}</label>`).join('');
+        labelToggle.querySelectorAll('input[name="viabLabel"]').forEach(r =>
+          r.addEventListener('change', e => loadViabChart(e.target.value)));
+        _statsViabData = v;
+        renderViabChart(document.querySelector('#viabModeToggle input:checked')?.value || 'pct');
+
+        // Chart
+        if (h.days.length > 0) {
+          chartSection.style.removeProperty('display');
+          chartWarning.style.display = h.days.length < 7 ? '' : 'none';
+          if (_statsChart) _statsChart.destroy();
+          _statsChart = new Chart(document.getElementById('statsChart'), {
+            type: 'bar',
+            data: {
+              labels: h.days,
+              datasets: [
+                { label: 'Inserted',  data: h.inserted,  backgroundColor: '#198754' },
+                { label: 'Updated',   data: h.updated,   backgroundColor: '#0d6efd' },
+                { label: 'Unchanged', data: h.unchanged, backgroundColor: '#dee2e6' },
+              ],
+            },
+            options: {
+              responsive: true,
+              plugins: { legend: { position: 'bottom' } },
+              scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } },
+            },
+          });
+        }
+      })
+      .catch(() => {
+        body.innerHTML = '<div class="alert alert-danger m-3">Failed to load stats.</div>';
+      });
+  }
+  </script>
+  
+  <script>
+  (function() {
+    const btn  = document.getElementById('themeToggle');
+    const html = document.documentElement;
+
+    function applyTheme(theme) {
+      html.setAttribute('data-bs-theme', theme);
+      localStorage.setItem('theme', theme);
+      btn.querySelector('i').className = theme === 'dark' ? 'bi bi-sun' : 'bi bi-moon';
+      btn.title = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+    }
+
+    // Sync icon with whatever theme was applied before paint.
+    applyTheme(html.getAttribute('data-bs-theme') || 'light');
+
+    btn.addEventListener('click', function() {
+      applyTheme(html.getAttribute('data-bs-theme') === 'dark' ? 'light' : 'dark');
+    });
+  })();
+  </script>
+  
+<script>
+const STATUS_COLORS = {"applied": "info", "autoskipped": "dark", "closed": "dark", "deferred": "deferred", "ghosted": "secondary", "interviewing": "warning", "new": "primary", "offered": "success", "rejected": "danger", "reviewing": "secondary", "skipped": "dark", "withdrawn": "secondary"};
+
+// ── Rows-per-page persistence ──
+// Page size lives in the ?per_page= URL param (server-side paging), but we also remember
+// the user's choice per-browser in localStorage — the same way column visibility persists.
+// On a fresh visit that carries no explicit per_page (e.g. the navbar brand link or a
+// bookmark), restore the saved value by redirecting once. Within-app links already thread
+// per_page through, so this only fires when the param is genuinely absent — no loop.
+const PER_PAGE_KEY = 'jobsearch_per_page';
+(function restorePerPage() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.has('per_page')) return;                  // explicit choice in URL wins
+  let saved;
+  try { saved = localStorage.getItem(PER_PAGE_KEY); } catch { return; }
+  if (!saved || saved === '25') return;                // nothing saved, or already the default
+  if (!["25", "50", "100", "200", "all"].includes(saved)) return;  // ignore stale/invalid values
+  params.set('per_page', saved);
+  window.location.search = params.toString();
+})();
+
+function applySelectColor(sel) {
+  // Mirror the Bootstrap badge color as a left border accent
+  const colorMap = {
+    primary: '#0d6efd', secondary: '#6c757d', info: '#0dcaf0',
+    warning: '#ffc107', success: '#198754', danger: '#dc3545', dark: '#212529',
+    deferred: '#6f42c1',  // purple accent for the parked-but-alive "deferred" status
+  };
+  const bsClass = STATUS_COLORS[sel.value] || 'secondary';
+  sel.style.borderLeftColor = colorMap[bsClass] || '#6c757d';
+  sel.style.borderLeftWidth = '4px';
+}
+
+document.querySelectorAll('.status-select').forEach(applySelectColor);
+updateBulkSkipButton();
+
+async function updateGroupStatus(sel) {
+  const prev   = sel.dataset.prev;
+  const jobIds = JSON.parse(sel.dataset.groupIds);
+  const status = sel.value;
+  if (!jobIds.length) return;
+  try {
+    // Any member resolves the whole canonical group server-side (including any
+    // members filtered out of the current view), so the status, applied_at, and
+    // history land on every posting in the group.
+    const resp = await fetch('/job/' + encodeURIComponent(jobIds[0]) + '/status',
+      {method: 'POST', body: new URLSearchParams({status})});
+    if (!resp.ok) throw new Error();
+    sel.dataset.prev = status;
+    applySelectColor(sel);
+    // Mirror the new status on each visible sub-row select
+    jobIds.forEach(id => {
+      const sub = document.querySelector(`.status-select[data-job-id="${id}"]`);
+      if (sub) { sub.value = status; sub.dataset.prev = status; applySelectColor(sub); }
+    });
+    updateBulkSkipButton();
+  } catch {
+    alert('Failed to update status.');
+    sel.value = prev;
+  }
+}
+
+// POST one job's new status (the per-row / preview dropdown); revert the select on
+// failure. The server propagates to the whole matched group, so no client fan-out here.
+async function updateStatus(jobId, sel) {
+  const prev = sel.dataset.prev;
+  try {
+    const resp = await fetch('/job/' + jobId + '/status', {
+      method: 'POST',
+      body: new URLSearchParams({status: sel.value}),
+    });
+    if (!resp.ok) throw new Error();
+    sel.dataset.prev = sel.value;
+    applySelectColor(sel);
+    updateBulkSkipButton();
+  } catch {
+    alert('Failed to update status.');
+    sel.value = prev;
+  }
+}
+
+// Collect job_ids eligible for one-click bulk-skip: status 'new' AND viability 'low'.
+// Group-header selects contribute all their members; sub-row selects are ignored (their
+// group select already covers them).
+function getSkippableIds() {
+  const ids = new Set();
+  document.querySelectorAll('.status-select').forEach(sel => {
+    if (sel.value !== 'new') return;
+    if ((sel.dataset.viability || '') !== 'low') return;
+    if (sel.closest('.group-child')) return; // sub-row selects are covered by their group select
+    if (sel.dataset.jobId) {
+      ids.add(sel.dataset.jobId);
+    } else if (sel.dataset.groupIds) {
+      JSON.parse(sel.dataset.groupIds).forEach(id => ids.add(id));
+    }
+  });
+  return [...ids];
+}
+
+function updateBulkSkipButton() {
+  const btn = document.getElementById('bulk-skip-btn');
+  if (!btn) return;
+  const ids = getSkippableIds();
+  document.getElementById('bulk-skip-count').textContent = ids.length;
+  btn.classList.toggle('d-none', ids.length === 0);
+}
+
+// Confirm, then bulk-skip every new+low job on the page in one POST to /jobs/status,
+// and reload to reflect the change.
+async function bulkSkipLow() {
+  const ids = getSkippableIds();
+  if (!ids.length) return;
+  if (!confirm(`Skip ${ids.length} low-viability new job${ids.length === 1 ? '' : 's'} on this page?`)) return;
+  const body = new URLSearchParams({status: 'skipped'});
+  ids.forEach(id => body.append('job_ids', id));
+  try {
+    const resp = await fetch('/jobs/status', {method: 'POST', body});
+    if (!resp.ok) throw new Error();
+    window.location.reload();
+  } catch {
+    alert('Failed to skip jobs.');
+  }
+}
+
+document.getElementById('bulk-skip-btn')?.addEventListener('click', bulkSkipLow);
+
+// ── UTC datetime / date-only → local display ──────────────────────────────
+(function() {
+  // data-utc: full UTC timestamp → convert to local time, display as YYYY-MM-DD,
+  // tooltip as YYYY-MM-DD HH:MM:SS (local).
+  const isoDate = d => {
+    const p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+  };
+  const isoDateTime = d => {
+    const p = n => String(n).padStart(2, '0');
+    return `${isoDate(d)} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  };
+
+  document.querySelectorAll('[data-utc]').forEach(el => {
+    const raw = el.dataset.utc;
+    if (!raw) return;
+    let s = raw.replace(' ', 'T');
+    if (s.includes('T') && !s.endsWith('Z') && !/[+-]\d{2}:\d{2}$/.test(s)) s += 'Z';
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return;
+    el.textContent = isoDate(d);
+    el.title       = isoDateTime(d);
+  });
+})();
+
+// ── Column visibility ──
+// User-togglable optional columns, persisted per-browser in localStorage (not the
+// server). `def` is the default visibility — everything on except "First Seen".
+const COL_DEFS = [
+  { cls: 'col-location',  label: 'Location',   def: true  },
+  { cls: 'col-salary',    label: 'Salary',      def: true  },
+  
+  { cls: 'col-viability', label: 'Viability',   def: true  },
+  
+  { cls: 'col-label',     label: 'Label',       def: true  },
+  
+  { cls: 'col-source',    label: 'Source',      def: true  },
+  
+  { cls: 'col-applied',   label: 'Applied',     def: true  },
+  { cls: 'col-posted',    label: 'Posted',      def: true  },
+  { cls: 'col-firstseen', label: 'First Seen',  def: false },
+];
+const COL_PREFS_KEY = 'jobsearch_col_prefs';
+
+function loadColPrefs() {
+  try { return JSON.parse(localStorage.getItem(COL_PREFS_KEY) || 'null') || {}; }
+  catch { return {}; }
+}
+
+function applyColVisibility() {
+  const prefs = loadColPrefs();
+  COL_DEFS.forEach(({ cls, def }) => {
+    const visible = prefs[cls] !== undefined ? prefs[cls] : def;
+    document.querySelectorAll('.' + cls).forEach(el => {
+      el.style.display = visible ? '' : 'none';
+    });
+  });
+}
+
+function buildColPicker() {
+  const menu = document.getElementById('colPickerMenu');
+  if (!menu) return;
+  const prefs = loadColPrefs();
+  menu.innerHTML = COL_DEFS.map(({ cls, label, def }) => {
+    const checked = (prefs[cls] !== undefined ? prefs[cls] : def) ? 'checked' : '';
+    return `<li><label class="dropdown-item d-flex align-items-center gap-2" style="cursor:pointer">
+      <input type="checkbox" class="form-check-input col-toggle" data-col="${cls}" ${checked}> ${label}
+    </label></li>`;
+  }).join('');
+  menu.querySelectorAll('.col-toggle').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const p = loadColPrefs();
+      p[cb.dataset.col] = cb.checked;
+      localStorage.setItem(COL_PREFS_KEY, JSON.stringify(p));
+      applyColVisibility();
+    });
+  });
+}
+
+applyColVisibility();
+buildColPicker();
+
+// ── Manual canonicalization ──────────────────────────────────────────────────
+let _linkJobId       = null;
+let _linkSelectedId  = null;
+let _linkDebounce    = null;
+let _linkJobTitle    = '';   // title of the job being linked, for the "search this title" shortcut
+
+// Open the link-to-canonical modal for one job: seed state, show its current group (if
+// any) with an Unlink option, and reset the search box. The actual search/select/confirm
+// is handled by fetchLinkResults / selectLinkResult and the confirm handler below.
+function openLinkModal(jobId, canonicalId, btn) {
+  _linkJobId      = jobId;
+  _linkSelectedId = null;
+  const title   = btn.closest('tr').querySelector('.job-title, td:first-child')?.textContent?.trim() || jobId;
+  _linkJobTitle = title;
+  // Render the title with a search icon that drops it into the box below and runs the
+  // search — saves copy-pasting the title to hunt for its likely canonical group.
+  document.getElementById('linkModalContext').innerHTML =
+    `Linking: ${escHtml(title)} <button type="button" class="btn btn-sm btn-link p-0 ms-1 text-muted"`
+    + ` title="Search for this title below" onclick="searchLinkByTitle()"><i class="bi bi-search"></i></button>`;
+  document.getElementById('linkSearchInput').value = '';
+  document.getElementById('linkResults').innerHTML  = '';
+  document.getElementById('linkWarning').classList.add('d-none');
+  document.getElementById('linkConfirmBtn').disabled = true;
+
+  const curGroup = document.getElementById('linkCurrentGroup');
+  if (canonicalId) {
+    curGroup.classList.remove('d-none');
+    document.getElementById('linkCurrentGroupName').textContent = canonicalId;
+  } else {
+    curGroup.classList.add('d-none');
+  }
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('linkModal')).show();
+  document.getElementById('linkSearchInput').focus();
+}
+
+// Drop the linking job's title into the search box and fire the search exactly as if the
+// user had typed it — dispatch a real 'input' event so the existing debounced handler
+// (and its autocomplete fetch) runs. The most likely canonical group usually shares the
+// job's title, so this is the common next action after opening the modal.
+function searchLinkByTitle() {
+  const input = document.getElementById('linkSearchInput');
+  input.value = _linkJobTitle || '';
+  input.focus();
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('linkSearchInput')?.addEventListener('input', function() {
+    clearTimeout(_linkDebounce);
+    _linkDebounce = setTimeout(() => fetchLinkResults(this.value.trim()), 300);
+  });
+
+// Search /jobs/autocomplete (debounced by the input handler above) and render clickable
+// candidate rows, flagging any that already belong to a group.
+async function fetchLinkResults(q) {
+  if (!q) { document.getElementById('linkResults').innerHTML = ''; return; }
+  const resp = await fetch(`/jobs/autocomplete?q=${encodeURIComponent(q)}&exclude=${encodeURIComponent(_linkJobId)}`);
+  if (!resp.ok) return;
+  const items = await resp.json();
+  const list  = document.getElementById('linkResults');
+  list.innerHTML = items.map(r => {
+    const sub = r.canonical_id
+      ? `<div class="text-muted" style="font-size:.8em">part of group: ${escHtml(r.canonical_title || r.canonical_id)}</div>`
+      : '';
+    return `<button type="button" class="list-group-item list-group-item-action py-1 px-2 link-result"
+                    data-job-id="${escHtml(r.job_id)}"
+                    data-canonical-id="${escHtml(r.canonical_id || '')}"
+                    data-canonical-title="${escHtml(r.canonical_title || '')}">
+              <div>${escHtml(r.title || '(no title)')}</div>
+              <div class="text-muted" style="font-size:.85em">${escHtml(r.company || '')}</div>
+              ${sub}
+            </button>`;
+  }).join('');
+  list.querySelectorAll('.link-result').forEach(btn => btn.addEventListener('click', selectLinkResult));
+}
+
+// Mark a candidate selected and enable Confirm; if the candidate is itself already in a
+// group, warn that the link will attach to that group's root (the server resolves one hop).
+function selectLinkResult(e) {
+  document.querySelectorAll('.link-result').forEach(b => b.classList.remove('active'));
+  e.currentTarget.classList.add('active');
+  _linkSelectedId = e.currentTarget.dataset.jobId;
+  const canonId   = e.currentTarget.dataset.canonicalId;
+  const warn      = document.getElementById('linkWarning');
+  if (canonId) {
+    const root = e.currentTarget.dataset.canonicalTitle || canonId;
+    warn.textContent = `⚠ This job is already part of a group. Your job will be linked to the group root ("${root}") instead.`;
+    warn.classList.remove('d-none');
+  } else {
+    warn.classList.add('d-none');
+  }
+  document.getElementById('linkConfirmBtn').disabled = false;
+}
+
+  document.getElementById('linkConfirmBtn')?.addEventListener('click', async () => {
+    if (!_linkSelectedId) return;
+    const body = new URLSearchParams({canonical_id: _linkSelectedId});
+    const resp = await fetch(`/job/${encodeURIComponent(_linkJobId)}/link`, {method: 'POST', body});
+    if (resp.ok) {
+      bootstrap.Modal.getInstance(document.getElementById('linkModal')).hide();
+      window.location.reload();
+    } else {
+      const data = await resp.json().catch(() => ({}));
+      document.getElementById('linkWarning').textContent = data.error || 'Link failed.';
+      document.getElementById('linkWarning').classList.remove('d-none');
+    }
+  });
+
+  document.getElementById('linkUnlinkBtn')?.addEventListener('click', async () => {
+    const resp = await fetch(`/job/${encodeURIComponent(_linkJobId)}/link`, {
+      method: 'POST', body: new URLSearchParams({canonical_id: ''}),
+    });
+    if (resp.ok) {
+      bootstrap.Modal.getInstance(document.getElementById('linkModal')).hide();
+      window.location.reload();
+    } else {
+      alert('Unlink failed.');
+    }
+  });
+});
+
+// Expand/collapse one matched-jobs group's sub-rows (the per-location detail under a
+// grouped header), flipping the chevron. Scoped by the unique gindex group key.
+function toggleGroup(groupKey, btn) {
+  const children = document.querySelectorAll('.group-child-' + groupKey);
+  const icon = btn.querySelector('i');
+  const expanding = icon.classList.contains('bi-chevron-right');
+  children.forEach(r => r.classList.toggle('d-none', !expanding));
+  icon.classList.toggle('bi-chevron-right', !expanding);
+  icon.classList.toggle('bi-chevron-down', expanding);
+  btn.title = expanding ? 'Collapse' : 'Show locations';
+}
+
+// Collapse/expand a whole employer section. The inner match-group collapse
+// keeps its own state — CSS hides every posting row while collapsed, and they
+// reappear in whatever expanded/collapsed state they were left in.
+function toggleEmployer(headerCell) {
+  const section = headerCell.closest('tbody.employer-section');
+  if (!section) return;
+  const collapsed = section.classList.toggle('collapsed');
+  const icon = headerCell.querySelector('.employer-chevron');
+  if (icon) {
+    icon.classList.toggle('bi-chevron-down', !collapsed);
+    icon.classList.toggle('bi-chevron-right', collapsed);
+  }
+}
+
+// "Search all": run the current search term against every job with a clean slate
+// (all statuses, default grouping/sort), stashing the current view as return_to so
+// the ✕ / "Restore filters" can bring it back. When already in search-all mode,
+// keep the ORIGINAL return_to rather than nesting.
+function searchAllJobs(btn) {
+  const q = (btn.form.querySelector('input[name="q"]').value || '').trim();
+  const cur = new URLSearchParams(window.location.search);
+  const ret = cur.get('return_to') || (window.location.pathname + window.location.search);
+  const p = new URLSearchParams();
+  if (q) p.set('q', q);
+  p.set('status_filter', 'all');   // clean slate — defaults for grouping/sort are implied
+  p.set('return_to', ret);
+  window.location.href = '/?' + p.toString();
+}
+
+// Salary-cell icon: find every job with this exact comp range (a common missed-
+// duplicate tell), clean slate + restore, like "Search all".
+function searchByComp(min, max, btn) {
+  const cur = new URLSearchParams(window.location.search);
+  const ret = cur.get('return_to') || (window.location.pathname + window.location.search);
+  const p = new URLSearchParams();
+  p.set('comp', (min || '') + '-' + (max || ''));
+  p.set('status_filter', 'all');
+  p.set('return_to', ret);
+  window.location.href = '/?' + p.toString();
+}
+
+// Page-size dropdown: set per_page (preserving all other state) and jump to page 1.
+// Also remember the choice per-browser so it survives fresh visits (see restorePerPage).
+function setPerPage(value) {
+  try { localStorage.setItem(PER_PAGE_KEY, value || '25'); } catch {}
+  const p = new URLSearchParams(window.location.search);
+  if (value && value !== '25') { p.set('per_page', value); } else { p.delete('per_page'); }
+  p.set('page', '1');
+  window.location.search = p.toString();
+}
+
+// ── Add manual job ──
+// Submit the "Add job" modal via FormData (carries the label checkboxes and the rescore
+// flag as-is). On success, reload so the new row appears; if an inline score was asked
+// for but couldn't run (AI disabled/unconfigured), surface why before reloading.
+async function submitManualJob(event) {
+  event.preventDefault();
+  const form   = document.getElementById('addJobForm');
+  const errBox = document.getElementById('addJobError');
+  const btn    = document.getElementById('addJobSubmitBtn');
+  errBox.classList.add('d-none');
+  if (!form.title.value.trim() || !form.company.value.trim() ||
+      !form.job_url.value.trim() || !form.company_url.value.trim()) {
+    errBox.textContent = 'Title, company, job URL, and company URL are required.';
+    errBox.classList.remove('d-none');
+    return false;
+  }
+  const wantScore = form.rescore.checked;
+  btn.disabled = true;
+  btn.textContent = wantScore ? 'Adding & scoring…' : 'Adding…';
+  try {
+    const resp = await fetch('/jobs/manual', { method: 'POST', body: new FormData(form) });
+    if (!resp.ok) {
+      errBox.textContent = (await resp.text()) || 'Failed to add job.';
+      errBox.classList.remove('d-none');
+      btn.disabled = false; btn.textContent = 'Add job';
+      return false;
+    }
+    const data = await resp.json();
+    if (wantScore && data && data.scored === false && data.score_message) {
+      alert('Job added, but viability was not scored: ' + data.score_message +
+            '\nIt will be scored on the next scheduled run.');
+    }
+    window.location.reload();
+  } catch (e) {
+    errBox.textContent = 'Network error: ' + e;
+    errBox.classList.remove('d-none');
+    btn.disabled = false; btn.textContent = 'Add job';
+  }
+  return false;
+}
+
+// Default the Add-job "Posted date" to today (local) whenever the modal opens and the
+// field is still empty — so it re-defaults across a midnight boundary but never clobbers
+// a date the user typed. en-CA gives the YYYY-MM-DD a date input expects.
+document.getElementById('addJobModal')?.addEventListener('show.bs.modal', function () {
+  const el = this.querySelector('[name="posted_date"]');
+  if (el && !el.value) el.value = new Date().toLocaleDateString('en-CA');
+});
+
+// "Search all" seeded with an arbitrary query string (clean slate + restore),
+// shared by the title- and company-cell search icons. The q search matches title,
+// company, and company_actual via LIKE, so a company name catches similar employers.
+function searchAllByQuery(q) {
+  const cur = new URLSearchParams(window.location.search);
+  const ret = cur.get('return_to') || (window.location.pathname + window.location.search);
+  const p = new URLSearchParams();
+  p.set('q', q);
+  p.set('status_filter', 'all');
+  p.set('return_to', ret);
+  window.location.href = '/?' + p.toString();
+}
+
+// Title-cell icon: find all jobs with this exact title (possible missed match).
+function searchByTitle(title, btn) { searchAllByQuery(title); }
+
+// Company-cell icon: find all jobs at this employer (possible missed match).
+function searchByCompany(company, btn) { searchAllByQuery(company); }
+</script>
+
+</body>
+</html>

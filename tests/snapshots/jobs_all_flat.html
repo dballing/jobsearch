@@ -1,0 +1,1453 @@
+<div class="table-responsive jobs-table-pane">
+  <table class="table table-striped table-hover table-sm align-middle">
+    <thead class="table-dark">
+      <tr>
+        
+        
+
+        
+          <th>
+            <a href="/?sort=title&amp;dir=asc&amp;group_match=0&amp;group_employer=0&amp;status_filter=all&amp;per_page=200&amp;page=1" class="text-white text-decoration-none text-nowrap">
+              Title
+              <span class="text-white opacity-25">⇅</span>
+            </a>
+          </th>
+        
+        
+          <th>
+            <a href="/?sort=company&amp;dir=asc&amp;group_match=0&amp;group_employer=0&amp;status_filter=all&amp;per_page=200&amp;page=1" class="text-white text-decoration-none text-nowrap">
+              Company
+              <span class="text-white opacity-25">⇅</span>
+            </a>
+          </th>
+        
+        
+          <th class="col-location">
+            <a href="/?sort=location&amp;dir=asc&amp;group_match=0&amp;group_employer=0&amp;status_filter=all&amp;per_page=200&amp;page=1" class="text-white text-decoration-none text-nowrap">
+              Location
+              <span class="text-white opacity-25">⇅</span>
+            </a>
+          </th>
+        
+        
+        
+          <th class="col-salary">
+            <a href="/?sort=salary_min&amp;dir=asc&amp;group_match=0&amp;group_employer=0&amp;status_filter=all&amp;per_page=200&amp;page=1" class="text-white text-decoration-none text-nowrap">
+              Salary
+              <span class="text-white opacity-25">⇅</span>
+            </a>
+          </th>
+        
+        <th class="col-viability">Viability</th>
+        <th class="col-label">Label</th>
+        <th class="col-source">Source</th>
+        
+          <th>
+            <a href="/?sort=status&amp;dir=asc&amp;group_match=0&amp;group_employer=0&amp;status_filter=all&amp;per_page=200&amp;page=1" class="text-white text-decoration-none text-nowrap">
+              Status
+              <span class="text-white opacity-25">⇅</span>
+            </a>
+          </th>
+        
+        
+          <th class="col-applied">
+            <a href="/?sort=applied_at&amp;dir=asc&amp;group_match=0&amp;group_employer=0&amp;status_filter=all&amp;per_page=200&amp;page=1" class="text-white text-decoration-none text-nowrap">
+              Applied
+              <span class="text-white opacity-25">⇅</span>
+            </a>
+          </th>
+        
+        
+          <th class="col-posted">
+            <a href="/?sort=posted_date&amp;dir=asc&amp;group_match=0&amp;group_employer=0&amp;status_filter=all&amp;per_page=200&amp;page=1" class="text-white text-decoration-none text-nowrap">
+              Posted
+              <span class="text-white opacity-25">⇅</span>
+            </a>
+          </th>
+        
+        
+          <th class="col-firstseen">
+            <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;status_filter=all&amp;per_page=200&amp;page=1" class="text-white text-decoration-none text-nowrap">
+              First Seen
+              ↓
+              
+            </a>
+          </th>
+        
+      </tr>
+    </thead>
+    
+    
+    
+    
+    
+      <tbody>
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Baker&#39;s Assistant - Cakes</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('cs_stale')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("cs_stale", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Baker\u0027s Assistant - Cakes", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Aperture Science<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Aperture Science", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Remote
+              
+            </td>
+            <td class="text-nowrap col-salary">$160k – $200k<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('160000', '200000', this)"><i class="bi bi-search"></i></button></td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-warning opacity-50"
+                    title="Stale — re-run rescore_viability.sh
+
+Solid fit; re-score pending.">medium</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">REMOTE</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-info text-dark">Career Sites</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="new"
+        data-job-id="cs_stale"
+        data-viability="medium"
+        onchange="updateStatus('cs_stale', this)">
+  
+  <option value="new" selected>new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied">—</td>
+            <td class="text-nowrap col-posted">2026-06-13</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-15 09:00:00">2026-06-15 09:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Human Likeness Sculpting</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('manual_recruiter')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("manual_recruiter", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Human Likeness Sculpting", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Tyrell Corp<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Tyrell Corp", this)'><i class="bi bi-search"></i></button>
+<a href="https://tyrell.example" target="_blank" rel="noopener" class="btn btn-sm btn-link p-0 ms-1 text-muted"
+   title="Open company website — https://tyrell.example"><i class="bi bi-box-arrow-up-right"></i></a>
+</td>
+            <td class="col-location">
+              Washington, DC
+              
+            </td>
+            <td class="text-nowrap col-salary">$220k – $270k<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('220000', '270000', this)"><i class="bi bi-search"></i></button></td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-success"
+                    title="">high</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">DC</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-dark">Manual</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="new"
+        data-job-id="manual_recruiter"
+        data-viability="high"
+        onchange="updateStatus('manual_recruiter', this)">
+  
+  <option value="new" selected>new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied">—</td>
+            <td class="text-nowrap col-posted">2026-06-14</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-15 08:00:00">2026-06-15 08:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Multiverse Science Engineer</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('ln_autoskip')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("ln_autoskip", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Multiverse Science Engineer", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Massive Dynamic<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Massive Dynamic", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Remote
+              
+            </td>
+            <td class="text-nowrap col-salary">—</td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-danger"
+                    title="">low</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">REMOTE</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-primary">LinkedIn</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="autoskipped"
+        data-job-id="ln_autoskip"
+        data-viability="low"
+        onchange="updateStatus('ln_autoskip', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" selected>autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied">—</td>
+            <td class="text-nowrap col-posted">2026-06-03</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-14 15:00:00">2026-06-14 15:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Principal Robotics Research Scientist</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('cs_skipped')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("cs_skipped", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Principal Robotics Research Scientist", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Cyberdyne<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Cyberdyne", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Charleston, SC
+              
+            </td>
+            <td class="text-nowrap col-salary">—</td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-danger"
+                    title="Not a technical PM role.">low</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">SC</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-info text-dark">Career Sites</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="skipped"
+        data-job-id="cs_skipped"
+        data-viability="low"
+        onchange="updateStatus('cs_skipped', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" selected>skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied">—</td>
+            <td class="text-nowrap col-posted">2026-06-01</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-14 14:00:00">2026-06-14 14:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Oompa-Loompa</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('ln_closed')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("ln_closed", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Oompa-Loompa", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Wonka Industries<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Wonka Industries", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Remote
+              
+            </td>
+            <td class="text-nowrap col-salary">—</td>
+            
+            <td class="col-viability">
+              <span class="text-muted">—</span>
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">REMOTE</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-primary">LinkedIn</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="closed"
+        data-job-id="ln_closed"
+        data-viability=""
+        onchange="updateStatus('ln_closed', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" selected>closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied">—</td>
+            <td class="text-nowrap col-posted">2026-05-20</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-14 13:00:00">2026-06-14 13:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Senior Software Engineer - Compression</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('cs_withdrawn')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("cs_withdrawn", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Senior Software Engineer - Compression", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Pied Piper<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Pied Piper", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Alexandria, VA
+              
+            </td>
+            <td class="text-nowrap col-salary">—</td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-danger"
+                    title="">low</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">DC</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-info text-dark">Career Sites</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="withdrawn"
+        data-job-id="cs_withdrawn"
+        data-viability="low"
+        onchange="updateStatus('cs_withdrawn', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" selected>withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied">—</td>
+            <td class="text-nowrap col-posted">2026-05-30</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-14 12:00:00">2026-06-14 12:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Latex Salesperson</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('ln_ghosted')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("ln_ghosted", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Latex Salesperson", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Vandelay<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Vandelay", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Remote
+              
+            </td>
+            <td class="text-nowrap col-salary">$150k – $185k<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('150000', '185000', this)"><i class="bi bi-search"></i></button></td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-warning"
+                    title="">medium</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">REMOTE</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-primary">LinkedIn</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="ghosted"
+        data-job-id="ln_ghosted"
+        data-viability="medium"
+        onchange="updateStatus('ln_ghosted', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" selected>ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied"><span data-utc="2026-06-01">2026-06-01</span></td>
+            <td class="text-nowrap col-posted">2026-05-28</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-14 11:00:00">2026-06-14 11:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Food-Science Experimentation Engineer</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('cs_rejected')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("cs_rejected", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Food-Science Experimentation Engineer", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Soylent<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Soylent", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Durham, NC
+              
+            </td>
+            <td class="text-nowrap col-salary">$100k – $130k<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('100000', '130000', this)"><i class="bi bi-search"></i></button></td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-danger"
+                    title="">low</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">NC</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-info text-dark">Career Sites</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="rejected"
+        data-job-id="cs_rejected"
+        data-viability="low"
+        onchange="updateStatus('cs_rejected', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" selected>rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied"><span data-utc="2026-06-06">2026-06-06</span></td>
+            <td class="text-nowrap col-posted">2026-06-02</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-14 10:00:00">2026-06-14 10:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Sr. Experimental Research Fellow</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('ln_offered')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("ln_offered", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Sr. Experimental Research Fellow", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Stark Industries<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Stark Industries", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Remote
+              
+            </td>
+            <td class="text-nowrap col-salary">$210k – $260k<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('210000', '260000', this)"><i class="bi bi-search"></i></button></td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-success"
+                    title="">high</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">REMOTE</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-primary">LinkedIn</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="offered"
+        data-job-id="ln_offered"
+        data-viability="high"
+        onchange="updateStatus('ln_offered', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" selected>offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied"><span data-utc="2026-06-09">2026-06-09</span></td>
+            <td class="text-nowrap col-posted">2026-06-05</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-14 09:00:00">2026-06-14 09:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Corporate Drone (Posting # AJ49124120Q)</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('cs_applied_ovr')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("cs_applied_ovr", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Corporate Drone (Posting # AJ49124120Q)", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Hooli<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Hooli", this)'><i class="bi bi-search"></i></button>
+<a href="https://hooli.example" target="_blank" rel="noopener" class="btn btn-sm btn-link p-0 ms-1 text-muted"
+   title="Open company website — https://hooli.example"><i class="bi bi-box-arrow-up-right"></i></a>
+</td>
+            <td class="col-location">
+              Remote
+              
+            </td>
+            <td class="text-nowrap col-salary">$160k – $195k<sup title="Manually entered — feed listed $140k – $175k" style="cursor:help">*</sup><button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('160000', '195000', this)"><i class="bi bi-search"></i></button></td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-warning"
+                    title="">medium</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">REMOTE</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-info text-dark">Career Sites</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="applied"
+        data-job-id="cs_applied_ovr"
+        data-viability="medium"
+        onchange="updateStatus('cs_applied_ovr', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" selected>applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied"><span data-utc="2026-06-14">2026-06-14</span></td>
+            <td class="text-nowrap col-posted">2026-06-10</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-14 08:00:00">2026-06-14 08:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Sr. Virologist</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('ln_deferred')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("ln_deferred", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Sr. Virologist", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Umbrella<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Umbrella", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Columbia, SC
+              
+            </td>
+            <td class="text-nowrap col-salary">$120k+<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('120000', '', this)"><i class="bi bi-search"></i></button></td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-danger"
+                    title="Below target scope and comp.">low</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">SC</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-primary">LinkedIn</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="deferred"
+        data-job-id="ln_deferred"
+        data-viability="low"
+        onchange="updateStatus('ln_deferred', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" selected>deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied">—</td>
+            <td class="text-nowrap col-posted">2026-06-11</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-13 13:00:00">2026-06-13 13:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Photocopier Repair Technician</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('cs_review')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("cs_review", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Photocopier Repair Technician", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Initech<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Initech", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Raleigh, NC
+              
+            </td>
+            <td class="text-nowrap col-salary">up to $180k<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('', '180000', this)"><i class="bi bi-search"></i></button></td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-warning"
+                    title="">medium</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">NC</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-info text-dark">Career Sites</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="reviewing"
+        data-job-id="cs_review"
+        data-viability="medium"
+        onchange="updateStatus('cs_review', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" selected>reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied">—</td>
+            <td class="text-nowrap col-posted">2026-06-12</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-13 12:00:00">2026-06-13 12:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="row-hot">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Sr. Problem-Solver (Contract)</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('ln_new_hot')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("ln_new_hot", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Sr. Problem-Solver (Contract)", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Pacific Trident Global<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Pacific Trident Global", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Arlington, VA
+              
+            </td>
+            <td class="text-nowrap col-salary">$170k – $210k<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('170000', '210000', this)"><i class="bi bi-search"></i></button></td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-success"
+                    title="Excellent match.">high</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">DC</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-primary">LinkedIn</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="new"
+        data-job-id="ln_new_hot"
+        data-viability="high"
+        onchange="updateStatus('ln_new_hot', this)">
+  
+  <option value="new" selected>new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" >interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied">—</td>
+            <td class="text-nowrap col-posted">2026-06-13</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-13 11:00:00">2026-06-13 11:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Explosives Ordnance Expert</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('ln_mem2')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-info"
+        title="Linked — click to change or unlink"
+        onclick='openLinkModal("ln_mem2", "ln_root", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Explosives Ordnance Expert", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Acme Corp<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Acme Corp", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Remote
+              
+            </td>
+            <td class="text-nowrap col-salary">—</td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-warning"
+                    title="Good fit; scope a touch narrow.">medium</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">DC</span>
+              
+                <span class="badge bg-secondary">REMOTE</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-primary">LinkedIn</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="interviewing"
+        data-job-id="ln_mem2"
+        data-viability="medium"
+        onchange="updateStatus('ln_mem2', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" selected>interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied">—</td>
+            <td class="text-nowrap col-posted">2026-06-09</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-12 10:00:00">2026-06-12 10:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Blacksmithing and Anvil-Casting</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('cs_mem1')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-info"
+        title="Linked — click to change or unlink"
+        onclick='openLinkModal("cs_mem1", "ln_root", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Blacksmithing and Anvil-Casting", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Acme Corp<sup title="Originally listed as: Ladders" style="cursor:help">*</sup><button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Acme Corp", this)'><i class="bi bi-search"></i></button>
+
+</td>
+            <td class="col-location">
+              Washington, DC
+              
+            </td>
+            <td class="text-nowrap col-salary">$190k – $230k<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('190000', '230000', this)"><i class="bi bi-search"></i></button></td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-success"
+                    title="">high</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">DC</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-info text-dark">Career Sites</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="interviewing"
+        data-job-id="cs_mem1"
+        data-viability="high"
+        onchange="updateStatus('cs_mem1', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" selected>interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied">—</td>
+            <td class="text-nowrap col-posted">2026-06-09</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-11 09:00:00">2026-06-11 09:00:00</span></td>
+          </tr>
+        
+
+        
+        
+          
+          <tr class="">
+            <td class="job-title">
+              
+              <a href="https://example/job" target="_blank" rel="noopener">Rocket Science (Personal Rocket Division)</a>
+              
+              
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('ln_root')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              
+<button class="btn btn-sm btn-link p-0 ms-1 text-muted"
+        title="Link to canonical…"
+        onclick='openLinkModal("ln_root", "", this)'
+        ><i class="bi bi-link-45deg"></i></button>
+
+              
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle("Rocket Science (Personal Rocket Division)", this)'><i class="bi bi-search"></i></button>
+            </td>
+            <td>Acme Corp<button class="btn btn-sm btn-link p-0 ms-1 text-muted company-search-btn" title="Find all jobs at this employer (possible missed match)" onclick='searchByCompany("Acme Corp", this)'><i class="bi bi-search"></i></button>
+<a href="https://acme.example/careers" target="_blank" rel="noopener" class="btn btn-sm btn-link p-0 ms-1 text-muted"
+   title="Open company website — https://acme.example/careers"><i class="bi bi-box-arrow-up-right"></i></a>
+</td>
+            <td class="col-location">
+              Washington, DC
+              
+            </td>
+            <td class="text-nowrap col-salary">$190k – $230k<button class="btn btn-sm btn-link p-0 ms-1 text-muted comp-search-btn" title="Find all jobs with this exact salary range (possible missed match)" onclick="searchByComp('190000', '230000', this)"><i class="bi bi-search"></i></button></td>
+            
+            <td class="col-viability">
+              
+              <span class="badge text-bg-success"
+                    title="Strong infra/compliance TPM fit at target comp.">high</span>
+              
+            </td>
+            
+            <td class="col-label">
+              
+                <span class="badge bg-secondary">DC</span>
+              
+            </td>
+            
+            <td class="col-source"><span class="badge bg-primary">LinkedIn</span></td>
+            
+            <td>
+<select class="form-select form-select-sm status-select"
+        style="width:auto"
+        autocomplete="off"
+        data-prev="interviewing"
+        data-job-id="ln_root"
+        data-viability="high"
+        onchange="updateStatus('ln_root', this)">
+  
+  <option value="new" >new</option>
+  
+  <option value="skipped" >skipped</option>
+  
+  <option value="autoskipped" >autoskipped</option>
+  
+  <option value="reviewing" >reviewing</option>
+  
+  <option value="deferred" >deferred</option>
+  
+  <option value="applied" >applied</option>
+  
+  <option value="rejected" >rejected</option>
+  
+  <option value="ghosted" >ghosted</option>
+  
+  <option value="interviewing" selected>interviewing</option>
+  
+  <option value="offered" >offered</option>
+  
+  <option value="withdrawn" >withdrawn</option>
+  
+  <option value="closed" >closed</option>
+  
+</select>
+</td>
+            <td class="text-nowrap col-applied"><span data-utc="2026-06-12">2026-06-12</span></td>
+            <td class="text-nowrap col-posted">2026-06-08</td>
+            <td class="text-nowrap col-firstseen"><span data-utc="2026-06-10 08:00:00">2026-06-10 08:00:00</span></td>
+          </tr>
+        
+
+        
+      </tbody>
+    
+  </table>
+</div>

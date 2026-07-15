@@ -41,6 +41,44 @@ def jobs_db():
 
 
 @pytest.fixture
+def sample_db(jobs_db):
+    """In-memory DB populated with the deterministic sample dataset (see fixtures/sample_data).
+    For DB-level tests that want a realistic, varied set of rows without hand-building them."""
+    from fixtures.sample_data import build_sample_db
+    build_sample_db(jobs_db)
+    return jobs_db
+
+
+@pytest.fixture
+def sample_app_db():
+    """Populate the *app's* configured DB with the sample dataset for one test, then clear it.
+
+    Lets a test render the real app (via app.test_client) against known, varied data. Resets
+    jobs / ingest_state / company_hotlist at setup and teardown so it stays isolated from the
+    rest of the suite (which assumes an empty app DB)."""
+    import sqlite3
+    from fixtures.sample_data import build_sample_db
+
+    path = os.environ["JOBSEARCH_DB"]
+
+    def _clear():
+        con = sqlite3.connect(path)
+        for t in ("jobs", "ingest_state", "company_hotlist"):
+            try:
+                con.execute(f"DELETE FROM {t}")
+            except sqlite3.OperationalError:
+                pass
+        con.commit(); con.close()
+
+    _clear()
+    con = sqlite3.connect(path)
+    build_sample_db(con)
+    con.close()
+    yield
+    _clear()
+
+
+@pytest.fixture
 def config_file(tmp_path, monkeypatch):
     """Return a helper that writes a throwaway config.toml and points app at it.
 

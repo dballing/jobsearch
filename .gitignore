@@ -11,4 +11,3 @@ __pycache__/
 *.log
 .claude/
 .vscode/
-mock_screenshot.html

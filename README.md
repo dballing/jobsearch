@@ -138,25 +138,41 @@ Use the absolute path to `ingest.sh`. The script changes into its own directory,
 
 ```
 jobsearch/
-├── app.py                   # Flask web application
-├── ingest.py                # Apify ingestion script
+├── app.py                   # Flask web application (routes, schema migration, stats)
+├── ingest.py                # Apify ingestion: fetch, extract, fuzzy dedup, run summary
 ├── ingest.sh                # venv wrapper for ingest.py
 ├── import_linkedin.py       # one-off import of jobs by LinkedIn URL/ID
 ├── import_linkedin.sh       # venv wrapper for import_linkedin.py
-├── rescore_viability.py     # AI viability scoring script
+├── rescore_viability.py     # AI viability scoring driver (selection, auto-skip, promotion)
 ├── rescore_viability.sh     # venv wrapper for rescore_viability.py
-├── viability.py             # shared scoring helpers (prompt_hash, score_job)
+├── viability.py             # shared scoring helpers (prompt_hash, score_job, location sub-call)
+├── reformat.py              # AI description→Markdown reformatting + integrity check
+├── ai_config.py             # shared [ai]/per-feature settings + token-cost accounting
+├── runlock.py               # single shared writer lock (serializes ingest vs. rescore)
 ├── run_app.sh               # venv wrapper for Flask
+├── run_tests.sh             # hermetic pytest suite (run before committing)
+├── make_screenshot.sh       # regenerate docs/screenshot.png from the mock golden (headless Chrome)
 ├── config.toml              # your local config (gitignored)
 ├── config.toml.example      # template
 ├── requirements.txt         # Python dependencies
 ├── jobs.db                  # SQLite database (gitignored)
+├── uploads/                 # attachment files under UUID names (gitignored)
 ├── TODO.md                  # known open issues and future ideas
 ├── docs/
 │   ├── configuration.md     # full config reference
 │   ├── features.md          # feature documentation
-│   └── screenshot.png       # UI screenshot (used in README)
-└── templates/
-    ├── base.html            # base layout, navbar, offcanvas preview, stats modal
-    └── jobs.html            # main jobs table with filters and column picker
+│   └── screenshot.png       # UI screenshot (used in README; captured from the mock golden)
+├── templates/
+│   ├── base.html            # base layout, navbar, offcanvas preview, stats modal
+│   ├── jobs.html            # main jobs table with filters and column picker
+│   └── report_weekly.html   # printable weekly job-hunt-contact report
+└── tests/                   # hermetic pytest suite
+    ├── conftest.py          # throwaway config/db setup; sample_db / sample_app_db fixtures
+    ├── fixtures/
+    │   └── sample_data.py   # deterministic fabricated dataset (all permutations)
+    ├── snapshots/           # committed HTML goldens
+    │   ├── jobs_all_flat.html
+    │   ├── jobs_all_grouped.html
+    │   └── mock_screenshot.html  # full page → source for docs/screenshot.png
+    └── test_*.py            # unit + snapshot tests
 ```
