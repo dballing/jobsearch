@@ -121,6 +121,7 @@ Describe yourself as a candidate…
 
 # Optional geographic preferences (see below):
 location_prompt = """
+I currently reside in Alexandria, Virginia.
 PREFERRED: DC Metro / Northern Virginia; also fully remote.
 GOOD: Raleigh/RTP and elsewhere in North Carolina.
 ACCEPTABLE: South Carolina.
@@ -130,6 +131,7 @@ assume it falls within my target areas (my searches are already geographically p
 and treat it as at least ACCEPTABLE.
 """
 location_model = "claude-haiku-4-5"   # optional; defaults to [ai].model
+location_use_description = true        # optional; default true (see below)
 
 # Optional auto-skip (disabled by default):
 auto_skip            = false
@@ -142,8 +144,9 @@ auto_skip_confidence = "low"   # "low" (only low) or "medium" (low + medium)
 | `api_key` | *(from `[ai]`)* | Optional per-feature override of the Anthropic key. |
 | `model` | *(from `[ai]`)* | Optional per-feature override of the model. |
 | `prompt` | *(required)* | Your candidate description. Be specific: background, target roles, deal-breakers. |
-| `location_prompt` | *(none)* | Your geographic/remote preferences. When set, a focused single-purpose AI call matches each job's location(s) against this and feeds only the verdict — one of four ordinal tiers `PREFERRED` > `GOOD` > `ACCEPTABLE` > `POOR` — to the main scorer, which reads geography far more reliably than parsing a multi-city list inline. The tier names are generic; **your** prompt decides which locations earn which tier. Put **all** location/remote judgments here and keep geography out of `prompt` so it isn't double-judged. Editing it re-scores every job (it's folded into the staleness hash). *Tip:* if your ingest tasks already restrict searches by geography, you can tell the prompt to assume a bare-country location (`"United States"`) is in-area — the feed wouldn't have surfaced it otherwise. |
+| `location_prompt` | *(none)* | Your geographic/remote preferences. When set, a focused single-purpose AI call matches each job's location(s) against this and feeds only the verdict — one of four ordinal tiers `PREFERRED` > `GOOD` > `ACCEPTABLE` > `POOR` — to the main scorer, which reads geography far more reliably than parsing a multi-city list inline. The tier names are generic; **your** prompt decides which locations earn which tier. Put **all** location/remote judgments here and keep geography out of `prompt` so it isn't double-judged. Editing it re-scores every job (it's folded into the staleness hash). The sub-call also reads each job's **description**, so it honors eligibility conditions in the prose (e.g. a "remote" role that only accepts residents of certain states) — **include where you live** so it can tell whether such conditions include you. *Tip:* if your ingest tasks already restrict searches by geography, you can tell the prompt to assume a bare-country location (`"United States"`) is in-area — the feed wouldn't have surfaced it otherwise. |
 | `location_model` | *(from `[ai]`)* | Optional model for the location sub-call. Defaults to the cheap `[ai]` model even when `model` above is pricier, since the sub-call is a trivial classification. |
+| `location_use_description` | `true` | Whether the location sub-call reads each job's description. On (default), it honors eligibility conditions in the prose — e.g. a "remote" role restricted to residents of certain states — but must run per unique description. Off, it dedups hard by location set (fewer calls, cheaper) but can't see those conditions. Folded into the staleness hash, so flipping it re-scores. |
 | `auto_skip` | `false` | Automatically set `new`/`reviewing` jobs to `autoskipped` if they score at or below the threshold. |
 | `auto_skip_confidence` | `"low"` | Threshold: `"low"` skips only low-scored jobs; `"medium"` skips low and medium. |
 

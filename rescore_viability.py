@@ -374,6 +374,10 @@ def main() -> None:
     # model (haiku) even when the main scorer runs on a pricier model; override with
     # [viability] location_model if desired.
     geo_model = viability_cfg.get("location_model") or config.get("ai", {}).get("model") or DEFAULT_MODEL
+    # Whether the location sub-call reads the job description (catches state-restricted remote
+    # etc.). On by default; off dedups the sub-call hard by location set (cheaper) at the cost
+    # of that coverage. Folded into the hash so flipping it re-scores.
+    geo_uses_description = bool(viability_cfg.get("location_use_description", True))
 
     # api_key/model resolve from [viability] -> [ai] -> ANTHROPIC_API_KEY env.
     api_key, model = resolve_ai_settings(config, "viability")
@@ -395,7 +399,7 @@ def main() -> None:
 
     # Fold location_prompt into the hash too: the geographic verdict the scorer sees depends
     # on it, so editing geography prefs must mark scores stale even when `prompt` is unchanged.
-    current_hash = prompt_hash(viability_prompt, location_prompt)
+    current_hash = prompt_hash(viability_prompt, location_prompt, geo_uses_description)
     conn = open_db(db_path)
 
     # Build the selection WHERE clause (see build_selection for the full filter matrix).
@@ -477,11 +481,19 @@ def main() -> None:
         # geo_note is None and the scorer falls back to the raw list. Cache by location set.
         gnote = None
         if location_prompt:
-            geo_key = (tuple(_job_locations(job)), _work_arrangement(job))
+            # Key includes the description only when the sub-call reads it: then two jobs
+            # sharing a location set but differing in prose (one state-restricts remote, one
+            # doesn't) must NOT share a verdict (identical fuzzy-group reposts still dedup).
+            # With the toggle off the verdict doesn't depend on prose, so key by location set
+            # alone — the hard dedup that keeps it cheap.
+            geo_key = (tuple(_job_locations(job)), _work_arrangement(job),
+                       (job.get("job_description") or "") if geo_uses_description else "")
             if geo_key in geo_cache:
                 fit, match = geo_cache[geo_key]
             else:
-                fit, match, gusage = assess_location_fit(client, location_prompt, job, model=geo_model)
+                fit, match, gusage = assess_location_fit(
+                    client, location_prompt, job, model=geo_model,
+                    include_description=geo_uses_description)
                 geo_cache[geo_key] = (fit, match)
                 if gusage is not None:
                     geo_input  += getattr(gusage, "input_tokens",                0) or 0

@@ -35,34 +35,44 @@ _SYSTEM_BOILERPLATE = (
 # Version of the per-job message schema (which fields we send and how — see
 # build_score_message). It's folded into prompt_hash so that changing *what the model
 # sees for each job* invalidates prior scores just like editing the prompt does. Bump it
-# whenever build_score_message changes materially. History: 2 = added the Location line;
-# 3 = send *all* of a job's locations, not just the first; 4 = added the Work arrangement
-# (remote/hybrid/on-site) line; 5 = gloss the arrangement enum into plain English; 6 =
-# geography replaced by a pre-assessed 'Geographic fit' verdict from a focused location
-# sub-call (assess_location_fit), with location_prompt folded into prompt_hash.
-_SCORING_INPUT_VERSION = "6"
+# whenever build_score_message OR the location sub-call's inputs/_GEO_SYSTEM change materially
+# (they feed the Geographic fit line, so they shape the score too). History: 2 = added the
+# Location line; 3 = send *all* of a job's locations, not just the first; 4 = added the Work
+# arrangement (remote/hybrid/on-site) line; 5 = gloss the arrangement enum into plain English;
+# 6 = geography replaced by a pre-assessed 'Geographic fit' verdict from a focused location
+# sub-call (assess_location_fit), with location_prompt folded into prompt_hash; 7 = feed the
+# description to that sub-call so it catches eligibility conditions (state-restricted remote,
+# relocation) the structured fields miss; 8 = made that a configurable toggle
+# (location_use_description) and reworded the eligibility clause — re-bumped because 7 and 8
+# were developed together and a cron rescore may have stamped scores mid-change.
+_SCORING_INPUT_VERSION = "8"
 
 # Cap on locations included in the scoring message — bounds token cost for the rare job
 # posted across dozens of sites, while staying generous enough to almost never truncate
 # (the candidate only needs their target region to be among those listed).
 _MAX_SCORE_LOCATIONS = 40
 
+# Cap on the description fed to the location sub-call. Eligibility conditions ("remote only
+# for residents of …") sit in the prose, so the call needs the description — but bounded, to
+# keep the (now per-description) sub-call cheap.
+_MAX_GEO_DESC_CHARS = 4000
 
-def prompt_hash(prompt: str, location_prompt: str = "") -> str:
+
+def prompt_hash(prompt: str, location_prompt: str = "", geo_uses_description: bool = True) -> str:
     """Return a stable 32-char hex digest of everything that determines a job's score.
 
     Covers the fixed system boilerplate, the candidate description, the separate
     geographic-preferences prompt (location_prompt — fed to the focused location sub-call,
-    see assess_location_fit), AND the per-job message schema version — so a config edit to
-    *either* prompt, a boilerplate change, OR a change to which fields we send (e.g. adding
-    Location) all correctly mark existing scores stale. Folding in location_prompt matters
-    because the pre-assessed geographic verdict the main scorer now sees depends on it: edit
-    the geography prefs and every score must re-run, even though the candidate `prompt`
-    didn't change. The version is hashed but never sent to the model. Truncated to 32 hex
-    chars purely to keep the stored value compact — collision resistance is irrelevant
-    (it's a change-detector, not a security hash).
+    see assess_location_fit), the location_use_description toggle (geo_uses_description —
+    whether that sub-call reads the description, which changes its verdict), AND the per-job
+    message schema version — so a config edit to any of them, a boilerplate change, OR a
+    change to which fields we send all correctly mark existing scores stale. The version is
+    hashed but never sent to the model. Truncated to 32 hex chars purely to keep the stored
+    value compact — collision resistance is irrelevant (it's a change-detector, not a
+    security hash).
     """
-    material = f"{_SCORING_INPUT_VERSION}\x00{_SYSTEM_BOILERPLATE}{prompt}\x00{location_prompt}"
+    material = (f"{_SCORING_INPUT_VERSION}\x00{_SYSTEM_BOILERPLATE}{prompt}"
+               f"\x00{location_prompt}\x00{geo_uses_description}")
     return hashlib.sha256(material.encode()).hexdigest()[:32]
 
 
@@ -216,6 +226,19 @@ _GEO_SYSTEM = (
     "arrangement is inherently good or bad.\n\n"
 )
 
+# Appended to _GEO_SYSTEM only when the job description is included in the call (the
+# location_use_description toggle). Omitted when it isn't, so the model is never told to
+# consult a description it wasn't given.
+_GEO_DESC_CLAUSE = (
+    "The job description is provided below; it may make a work mode CONDITIONAL — e.g. remote "
+    "work is offered only to residents of certain states/regions, or the role requires "
+    "relocation. If the candidate does not meet a mode's condition (they don't reside where "
+    "remote is permitted, they can't relocate, etc. — judge by their stated residence/"
+    "constraints), that mode is NOT available to them: exclude it and rate by the options that "
+    "remain. So a role that's on-site in an acceptable location but whose remote option excludes "
+    "the candidate is still judged on the on-site option, not called remote.\n\n"
+)
+
 # Valid geographic-fit tiers, ordered best→worst; anything else from the model is a failure.
 # The tier *names* are generic ordinal labels — which locations earn which tier is defined
 # entirely by the candidate's location_prompt, never here.
@@ -242,19 +265,24 @@ def assess_location_fit(
     location_prompt: str,
     job: dict,
     model: str = "claude-haiku-4-5",
+    include_description: bool = True,
 ) -> tuple[str, str, object] | tuple[None, None, None]:
     """Classify one job's geographic fit as its own cheap, single-purpose AI call.
 
     Isolating geography (see the build_score_message docstring for why the inline approach
-    failed) means this call parses only the location list + work arrangement against the
-    candidate's location_prompt and returns a tier. All value judgments live in
-    location_prompt; this function contributes only the plumbing. Returns (fit, match,
-    usage) with fit in GEO_FITS, or (None, None, None) on any failure — nothing to judge,
-    unparseable/invalid response, or API error — so the caller falls back to sending the raw
-    location list.
+    failed) means this call — not the main scorer — does all location reasoning, including
+    the multi-dimensional kind (e.g. on-site in NC is acceptable even if the role's remote
+    option is restricted to states the candidate doesn't live in). It weighs the location
+    list, work arrangement, AND the description against the candidate's location_prompt and
+    returns a tier. The description is included because eligibility *conditions* — "remote
+    candidates must reside in <states>", relocation requirements — live in the prose, not the
+    structured fields; without it the call would call a state-restricted "remote" role remote.
+    All value judgments live in location_prompt; this function contributes only the plumbing.
+    Returns (fit, match, usage) with fit in GEO_FITS, or (None, None, None) on any failure so
+    the caller falls back to sending the raw location list.
 
     The candidate's location_prompt is identical for every job in a run, so it goes in the
-    (ephemeral-cached) system block; only the per-job location text is uncached.
+    (ephemeral-cached) system block; the per-job location text + description are uncached.
     """
     locs = _job_locations(job)
     wa = _work_arrangement(job)
@@ -264,8 +292,19 @@ def assess_location_fit(
     shown, extra = locs[:_MAX_SCORE_LOCATIONS], len(locs) - _MAX_SCORE_LOCATIONS
     loc_text = ("; ".join(shown) + (f" (+{extra} more)" if extra > 0 else "")
                 if shown else "(none listed)")
-    user_text = f"Job locations: {loc_text}\n" + (f"Work arrangement: {wa}\n" if wa else "")
-    system_text = _GEO_SYSTEM + f"Candidate location preferences:\n{location_prompt}"
+    # The description carries eligibility conditions the structured fields miss (state-
+    # restricted remote, relocation requirements). Capped to bound token cost per call, and
+    # skippable via the location_use_description toggle (a cost/coverage trade-off: without
+    # it the sub-call dedups hard by location set; with it, per description). When skipped,
+    # the description-handling clause is dropped too so the prompt stays coherent.
+    description = (job.get("job_description") or "").strip()[:_MAX_GEO_DESC_CHARS] if include_description else ""
+    user_text = (
+        f"Job locations: {loc_text}\n"
+        + (f"Work arrangement: {wa}\n" if wa else "")
+        + (f"\nJob description:\n{description}\n" if description else "")
+    )
+    system_text = (_GEO_SYSTEM + (_GEO_DESC_CLAUSE if description else "")
+                   + f"Candidate location preferences:\n{location_prompt}")
 
     try:
         message = client.messages.create(

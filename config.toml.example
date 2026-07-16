@@ -35,11 +35,16 @@ uploads_dir = "uploads"
 # which locations earn which tier. Put ALL location/remote judgments here (nothing is
 # assumed in code), and keep geography OUT of the `prompt` above so it isn't double-judged.
 #
+# Include WHERE YOU LIVE: the sub-call also reads each job's description, so it can honor
+# eligibility conditions in the prose — e.g. a "remote" role that only accepts residents of
+# certain states. It needs your residence to know whether such conditions include you.
+#
 # Tip: if your ingest tasks already restrict searches to specific geographies (locationSearch),
 # a posting whose only stated location is a bare country ("United States") almost certainly
 # still falls within one of your target areas — the feed wouldn't have returned it otherwise.
-# You can encode that so such vague postings don't get dinged as out-of-area (see last line).
+# You can encode that so such vague postings don't get dinged as out-of-area (see below).
 # location_prompt = """
+# I currently reside in Alexandria, Virginia.
 # PREFERRED: DC Metro / Northern Virginia; also fully remote.
 # GOOD: Raleigh/RTP and elsewhere in North Carolina.
 # ACCEPTABLE: South Carolina.
@@ -49,6 +54,10 @@ uploads_dir = "uploads"
 # pre-filtered to the tiers above) and treat it as at least ACCEPTABLE.
 # """
 # location_model = "claude-haiku-4-5"        # optional; defaults to [ai].model (the sub-call is cheap)
+# location_use_description = true             # optional (default true). When true, the location
+#   sub-call also reads each job's description to honor eligibility conditions in the prose
+#   (state-restricted remote, relocation). Set false to skip it: the sub-call then dedups hard
+#   by location set (cheaper, fewer calls) but can't see those conditions. Flipping it re-scores.
 
 # AI description reformatting (optional) — at ingest time, hand each description to
 # the model and store a cleaned Markdown version that the UI shows instead of the

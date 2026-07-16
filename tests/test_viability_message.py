@@ -208,20 +208,45 @@ class _FakeClient:
         return msg
 
 
-def test_assess_location_fit_parses_verdict_and_sends_prefs_and_locations():
+def test_assess_location_fit_parses_verdict_and_sends_prefs_locations_and_description():
     raw = _json.dumps({"locations_derived": ["Phoenix, AZ, US", "Washington, District of Columbia, US"],
                        "ai_work_arrangement": "On-site"})
     client = _FakeClient('{"fit": "preferred", "match": "Washington, District of Columbia, US"}')
     fit, match, usage = viability.assess_location_fit(
-        client, "DC strongly preferred; AZ poor.", {"title": "T", "company": "C", "raw": raw})
+        client, "DC strongly preferred; AZ poor.",
+        {"title": "T", "company": "C", "raw": raw,
+         "job_description": "Remote candidates must reside in Arizona."})
     assert fit == "preferred" and match == "Washington, District of Columbia, US"
     assert usage is not None
     # The candidate's location_prompt rides in the (cached) system block…
     assert "DC strongly preferred" in client.last_kwargs["system"][0]["text"]
-    # …and every job location + work arrangement is in the user message.
+    # …and every job location + work arrangement + the description (where eligibility
+    # conditions live) is in the user message.
     user = client.last_kwargs["messages"][0]["content"]
     assert "Phoenix, AZ, US" in user and "Washington, District of Columbia, US" in user
     assert "On-site" in user
+    assert "Remote candidates must reside in Arizona." in user
+
+
+def test_assess_location_fit_caps_description():
+    client = _FakeClient('{"fit": "good", "match": "x"}')
+    viability.assess_location_fit(
+        client, "prefs", {"location": "Durham, NC", "job_description": "z" * 9000})
+    user = client.last_kwargs["messages"][0]["content"]
+    assert user.count("z") == viability._MAX_GEO_DESC_CHARS   # description truncated (no 'z' elsewhere)
+
+
+def test_assess_location_fit_omits_description_when_disabled():
+    # location_use_description=false: neither the description nor its handling clause is sent.
+    client = _FakeClient('{"fit": "good", "match": "x"}')
+    viability.assess_location_fit(
+        client, "prefs",
+        {"location": "Durham, NC", "job_description": "Remote only for Texas residents."},
+        include_description=False)
+    user = client.last_kwargs["messages"][0]["content"]
+    system = client.last_kwargs["system"][0]["text"]
+    assert "Remote only for Texas residents." not in user and "Job description" not in user
+    assert "CONDITIONAL" not in system   # the description-handling clause is dropped
 
 
 def test_assess_location_fit_rejects_invalid_fit():
@@ -255,6 +280,14 @@ def test_prompt_hash_folds_in_location_prompt():
     assert viability.prompt_hash("same prompt", "DC preferred") != base
     assert viability.prompt_hash("same prompt", "DC preferred") \
         != viability.prompt_hash("same prompt", "NYC preferred")
+
+
+def test_prompt_hash_folds_in_geo_uses_description():
+    # Flipping the location_use_description toggle must flag scores stale (it changes the geo
+    # verdict), and the default must equal geo_uses_description=True.
+    base = viability.prompt_hash("p", "lp", True)
+    assert viability.prompt_hash("p", "lp", False) != base
+    assert viability.prompt_hash("p", "lp") == base
 
 
 def test_prompt_hash_folds_in_message_schema_version(monkeypatch):

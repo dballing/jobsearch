@@ -63,10 +63,12 @@ def _current_viability_hash() -> str | None:
                 _live_cfg = tomllib.load(_rf)
             _vcfg = _live_cfg.get("viability", {})
             p = _vcfg.get("prompt", "").strip()
-            # location_prompt is folded into the hash too (it drives the geographic verdict
-            # the scorer sees), so a geography-prefs edit correctly flags scores stale.
+            # location_prompt + the location_use_description toggle are folded into the hash
+            # too (both drive the geographic verdict the scorer sees), so editing either
+            # correctly flags scores stale.
             lp = _vcfg.get("location_prompt", "").strip()
-            _viability_hash_cache = prompt_hash(p, lp) if p else None
+            gud = bool(_vcfg.get("location_use_description", True))
+            _viability_hash_cache = prompt_hash(p, lp, gud) if p else None
     except OSError:
         pass
     return _viability_hash_cache
@@ -1848,6 +1850,7 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
     # Optional geographic-preferences prompt (see rescore_viability.py). When set, run the
     # focused location sub-call and feed its verdict to the scorer in place of raw locations.
     location_prompt = vcfg.get("location_prompt", "").strip()
+    geo_uses_description = bool(vcfg.get("location_use_description", True))
     from ai_config import DEFAULT_MODEL, resolve_ai_settings
     api_key, model = resolve_ai_settings(cfg, "viability")
     if not api_key:
@@ -1861,7 +1864,9 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
         client = anthropic.Anthropic(api_key=api_key)
         gnote = None
         if location_prompt:
-            fit, match, _gu = assess_location_fit(client, location_prompt, dict(row), model=geo_model)
+            fit, match, _gu = assess_location_fit(
+                client, location_prompt, dict(row), model=geo_model,
+                include_description=geo_uses_description)
             gnote = geo_note(fit, match)
         rating, reason, _usage = score_job(client, prompt, dict(row), model=model, geo_note=gnote)
     except Exception as e:  # network/SDK/config errors — stay fail-soft
@@ -1871,7 +1876,7 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
     db.execute(
         "UPDATE jobs SET viability = ?, viability_reason = ?, "
         "viability_prompt_hash = ?, needs_rescored = 0 WHERE job_id = ?",
-        (rating, reason, prompt_hash(prompt, location_prompt), job_id),
+        (rating, reason, prompt_hash(prompt, location_prompt, geo_uses_description), job_id),
     )
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     append_history(db, job_id, {"ts": ts, "event": "viability", "rating": rating, "reason": reason})
