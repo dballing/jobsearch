@@ -27,7 +27,7 @@
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content">
       <div class="modal-header">
-        <h6 class="modal-title fw-semibold" id="linkModalLabel">Link job to canonical</h6>
+        <h6 class="modal-title fw-semibold" id="linkModalLabel">Link / merge into a group</h6>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body">
@@ -41,16 +41,17 @@
           </div>
         </div>
 
-        <label class="form-label small fw-semibold">Search for canonical</label>
+        <label class="form-label small fw-semibold">Find the group to merge into</label>
         <input type="search" id="linkSearchInput" class="form-control form-control-sm mb-2"
                placeholder='Search title / company — words narrow results; "phrase" for exact match…' autocomplete="off">
+        <div class="text-muted mb-1" style="font-size:.78em">Each result is a whole group; merging moves <em>all</em> of this posting's group into it.</div>
         <div id="linkResults" class="list-group list-group-flush small"></div>
 
         <div id="linkWarning" class="alert alert-warning py-2 small mt-2 d-none"></div>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-        <button type="button" class="btn btn-sm btn-primary" id="linkConfirmBtn" disabled>Link to selected ▸</button>
+        <button type="button" class="btn btn-sm btn-primary" id="linkConfirmBtn" disabled>Merge into selected ▸</button>
       </div>
     </div>
   </div>
@@ -881,45 +882,37 @@ document.addEventListener('DOMContentLoaded', () => {
     _linkDebounce = setTimeout(() => fetchLinkResults(this.value.trim()), 300);
   });
 
-// Search /jobs/autocomplete (debounced by the input handler above) and render clickable
-// candidate rows, flagging any that already belong to a group.
+// Search /jobs/autocomplete (debounced above) and render one clickable row per matching
+// GROUP, labeled with size / first-seen / source so identically-titled groups are telling
+// apart. The picker's job_id is the group root — the merge target.
 async function fetchLinkResults(q) {
   if (!q) { document.getElementById('linkResults').innerHTML = ''; return; }
   const resp = await fetch(`/jobs/autocomplete?q=${encodeURIComponent(q)}&exclude=${encodeURIComponent(_linkJobId)}`);
   if (!resp.ok) return;
   const items = await resp.json();
   const list  = document.getElementById('linkResults');
+  if (!items.length) { list.innerHTML = '<div class="text-muted px-2 py-2" style="font-size:.85em">No other groups match.</div>'; return; }
   list.innerHTML = items.map(r => {
-    const sub = r.canonical_id
-      ? `<div class="text-muted" style="font-size:.8em">part of group: ${escHtml(r.canonical_title || r.canonical_id)}</div>`
-      : '';
+    const date = (r.first_seen || '').slice(0, 10);
+    const meta = [escHtml(r.company || ''), escHtml(r.sources || ''),
+                  `${r.size} posting${r.size === 1 ? '' : 's'}`,
+                  date ? `first seen ${date}` : '']
+                 .filter(Boolean).join(' · ');
     return `<button type="button" class="list-group-item list-group-item-action py-1 px-2 link-result"
-                    data-job-id="${escHtml(r.job_id)}"
-                    data-canonical-id="${escHtml(r.canonical_id || '')}"
-                    data-canonical-title="${escHtml(r.canonical_title || '')}">
+                    data-job-id="${escHtml(r.root_id)}">
               <div>${escHtml(r.title || '(no title)')}</div>
-              <div class="text-muted" style="font-size:.85em">${escHtml(r.company || '')}</div>
-              ${sub}
+              <div class="text-muted" style="font-size:.8em">${meta}</div>
             </button>`;
   }).join('');
   list.querySelectorAll('.link-result').forEach(btn => btn.addEventListener('click', selectLinkResult));
 }
 
-// Mark a candidate selected and enable Confirm; if the candidate is itself already in a
-// group, warn that the link will attach to that group's root (the server resolves one hop).
+// Mark a group selected and enable the merge button.
 function selectLinkResult(e) {
   document.querySelectorAll('.link-result').forEach(b => b.classList.remove('active'));
   e.currentTarget.classList.add('active');
-  _linkSelectedId = e.currentTarget.dataset.jobId;
-  const canonId   = e.currentTarget.dataset.canonicalId;
-  const warn      = document.getElementById('linkWarning');
-  if (canonId) {
-    const root = e.currentTarget.dataset.canonicalTitle || canonId;
-    warn.textContent = `⚠ This job is already part of a group. Your job will be linked to the group root ("${root}") instead.`;
-    warn.classList.remove('d-none');
-  } else {
-    warn.classList.add('d-none');
-  }
+  _linkSelectedId = e.currentTarget.dataset.jobId;   // target group root
+  document.getElementById('linkWarning').classList.add('d-none');
   document.getElementById('linkConfirmBtn').disabled = false;
 }
 

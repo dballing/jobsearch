@@ -2106,94 +2106,133 @@ def delete_attachment(job_id: str, attachment_id: str):
 
 @app.route("/jobs/autocomplete")
 def jobs_autocomplete():
-    """Title/company suggestions for the manual "link to canonical" picker. Quoted
-    phrases count as one token; every token must match title OR company (AND across
-    tokens); the in-progress job (exclude) is omitted from results."""
+    """Group-level candidates for the manual link/merge picker: one row per canonical group
+    whose title/company matches the query, carrying the group's size, earliest first_seen,
+    and source(s) so identically-titled groups (e.g. two 24-posting reposts of the same req)
+    are distinguishable. The in-progress job's OWN group is excluded — you can't merge a
+    group with itself. Quoted phrases stay whole; each token must match title OR company.
+
+    Grouping matters: a search matches individual postings, but the size/first_seen are
+    aggregated over the *whole* group (all members), not just the ones that matched — so the
+    count shown is the true group size."""
     q       = request.args.get("q", "").strip()
     exclude = request.args.get("exclude", "")
     if not q:
         return []
     db = get_db()
-    # Same tokenized search as the jobs list (quoted phrases stay whole; each token must
-    # match title OR company; AND across tokens). Empty/whitespace-only → no results.
     token_clauses, token_params = search_token_where(
         q, ["j.title", "j.company", "COALESCE(j.company_actual, j.company)"])
     if not token_clauses:
         return []
+    # The source job's group root, so we can drop it from the merge candidates.
+    source_root = ""
+    if exclude:
+        r = db.execute(
+            "SELECT COALESCE(canonical_id, job_id) AS root FROM jobs WHERE job_id = ?",
+            (exclude,)).fetchone()
+        source_root = r["root"] if r else exclude
     rows = db.execute(
-        f"""SELECT j.job_id, j.title,
-                   COALESCE(j.company_actual, j.company) AS company,
-                   j.location, j.status, j.viability,
-                   j.canonical_id,
-                   c.title   AS canonical_title,
-                   COALESCE(c.company_actual, c.company) AS canonical_company
-            FROM jobs j
-            LEFT JOIN jobs c ON c.job_id = j.canonical_id
-            WHERE {token_clauses}
-              AND j.job_id != ?
-            ORDER BY j.first_seen DESC
-            LIMIT 10""",
-        token_params + [exclude or ""],
+        f"""
+        SELECT r.job_id AS root_id, r.title AS title,
+               COALESCE(r.company_actual, r.company) AS company,
+               grp.size AS size, grp.first_seen AS first_seen, grp.sources AS sources
+        FROM (
+            SELECT COALESCE(m.canonical_id, m.job_id) AS root_id,
+                   COUNT(*) AS size, MIN(m.first_seen) AS first_seen,
+                   GROUP_CONCAT(DISTINCT m.source) AS sources
+            FROM jobs m
+            WHERE COALESCE(m.canonical_id, m.job_id) IN (
+                SELECT DISTINCT COALESCE(j.canonical_id, j.job_id)
+                FROM jobs j
+                WHERE {token_clauses} AND COALESCE(j.canonical_id, j.job_id) != ?
+            )
+            GROUP BY COALESCE(m.canonical_id, m.job_id)
+        ) grp
+        JOIN jobs r ON r.job_id = grp.root_id
+        ORDER BY grp.first_seen DESC
+        LIMIT 10
+        """,
+        token_params + [source_root],
     ).fetchall()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["sources"] = ", ".join(
+            SOURCE_NAMES.get(s, s) for s in (d.pop("sources") or "").split(",") if s)
+        out.append(d)
+    return out
+
+
+def _merge_group_into(db: sqlite3.Connection, job_id: str, target_root: str, ts: str) -> int:
+    """Merge job_id's ENTIRE current group into the group rooted at target_root.
+
+    Re-points the source group's root and every member at target_root (preserving the
+    one-hop / no-chain invariant), and inherits the target's status + applied date for any
+    moved member still in a new/reviewing state (mirroring single-link behaviour, across the
+    whole group). Pure DB logic (no request/response) so it's unit-testable. Returns the
+    number of postings moved. The caller guarantees target_root is a real root in a
+    *different* group.
+    """
+    row = db.execute("SELECT canonical_id FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    source_root = (row["canonical_id"] if row else None) or job_id
+    source_ids = [r["job_id"] for r in db.execute(
+        "SELECT job_id FROM jobs WHERE job_id = ? OR canonical_id = ?", (source_root, source_root)
+    ).fetchall() if r["job_id"] != target_root]  # never re-point the target onto itself
+    if not source_ids:
+        return 0
+    placeholders = ",".join("?" * len(source_ids))
+    db.execute(f"UPDATE jobs SET canonical_id = ? WHERE job_id IN ({placeholders})",
+               [target_root, *source_ids])
+    append_history(db, source_root, {
+        "ts": ts, "event": "linked", "canonical_id": target_root,
+        "note": f"merged group of {len(source_ids)}",
+    })
+    root = db.execute("SELECT status, applied_at FROM jobs WHERE job_id = ?", (target_root,)).fetchone()
+    if root and root["status"] not in ("new", "reviewing"):
+        for mid in source_ids:
+            st = db.execute("SELECT status FROM jobs WHERE job_id = ?", (mid,)).fetchone()
+            if st and st["status"] in ("new", "reviewing"):
+                db.execute("UPDATE jobs SET status = ?, applied_at = ? WHERE job_id = ?",
+                           (root["status"], root["applied_at"], mid))
+                append_history(db, mid, {
+                    "ts": ts, "event": "status", "from": st["status"], "to": root["status"],
+                    "note": "inherited from canonical on link",
+                })
+    return len(source_ids)
 
 
 @app.route("/job/<job_id>/link", methods=["POST"])
 def link_job(job_id: str):
+    """Merge this posting's whole group into the group whose root is `canonical_id` (from the
+    picker — always a group root). Empty `canonical_id` unlinks this posting only."""
     db             = get_db()
     target_raw     = request.form.get("canonical_id", "").strip()
     ts             = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # ── Unlink ──────────────────────────────────────────────────────────────
+    # ── Unlink (this posting only) ────────────────────────────────────────────
     if not target_raw:
         db.execute("UPDATE jobs SET canonical_id = NULL WHERE job_id = ?", (job_id,))
         append_history(db, job_id, {"ts": ts, "event": "unlinked"})
         db.commit()
         return "", 204
 
-    # ── Link ─────────────────────────────────────────────────────────────────
+    # ── Link / merge group ────────────────────────────────────────────────────
     if target_raw == job_id:
         return {"error": "A job cannot be linked to itself."}, 400
-
     target_row = db.execute(
-        "SELECT job_id, canonical_id, title, company FROM jobs WHERE job_id = ?",
-        (target_raw,),
-    ).fetchone()
+        "SELECT job_id, canonical_id FROM jobs WHERE job_id = ?", (target_raw,)).fetchone()
     if not target_row:
         return {"error": f"Job {target_raw!r} not found."}, 404
-
-    # Follow one hop to the root (prevents chaining).
     resolved_root = target_row["canonical_id"] or target_row["job_id"]
 
-    if resolved_root == job_id:
-        return {"error": "Cannot create a circular link."}, 400
+    src = db.execute("SELECT canonical_id FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    source_root = (src["canonical_id"] if src else None) or job_id
+    if resolved_root == source_root:
+        return {"error": "Those postings are already in the same group."}, 400
 
-    # Update the job itself.
-    db.execute("UPDATE jobs SET canonical_id = ? WHERE job_id = ?", (resolved_root, job_id))
-    append_history(db, job_id, {"ts": ts, "event": "linked", "canonical_id": resolved_root})
-
-    # Inherit the canonical's status (and applied date) if the job is still early.
-    job_row = db.execute("SELECT status FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
-    if job_row and job_row["status"] in ("new", "reviewing"):
-        root_row = db.execute("SELECT status, applied_at FROM jobs WHERE job_id = ?", (resolved_root,)).fetchone()
-        if root_row and root_row["status"] not in ("new", "reviewing"):
-            db.execute("UPDATE jobs SET status = ?, applied_at = ? WHERE job_id = ?",
-                       (root_row["status"], root_row["applied_at"], job_id))
-            append_history(db, job_id, {
-                "ts": ts, "event": "status",
-                "from": job_row["status"], "to": root_row["status"],
-                "note": "inherited from canonical on link",
-            })
-
-    # Re-point any existing dependents of this job to the new root so no
-    # two-hop chains are created (data model guarantees at most one hop).
-    db.execute(
-        "UPDATE jobs SET canonical_id = ? WHERE canonical_id = ?",
-        (resolved_root, job_id),
-    )
-
+    merged = _merge_group_into(db, job_id, resolved_root, ts)
     db.commit()
-    return {"canonical_id": resolved_root}, 200
+    return {"canonical_id": resolved_root, "merged": merged}, 200
 
 
 def promote_to_canonical(db: sqlite3.Connection, job_id: str, ts: str) -> tuple[bool, str]:
