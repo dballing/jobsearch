@@ -909,12 +909,30 @@
     Promise.all([fetch('/stats'), fetch('/stats/history'), fetch('/stats/viability_by_day')])
       .then(rs => { if (rs.some(r => !r.ok)) throw new Error(); return Promise.all(rs.map(r => r.json())); })
       .then(([s, h, v]) => {
-        const statusOrder = [
-          'new','reviewing','deferred','applied','interviewing','offered','rejected','withdrawn','skipped','closed'
+        // "By status" breakdown. Some statuses are effectively variants of another — autoskipped
+        // is an auto-applied skip, ghosted a silent rejection — so each folds into a combined row
+        // (label + summed count) rather than a near-duplicate line. Order mirrors the lifecycle.
+        const statusGroups = [
+          { label: 'New',                keys: ['new'] },
+          { label: 'Reviewing',          keys: ['reviewing'] },
+          { label: 'Deferred',           keys: ['deferred'] },
+          { label: 'Applied',            keys: ['applied'] },
+          { label: 'Interviewing',       keys: ['interviewing'] },
+          { label: 'Offered',            keys: ['offered'] },
+          { label: 'Rejected / Ghosted', keys: ['rejected', 'ghosted'] },
+          { label: 'Withdrawn',          keys: ['withdrawn'] },
+          { label: 'Skipped / Autoskipped', keys: ['skipped', 'autoskipped'] },
+          { label: 'Closed',             keys: ['closed'] },
         ];
-        const statusRows = statusOrder
-          .filter(st => s.by_status[st])
-          .map(st => `<tr><td class="text-capitalize">${escHtml(st)}</td><td class="text-end">${s.by_status[st]}</td></tr>`)
+        // Safety net: surface any status not covered above as its own row, so the breakdown
+        // always sums to the total and a newly-added status can't silently vanish.
+        const known = new Set(statusGroups.flatMap(g => g.keys));
+        Object.keys(s.by_status).filter(st => !known.has(st)).sort().forEach(st =>
+          statusGroups.push({ label: st.charAt(0).toUpperCase() + st.slice(1), keys: [st] }));
+        const statusRows = statusGroups
+          .map(g => ({ label: g.label, count: g.keys.reduce((n, k) => n + (s.by_status[k] || 0), 0) }))
+          .filter(g => g.count > 0)
+          .map(g => `<tr><td>${escHtml(g.label)}</td><td class="text-end">${g.count}</td></tr>`)
           .join('');
         const labelRows = s.by_label.length
           ? s.by_label.map(l => `<tr><td>${escHtml(l.display)}</td><td class="text-end">${l.count}</td></tr>`).join('')
