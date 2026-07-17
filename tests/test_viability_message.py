@@ -188,6 +188,43 @@ def test_geo_note_tiers():
     assert viability.geo_note("great", "x") is None
 
 
+# ── clamp_viability_for_geo(): POOR geography forces the final rating to low ────
+def test_clamp_forces_medium_to_low_and_appends_note_on_poor():
+    """A POOR fit + a medium/high rating → low, with the model's reason kept and the override
+    noted. This is the WFAA case: the scorer said 'excludes candidate' yet returned medium."""
+    rating, reason = viability.clamp_viability_for_geo(
+        "poor", "medium", "Strong TPM fit but remote-state restriction excludes candidate.")
+    assert rating == "low"
+    assert reason.startswith("Strong TPM fit")          # model's own reasoning preserved
+    assert "Forced to LOW" in reason and "POOR" in reason
+
+
+def test_clamp_forces_high_to_low_on_poor():
+    rating, reason = viability.clamp_viability_for_geo("poor", "high", "Great role.")
+    assert rating == "low"
+    assert "Forced to LOW" in reason
+
+
+def test_clamp_leaves_already_low_untouched_no_redundant_suffix():
+    """Already low → verbatim: the rating is right and the suffix would be noise."""
+    rating, reason = viability.clamp_viability_for_geo("poor", "low", "Wrong location entirely.")
+    assert rating == "low"
+    assert reason == "Wrong location entirely."
+    assert "Forced to LOW" not in reason
+
+
+def test_clamp_passes_through_non_poor_tiers():
+    """acceptable/good/preferred keep the model's verdict — only the bottom tier is disqualifying."""
+    for fit in ("acceptable", "good", "preferred", None):
+        assert viability.clamp_viability_for_geo(fit, "high", "r") == ("high", "r")
+        assert viability.clamp_viability_for_geo(fit, "medium", "r") == ("medium", "r")
+
+
+def test_clamp_leaves_none_rating_for_caller_to_skip():
+    """A failed score (None) isn't turned into a low — the caller skips it as before."""
+    assert viability.clamp_viability_for_geo("poor", None, "") == (None, "")
+
+
 # ── assess_location_fit(): the focused sub-call (fake client, no network) ──────
 class _FakeUsage:
     input_tokens = output_tokens = cache_creation_input_tokens = cache_read_input_tokens = 0
@@ -246,7 +283,7 @@ def test_assess_location_fit_omits_description_when_disabled():
     user = client.last_kwargs["messages"][0]["content"]
     system = client.last_kwargs["system"][0]["text"]
     assert "Remote only for Texas residents." not in user and "Job description" not in user
-    assert "CONDITIONAL" not in system   # the description-handling clause is dropped
+    assert "eligibility condition" not in system   # the description-handling clause is dropped
 
 
 def test_assess_location_fit_rejects_invalid_fit():

@@ -15,8 +15,13 @@ uploads_dir = "uploads"
 # Viability scoring — uses the Anthropic API to rate each job high/medium/low.
 # Run `rescore_viability.sh` after ingestion to score new/updated jobs (excludes closed).
 # api_key/model are inherited from [ai] (an api_key/model set here still wins as an override).
+# RECOMMENDED: set `model` below to a capable model like claude-sonnet-5. The [ai] default is
+# cheap Haiku (right for high-volume reformatting), but viability is a real judgment call AND it
+# sets the description-aware geo sub-call's model — Haiku there false-POORs remote jobs. The cost
+# delta is small (the candidate profile is prompt-cached). See docs/configuration.md for why.
 # [viability]
 # enabled = true
+# model   = "claude-sonnet-5"               # optional per-feature override of [ai].model for scoring (recommended)
 # auto_skip            = false              # auto-set low/medium jobs to 'autoskipped' during rescore
 # auto_skip_confidence = "low"             # threshold: "low" (only low) or "medium" (low + medium)
 # prompt  = """
@@ -34,6 +39,8 @@ uploads_dir = "uploads"
 # multi-city list itself. The four tiers are generic ordinal rungs; YOUR prompt decides
 # which locations earn which tier. Put ALL location/remote judgments here (nothing is
 # assumed in code), and keep geography OUT of the `prompt` above so it isn't double-judged.
+# A POOR verdict (the bottom tier — no location/remote option the candidate can work) forces
+# the overall viability to `low`; the other three tiers are advisory to the main scorer.
 #
 # Include WHERE YOU LIVE: the sub-call also reads each job's description, so it can honor
 # eligibility conditions in the prose — e.g. a "remote" role that only accepts residents of
@@ -53,11 +60,19 @@ uploads_dir = "uploads"
 # city, assume it falls within my target areas (my searches are already geographically
 # pre-filtered to the tiers above) and treat it as at least ACCEPTABLE.
 # """
-# location_model = "claude-haiku-4-5"        # optional; defaults to [ai].model (the sub-call is cheap)
+# location_model = "claude-haiku-4-5"        # optional; overrides the auto-selected sub-call model.
+#   When unset: with location_use_description OFF the sub-call is a cheap location match and uses
+#   [ai].model. With it ON, reading descriptions needs comprehension, so it uses whatever model
+#   viability scoring itself uses — the `model` in this [viability] section if you set one (above),
+#   otherwise [ai].model. So if your scoring runs on a capable model (e.g. sonnet) the sub-call
+#   inherits it; if your whole setup is on a cheap model, it stays cheap and will false-POOR remote
+#   jobs whose descriptions merely mention other regions — set location_model here to fix that.
 # location_use_description = true             # optional (default true). When true, the location
 #   sub-call also reads each job's description to honor eligibility conditions in the prose
-#   (state-restricted remote, relocation). Set false to skip it: the sub-call then dedups hard
-#   by location set (cheaper, fewer calls) but can't see those conditions. Flipping it re-scores.
+#   (state-restricted remote, relocation) — and needs a capable model (see location_model; the
+#   default auto-escalates to your viability model). Set false to skip it: the sub-call then dedups
+#   hard by location set (cheaper, fewer calls, a cheap model is fine) but can't see those
+#   conditions. Flipping it re-scores.
 
 # AI description reformatting (optional) — at ingest time, hand each description to
 # the model and store a cleaned Markdown version that the UI shows instead of the

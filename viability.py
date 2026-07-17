@@ -44,8 +44,21 @@ _SYSTEM_BOILERPLATE = (
 # description to that sub-call so it catches eligibility conditions (state-restricted remote,
 # relocation) the structured fields miss; 8 = made that a configurable toggle
 # (location_use_description) and reworded the eligibility clause — re-bumped because 7 and 8
-# were developed together and a cron rescore may have stamped scores mid-change.
-_SCORING_INPUT_VERSION = "8"
+# were developed together and a cron rescore may have stamped scores mid-change; 9 = a POOR
+# geographic-fit verdict now deterministically clamps the overall rating to 'low'
+# (clamp_viability_for_geo) instead of trusting the main scorer, which discounted it, AND the
+# description clause (_GEO_DESC_CLAUSE) was hardened so the description only downgrades a work mode
+# on an EXPLICIT eligibility condition — not from ambient office/regional/pay-zone language, which
+# had produced false-POOR verdicts on fully-remote jobs (e.g. a remote CA role read POOR). Also
+# shipped: the geo sub-call's model auto-escalates to the viability model when it reads the
+# description (resolve_geo_model) — not a prompt_hash input (the model never is), but part of the
+# same scoring-behavior change, so the bump ensures existing scores re-run under it too. 10 =
+# re-bumped because 9 and 10 were developed together: 9 was set at the start of the clamp work, then
+# the description clause + model escalation changed the scoring behavior *after* 9 was already on
+# disk, where a cron rescore (or the --debug single-job rescore) could have stamped scores hash-9
+# with that intermediate behavior — the re-bump invalidates any such score so all re-run under the
+# final geo path.
+_SCORING_INPUT_VERSION = "10"
 
 # Cap on locations included in the scoring message — bounds token cost for the rare job
 # posted across dozens of sites, while staying generous enough to almost never truncate
@@ -230,13 +243,19 @@ _GEO_SYSTEM = (
 # location_use_description toggle). Omitted when it isn't, so the model is never told to
 # consult a description it wasn't given.
 _GEO_DESC_CLAUSE = (
-    "The job description is provided below; it may make a work mode CONDITIONAL — e.g. remote "
-    "work is offered only to residents of certain states/regions, or the role requires "
-    "relocation. If the candidate does not meet a mode's condition (they don't reside where "
-    "remote is permitted, they can't relocate, etc. — judge by their stated residence/"
-    "constraints), that mode is NOT available to them: exclude it and rate by the options that "
-    "remain. So a role that's on-site in an acceptable location but whose remote option excludes "
-    "the candidate is still judged on the on-site option, not called remote.\n\n"
+    "The job description is provided below. Use it for ONE purpose only: to detect an EXPLICIT "
+    "eligibility condition that changes which work modes are actually open to this candidate — "
+    "e.g. the text states remote work is limited to residents of specific states/regions, or the "
+    "role requires relocation. If such a stated condition excludes the candidate (judge by their "
+    "stated residence/constraints), that mode is NOT available to them: exclude it and rate by the "
+    "options that remain — so an on-site-in-an-acceptable-location role whose remote option excludes "
+    "the candidate is judged on the on-site option, not called remote.\n"
+    "Otherwise IGNORE the description for location purposes. Do NOT infer a restriction from the "
+    "office or headquarters location, from regional/'global'/multi-region language, from pay zones, "
+    "or from anything short of an explicit eligibility condition. Absent such a condition, rate "
+    "EXACTLY as you would from the location list and work arrangement alone; in particular a "
+    "fully-remote role with no office requirement keeps its remote-based fit no matter where an "
+    "office happens to be.\n\n"
 )
 
 # Valid geographic-fit tiers, ordered best→worst; anything else from the model is a failure.
@@ -258,6 +277,37 @@ def geo_note(fit: str | None, match: str | None) -> str | None:
         return "POOR — none of the listed locations matches the candidate's preferences"
     m = (match or "").strip()
     return fit.upper() + (f" (best match: {m})" if m else "")
+
+
+# Appended to the score reason when a POOR geographic fit forces the rating down (see
+# clamp_viability_for_geo). Leads with the trigger so the override is self-explaining in the UI.
+_GEO_POOR_SUFFIX = (
+    " [Forced to LOW: geographic fit is POOR — none of this role's locations or work "
+    "arrangements is workable for the candidate, which is disqualifying regardless of other merits.]"
+)
+
+
+def clamp_viability_for_geo(fit: str | None, rating: str | None, reason: str) -> tuple[str | None, str]:
+    """Force a POOR-geography job down to 'low', preserving the model's own reasoning.
+
+    A POOR fit is the bottom tier — *no* listed location or remote option the candidate can
+    actually work — so the role is untenable however well it fits on scope/comp/industry. But
+    the main scorer treats the pre-assessed 'Geographic fit: POOR' line as merely one negative
+    and routinely still returns 'medium' (observed: a role whose reason literally said the
+    location "excludes candidate" scored medium). Rather than trust prompt wording the model
+    demonstrably discounts, we clamp deterministically here.
+
+    Only POOR is clamped — 'acceptable'/'good'/'preferred' (and a failed/None geo verdict) pass
+    through untouched, so the sub-call's nuance is respected. If the model already rated it low
+    the rating and reason are returned verbatim (no redundant suffix); otherwise the rating
+    becomes 'low' and a bracketed note explaining the override is appended to the model's reason
+    (kept, so the richer 'why' — staffing firm, methodology focus, etc. — isn't lost). A None
+    rating (score_job failed) is left as-is for the caller to skip. Pure, so it's unit-testable
+    without an API call.
+    """
+    if fit != "poor" or rating is None or rating == "low":
+        return rating, reason
+    return "low", (reason or "").rstrip() + _GEO_POOR_SUFFIX
 
 
 def assess_location_fit(

@@ -138,15 +138,34 @@ auto_skip            = false
 auto_skip_confidence = "low"   # "low" (only low) or "medium" (low + medium)
 ```
 
+> **Recommended: set `[viability].model` to a capable model such as `claude-sonnet-5`.**
+> The global default (`[ai].model`) is `claude-haiku-4-5` on purpose — it's the cheapest model,
+> and the other AI feature (description reformatting) is high-volume, low-judgment work where
+> Haiku is the right call. Viability scoring is different, and it's worth spending a little more
+> here for three reasons:
+> 1. **The rating is a genuine judgment, not a classification.** Weighing scope, seniority, comp,
+>    industry, and deal-breakers against a detailed candidate profile rewards a stronger model
+>    with more discerning, better-calibrated ratings and reasons; Haiku is comparatively blunt.
+> 2. **It sets the geographic sub-call's model when `location_use_description` is on.** That
+>    sub-call then reads full job descriptions, and Haiku mis-reads them — it false-`POOR`s
+>    fully-remote roles whose descriptions merely mention other regions (which then get clamped to
+>    `low`), where Sonnet correctly tells a real "remote only for residents of X" restriction from
+>    incidental prose. Setting a capable `model` fixes scoring *and* geography in one place.
+> 3. **The cost delta is small.** The candidate profile (the bulk of the tokens) is prompt-cached,
+>    so after the first call a full rescore is cheap, and rescores are incremental. The quality
+>    gain far outweighs the few extra cents. (If you'd rather keep scoring on Haiku, set
+>    `location_model` to a capable model instead, so at least the description-aware geo call is
+>    accurate.)
+
 | Key | Default | Description |
 |-----|---------|-------------|
 | `enabled` | `false` | Enable viability scoring. |
 | `api_key` | *(from `[ai]`)* | Optional per-feature override of the Anthropic key. |
 | `model` | *(from `[ai]`)* | Optional per-feature override of the model. |
 | `prompt` | *(required)* | Your candidate description. Be specific: background, target roles, deal-breakers. |
-| `location_prompt` | *(none)* | Your geographic/remote preferences. When set, a focused single-purpose AI call matches each job's location(s) against this and feeds only the verdict — one of four ordinal tiers `PREFERRED` > `GOOD` > `ACCEPTABLE` > `POOR` — to the main scorer, which reads geography far more reliably than parsing a multi-city list inline. The tier names are generic; **your** prompt decides which locations earn which tier. Put **all** location/remote judgments here and keep geography out of `prompt` so it isn't double-judged. Editing it re-scores every job (it's folded into the staleness hash). The sub-call also reads each job's **description**, so it honors eligibility conditions in the prose (e.g. a "remote" role that only accepts residents of certain states) — **include where you live** so it can tell whether such conditions include you. *Tip:* if your ingest tasks already restrict searches by geography, you can tell the prompt to assume a bare-country location (`"United States"`) is in-area — the feed wouldn't have surfaced it otherwise. |
-| `location_model` | *(from `[ai]`)* | Optional model for the location sub-call. Defaults to the cheap `[ai]` model even when `model` above is pricier, since the sub-call is a trivial classification. |
-| `location_use_description` | `true` | Whether the location sub-call reads each job's description. On (default), it honors eligibility conditions in the prose — e.g. a "remote" role restricted to residents of certain states — but must run per unique description. Off, it dedups hard by location set (fewer calls, cheaper) but can't see those conditions. Folded into the staleness hash, so flipping it re-scores. |
+| `location_prompt` | *(none)* | Your geographic/remote preferences. When set, a focused single-purpose AI call matches each job's location(s) against this and feeds only the verdict — one of four ordinal tiers `PREFERRED` > `GOOD` > `ACCEPTABLE` > `POOR` — to the main scorer, which reads geography far more reliably than parsing a multi-city list inline. The tier names are generic; **your** prompt decides which locations earn which tier. Put **all** location/remote judgments here and keep geography out of `prompt` so it isn't double-judged. Editing it re-scores every job (it's folded into the staleness hash). The sub-call also reads each job's **description**, so it honors eligibility conditions in the prose (e.g. a "remote" role that only accepts residents of certain states) — **include where you live** so it can tell whether such conditions include you. A **`POOR`** verdict — the bottom tier, meaning no listed location or remote option the candidate can actually work — **deterministically forces the overall viability to `low`** (geography is a hard disqualifier); the main scorer would otherwise discount it and still return `medium`. The other three tiers flow to the scorer as advisory context. When this override fires, the score's reason keeps the model's own explanation with a bracketed `[Forced to LOW: …]` note appended. *Tip:* if your ingest tasks already restrict searches by geography, you can tell the prompt to assume a bare-country location (`"United States"`) is in-area — the feed wouldn't have surfaced it otherwise. |
+| `location_model` | *(auto)* | Optional model for the location sub-call. When set, it always wins. When unset, the default **depends on `location_use_description`**: with the description off, the sub-call is a trivial location match, so it uses the cheap `[ai]` model even when `model` above is pricier; with the description on, reading the prose to tell a real eligibility restriction from incidental office/regional wording is a comprehension task the cheap model gets wrong (it false-`POOR`s fully-remote roles), so it **escalates to the model viability scoring uses** — i.e. `[viability].model` if set, else `[ai].model` (so the escalation only buys a better sub-call when your scoring model is more capable than `[ai].model`; if your whole setup is on one cheap model, set `location_model` here). Set this explicitly to override either default. |
+| `location_use_description` | `true` | Whether the location sub-call reads each job's description. On (default), it honors eligibility conditions in the prose — e.g. a "remote" role restricted to residents of certain states — but must run per unique description **and needs a capable model** (see `location_model`: the default auto-escalates to your viability `model`; a cheap model like Haiku mis-reads noisy descriptions and false-`POOR`s remote jobs). Off, it dedups hard by location set (fewer calls, cheaper, cheap model is fine) but can't see those conditions. Folded into the staleness hash, so flipping it re-scores. |
 | `auto_skip` | `false` | Automatically set `new`/`reviewing` jobs to `autoskipped` if they score at or below the threshold. |
 | `auto_skip_confidence` | `"low"` | Threshold: `"low"` skips only low-scored jobs; `"medium"` skips low and medium. |
 

@@ -24,7 +24,8 @@ from flask import Flask, abort, g, render_template, request, send_file, url_for
 from werkzeug.utils import secure_filename
 from ingest import append_history, bootstrap_history
 from viability import (
-    _work_arrangement, assess_location_fit, geo_note, prompt_hash, score_job,
+    _work_arrangement, assess_location_fit, clamp_viability_for_geo,
+    geo_note, prompt_hash, score_job,
 )
 
 app = Flask(__name__)
@@ -1851,11 +1852,13 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
     # focused location sub-call and feed its verdict to the scorer in place of raw locations.
     location_prompt = vcfg.get("location_prompt", "").strip()
     geo_uses_description = bool(vcfg.get("location_use_description", True))
-    from ai_config import DEFAULT_MODEL, resolve_ai_settings
+    from ai_config import resolve_ai_settings, resolve_geo_model
     api_key, model = resolve_ai_settings(cfg, "viability")
     if not api_key:
         return False, "no Anthropic API key configured"
-    geo_model = vcfg.get("location_model") or cfg.get("ai", {}).get("model") or DEFAULT_MODEL
+    # When the sub-call reads the description this escalates to the viability model — haiku
+    # false-POORs remote jobs on noisy descriptions (see resolve_geo_model).
+    geo_model = resolve_geo_model(cfg, geo_uses_description)
     row = db.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
     if not row:
         return False, "job not found"
@@ -1863,12 +1866,15 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
         import anthropic
         client = anthropic.Anthropic(api_key=api_key)
         gnote = None
+        fit = None  # geographic-fit tier, kept so a POOR verdict can clamp the final rating
         if location_prompt:
             fit, match, _gu = assess_location_fit(
                 client, location_prompt, dict(row), model=geo_model,
                 include_description=geo_uses_description)
             gnote = geo_note(fit, match)
         rating, reason, _usage = score_job(client, prompt, dict(row), model=model, geo_note=gnote)
+        # A POOR geographic fit is disqualifying — clamp to low (the main scorer discounts it).
+        rating, reason = clamp_viability_for_geo(fit, rating, reason)
     except Exception as e:  # network/SDK/config errors — stay fail-soft
         return False, f"scoring call failed: {e}"
     if rating is None:

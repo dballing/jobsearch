@@ -61,6 +61,32 @@ def resolve_ai_settings(config: dict, section: str) -> tuple[str | None, str]:
     return api_key, model
 
 
+def resolve_geo_model(config: dict, geo_uses_description: bool) -> str:
+    """Return the model for the focused location sub-call (viability.assess_location_fit).
+
+    An explicit ``[viability].location_model`` always wins. Otherwise the default depends on
+    whether that sub-call reads the job description (the ``location_use_description`` toggle):
+
+    - With the description, the call must tell an EXPLICIT eligibility restriction ("remote only
+      for residents of X") from incidental office/regional/pay-zone prose — real reading
+      comprehension. The cheap ``[ai].model`` (haiku) gets this wrong, false-POORing fully-remote
+      roles whose descriptions merely name other regions, which then gets clamped to low. So we
+      escalate to the *viability scoring* model (the stronger model the user already trusts for
+      the main judgment, typically sonnet).
+    - Without the description, the call is the trivial location-vs-preferences match it was
+      designed as, so the cheap ``[ai].model`` default is right.
+
+    Kept here (not inlined at the call sites) so the batch rescore and the on-demand single-job
+    rescore resolve it identically, and so it's unit-testable without an API call.
+    """
+    location_model = (config.get("viability", {}) or {}).get("location_model")
+    if location_model:
+        return location_model
+    if geo_uses_description:
+        return resolve_ai_settings(config, "viability")[1]
+    return (config.get("ai", {}) or {}).get("model") or DEFAULT_MODEL
+
+
 def estimate_cost(model: str, *, input: int = 0, output: int = 0,
                   cache_write: int = 0, cache_read: int = 0) -> float | None:
     """Estimated USD cost for a token tally, or None if the model is unpriced.

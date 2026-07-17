@@ -50,12 +50,12 @@ from pathlib import Path
 
 import anthropic
 
-from ai_config import DEFAULT_MODEL, format_token_summary, resolve_ai_settings
+from ai_config import format_token_summary, resolve_ai_settings, resolve_geo_model
 from ingest import append_history
 from runlock import acquire_run_lock
 from viability import (
-    _job_locations, _work_arrangement, assess_location_fit, geo_note,
-    prompt_hash, score_job,
+    _job_locations, _work_arrangement, assess_location_fit,
+    clamp_viability_for_geo, geo_note, prompt_hash, score_job,
 )
 
 # Numeric ranking of ratings. Used two ways: to compare a score against the auto-skip
@@ -370,14 +370,14 @@ def main() -> None:
     # sub-call (assess_location_fit) whose verdict is fed to the main scorer in place of the
     # raw location list. Empty → geography stays inline in the main message (legacy path).
     location_prompt = viability_cfg.get("location_prompt", "").strip()
-    # The location sub-call is a trivial classification, so default it to the cheap [ai]
-    # model (haiku) even when the main scorer runs on a pricier model; override with
-    # [viability] location_model if desired.
-    geo_model = viability_cfg.get("location_model") or config.get("ai", {}).get("model") or DEFAULT_MODEL
     # Whether the location sub-call reads the job description (catches state-restricted remote
     # etc.). On by default; off dedups the sub-call hard by location set (cheaper) at the cost
     # of that coverage. Folded into the hash so flipping it re-scores.
     geo_uses_description = bool(viability_cfg.get("location_use_description", True))
+    # Model for the location sub-call. Cheap [ai] model when it's a plain location match, but
+    # escalated to the viability model when it also reads the description (haiku false-POORs
+    # remote jobs on noisy prose — see resolve_geo_model); [viability] location_model overrides.
+    geo_model = resolve_geo_model(config, geo_uses_description)
 
     # api_key/model resolve from [viability] -> [ai] -> ANTHROPIC_API_KEY env.
     api_key, model = resolve_ai_settings(config, "viability")
@@ -480,6 +480,7 @@ def main() -> None:
         # Its verdict replaces the raw location list in the scorer message; on any failure
         # geo_note is None and the scorer falls back to the raw list. Cache by location set.
         gnote = None
+        fit = None  # geographic-fit tier, kept so a POOR verdict can clamp the final rating
         if location_prompt:
             # Key includes the description only when the sub-call reads it: then two jobs
             # sharing a location set but differing in prose (one state-restricts remote, one
@@ -503,6 +504,9 @@ def main() -> None:
             gnote = geo_note(fit, match)
 
         rating, reason, usage = score_job(client, viability_prompt, job, model=model, geo_note=gnote)
+        # A POOR geographic fit is disqualifying; clamp the (billed) score down to low rather
+        # than trust the main model, which discounts the pre-assessed verdict (see the helper).
+        rating, reason = clamp_viability_for_geo(fit, rating, reason)
 
         if rating is None:
             if args.verbose:
