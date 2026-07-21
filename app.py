@@ -24,8 +24,8 @@ from flask import Flask, abort, g, render_template, request, send_file, url_for
 from werkzeug.utils import secure_filename
 from ingest import append_history, bootstrap_history
 from viability import (
-    _work_arrangement, assess_location_fit, clamp_viability_for_geo,
-    geo_note, prompt_hash, score_job,
+    _work_arrangement, GEO_UNSUPPORTED_ARRANGEMENT, assess_location_fit,
+    clamp_viability_for_geo, geo_note, is_manual_geo_poor, prompt_hash, score_job,
 )
 
 app = Flask(__name__)
@@ -103,7 +103,12 @@ STATUSES = [
 # Manual work-arrangement override options (self-explanatory phrasings sent verbatim to
 # the viability scorer — see viability._work_arrangement). The preview panel serves these
 # to its dropdown via /job/<id>; the endpoint validates against this exact set.
-WORK_ARRANGEMENTS = ["On-site", "Hybrid", "Fully remote", "Remote (hybrid if near an office)"]
+# GEO_UNSUPPORTED_ARRANGEMENT is the odd one out: it isn't a work-style the scorer reasons
+# about but a deterministic "POOR geography" flag (see viability.is_manual_geo_poor) for
+# remote roles restricted to states the candidate can't be in — kept in this list so it
+# rides the same dropdown + validation path.
+WORK_ARRANGEMENTS = ["On-site", "Hybrid", "Fully remote", "Remote (hybrid if near an office)",
+                     GEO_UNSUPPORTED_ARRANGEMENT]
 
 STATUS_COLORS = {
     "new":          "primary",
@@ -1867,14 +1872,19 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
         client = anthropic.Anthropic(api_key=api_key)
         gnote = None
         fit = None  # geographic-fit tier, kept so a POOR verdict can clamp the final rating
-        if location_prompt:
+        # A manual "remote in an unsupported location" flag is a deterministic POOR verdict —
+        # skip the (billed) geo sub-call and let the clamp force the rating to low.
+        manual_geo_poor = is_manual_geo_poor(dict(row))
+        if manual_geo_poor:
+            fit, gnote = "poor", geo_note("poor", "")
+        elif location_prompt:
             fit, match, _gu = assess_location_fit(
                 client, location_prompt, dict(row), model=geo_model,
                 include_description=geo_uses_description)
             gnote = geo_note(fit, match)
         rating, reason, _usage = score_job(client, prompt, dict(row), model=model, geo_note=gnote)
         # A POOR geographic fit is disqualifying — clamp to low (the main scorer discounts it).
-        rating, reason = clamp_viability_for_geo(fit, rating, reason)
+        rating, reason = clamp_viability_for_geo(fit, rating, reason, manual=manual_geo_poor)
     except Exception as e:  # network/SDK/config errors — stay fail-soft
         return False, f"scoring call failed: {e}"
     if rating is None:

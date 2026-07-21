@@ -55,7 +55,7 @@ from ingest import append_history
 from runlock import acquire_run_lock
 from viability import (
     _job_locations, _work_arrangement, assess_location_fit,
-    clamp_viability_for_geo, geo_note, prompt_hash, score_job,
+    clamp_viability_for_geo, geo_note, is_manual_geo_poor, prompt_hash, score_job,
 )
 
 # Numeric ranking of ratings. Used two ways: to compare a score against the auto-skip
@@ -481,7 +481,13 @@ def main() -> None:
         # geo_note is None and the scorer falls back to the raw list. Cache by location set.
         gnote = None
         fit = None  # geographic-fit tier, kept so a POOR verdict can clamp the final rating
-        if location_prompt:
+        # A manual "remote in an unsupported location" flag is a deterministic POOR verdict —
+        # the one geo dead end the feed/sub-call can't catch (plain "Remote OK" + an implicit
+        # state list). Short-circuit the (billed) geo AI call; the clamp forces the score low.
+        manual_geo_poor = is_manual_geo_poor(job)
+        if manual_geo_poor:
+            fit, gnote = "poor", geo_note("poor", "")
+        elif location_prompt:
             # Key includes the description only when the sub-call reads it: then two jobs
             # sharing a location set but differing in prose (one state-restricts remote, one
             # doesn't) must NOT share a verdict (identical fuzzy-group reposts still dedup).
@@ -506,7 +512,7 @@ def main() -> None:
         rating, reason, usage = score_job(client, viability_prompt, job, model=model, geo_note=gnote)
         # A POOR geographic fit is disqualifying; clamp the (billed) score down to low rather
         # than trust the main model, which discounts the pre-assessed verdict (see the helper).
-        rating, reason = clamp_viability_for_geo(fit, rating, reason)
+        rating, reason = clamp_viability_for_geo(fit, rating, reason, manual=manual_geo_poor)
 
         if rating is None:
             if args.verbose:

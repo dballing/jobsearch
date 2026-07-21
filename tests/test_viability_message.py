@@ -225,6 +225,37 @@ def test_clamp_leaves_none_rating_for_caller_to_skip():
     assert viability.clamp_viability_for_geo("poor", None, "") == (None, "")
 
 
+# ── manual "remote in an unsupported location" flag ────────────────────────────
+def test_is_manual_geo_poor_matches_only_the_sentinel():
+    """Detected only for the exact GEO_UNSUPPORTED_ARRANGEMENT override; other work
+    arrangements (and none at all) are not the manual POOR flag."""
+    assert viability.is_manual_geo_poor(
+        {"work_arrangement_actual": viability.GEO_UNSUPPORTED_ARRANGEMENT})
+    assert viability.is_manual_geo_poor(
+        {"work_arrangement_actual": f"  {viability.GEO_UNSUPPORTED_ARRANGEMENT}  "})  # whitespace-tolerant
+    for other in ("On-site", "Fully remote", "", None):
+        assert not viability.is_manual_geo_poor({"work_arrangement_actual": other})
+    assert not viability.is_manual_geo_poor({})  # key absent (e.g. manual job)
+
+
+def test_clamp_manual_uses_distinct_suffix():
+    """manual=True clamps identically but attributes the override to a manual flag, not the
+    AI location verdict — so the two POOR paths are distinguishable in the stored reason."""
+    rating, reason = viability.clamp_viability_for_geo(
+        "poor", "high", "Strong TPM fit, great comp.", manual=True)
+    assert rating == "low"
+    assert reason.startswith("Strong TPM fit")            # model's own reasoning preserved
+    assert "Forced to LOW" in reason and "manually flagged" in reason
+    assert "geographic fit is POOR" not in reason         # not the AI-verdict wording
+
+
+def test_clamp_manual_flag_ignored_when_not_poor():
+    """The manual flag only matters on a POOR fit — a non-POOR/None fit passes through
+    untouched, and an already-low rating gets no redundant suffix."""
+    assert viability.clamp_viability_for_geo("good", "high", "r", manual=True) == ("high", "r")
+    assert viability.clamp_viability_for_geo("poor", "low", "r", manual=True) == ("low", "r")
+
+
 # ── assess_location_fit(): the focused sub-call (fake client, no network) ──────
 class _FakeUsage:
     input_tokens = output_tokens = cache_creation_input_tokens = cache_read_input_tokens = 0

@@ -279,6 +279,25 @@ def geo_note(fit: str | None, match: str | None) -> str | None:
     return fit.upper() + (f" (best match: {m})" if m else "")
 
 
+# The manual work-arrangement override the user sets when a role is genuinely remote BUT
+# only for residents of states/regions the candidate can't be in — the one geographic dead
+# end neither the feed nor the location sub-call reliably catches. The feed reports a plain
+# "Remote OK" (glossed to "fully remote; no office requirement"), and the state restriction
+# lives only in an *implicit* location list rather than an explicit eligibility sentence, so
+# the sub-call's description clause never fires and it rates the remote option a preferred fit.
+# (Observed: NVIDIA's "Senior Manager, Customer Program Management" — remote only in CA/TX/WA,
+# scored high for an Alexandria-based candidate.) Selecting this in the work-arrangement
+# dropdown flags the job as a deterministic POOR geographic fit; see is_manual_geo_poor.
+GEO_UNSUPPORTED_ARRANGEMENT = "Remote (unsupported location)"
+
+
+def is_manual_geo_poor(job: dict) -> bool:
+    """True when the job's manual work-arrangement override is the 'remote in an unsupported
+    location' flag (GEO_UNSUPPORTED_ARRANGEMENT). The caller treats this as a POOR geographic
+    verdict without an AI location call. Pure, so it's unit-testable without the DB."""
+    return str(job.get("work_arrangement_actual") or "").strip() == GEO_UNSUPPORTED_ARRANGEMENT
+
+
 # Appended to the score reason when a POOR geographic fit forces the rating down (see
 # clamp_viability_for_geo). Leads with the trigger so the override is self-explaining in the UI.
 _GEO_POOR_SUFFIX = (
@@ -286,8 +305,18 @@ _GEO_POOR_SUFFIX = (
     "arrangements is workable for the candidate, which is disqualifying regardless of other merits.]"
 )
 
+# The manual counterpart, used when the POOR verdict comes from the GEO_UNSUPPORTED_ARRANGEMENT
+# flag rather than the AI location call — so the score is honestly attributed to a manual flag,
+# not the model (which, for these roles, would have rated the remote option a good fit).
+_GEO_MANUAL_POOR_SUFFIX = (
+    " [Forced to LOW: manually flagged as remote-only in a location the candidate can't work "
+    "from — the remote option is geographically unavailable, which is disqualifying.]"
+)
 
-def clamp_viability_for_geo(fit: str | None, rating: str | None, reason: str) -> tuple[str | None, str]:
+
+def clamp_viability_for_geo(
+    fit: str | None, rating: str | None, reason: str, manual: bool = False,
+) -> tuple[str | None, str]:
     """Force a POOR-geography job down to 'low', preserving the model's own reasoning.
 
     A POOR fit is the bottom tier — *no* listed location or remote option the candidate can
@@ -304,10 +333,15 @@ def clamp_viability_for_geo(fit: str | None, rating: str | None, reason: str) ->
     (kept, so the richer 'why' — staffing firm, methodology focus, etc. — isn't lost). A None
     rating (score_job failed) is left as-is for the caller to skip. Pure, so it's unit-testable
     without an API call.
+
+    manual=True selects the reason suffix that attributes the clamp to a manual flag
+    (GEO_UNSUPPORTED_ARRANGEMENT) instead of the AI location verdict; the clamp is otherwise
+    identical. It's ignored unless a POOR fit actually forces a change.
     """
     if fit != "poor" or rating is None or rating == "low":
         return rating, reason
-    return "low", (reason or "").rstrip() + _GEO_POOR_SUFFIX
+    suffix = _GEO_MANUAL_POOR_SUFFIX if manual else _GEO_POOR_SUFFIX
+    return "low", (reason or "").rstrip() + suffix
 
 
 def assess_location_fit(
