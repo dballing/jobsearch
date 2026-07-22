@@ -1390,7 +1390,12 @@ def main() -> None:
 
             grand_total += task_total
 
-        except requests.HTTPError as exc:
+        except requests.RequestException as exc:
+            # Any network-layer failure for this task — an HTTP error from the Apify API, or
+            # (the common case during an internet/DNS outage) a ConnectionError/Timeout raised
+            # before we ever reach the server. RequestException is the base of all of them, so
+            # catching it logs one clean line per task instead of dumping a urllib3 stacktrace,
+            # and the loop moves on to the next task (during an outage every task fails alike).
             print(f"  ERROR fetching '{task_name}': {exc}", file=sys.stderr)
 
     ghosted_count = 0

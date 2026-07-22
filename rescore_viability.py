@@ -64,13 +64,36 @@ from viability import (
 VIABILITY_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
 
 
-def check_model_currency(client: anthropic.Anthropic, configured_model: str) -> None:
-    """Warn if the configured model is unavailable or a newer sibling exists.
+def fetch_available_models(client: anthropic.Anthropic) -> "list | None":
+    """Fetch the API's model list as a startup connectivity probe.
+
+    Returns the models on success; None when the API is unreachable — a connection or
+    timeout error (APITimeoutError subclasses APIConnectionError), i.e. the network is
+    down; or [] for any other failure (reachable but the list couldn't be read, e.g. a
+    transient 5xx or auth issue — non-fatal, scoring should still be attempted).
+
+    Isolating this lets rescore abort the whole batch fast on a total outage — the case
+    ingest now hands off to us via `ingest && rescore`, since it exits 0 after logging its
+    own connection errors — instead of grinding every selected job through the SDK's
+    per-call retry/backoff only to fail each one. It's also the fast exit for a standalone
+    rescore run while the network is down.
+    """
+    try:
+        return list(client.models.list())
+    except anthropic.APIConnectionError:
+        return None
+    except Exception:
+        return []
+
+
+def check_model_currency(all_models: list, configured_model: str) -> None:
+    """Warn if the configured model is unavailable or a newer sibling exists, given the
+    already-fetched model list (see fetch_available_models — one call serves both the
+    connectivity probe and this check).
 
     Non-fatal: any failure in the check is silently ignored so scoring can proceed.
     """
     try:
-        all_models = list(client.models.list())
         model_ids  = {m.id for m in all_models}
 
         # The models API returns dated IDs (e.g. claude-haiku-4-5-20251001) but
@@ -438,7 +461,16 @@ def main() -> None:
     print(f"Scoring {count} job(s) with model {model}...")
 
     client      = anthropic.Anthropic(api_key=api_key)
-    check_model_currency(client, model)
+    # Preflight the API before any per-job work: the model-list call doubles as a
+    # connectivity probe. On a total outage (network down at cron time) abort the batch with
+    # one clean line rather than sending every selected job through the SDK's retry/backoff
+    # only to fail each. sys.exit releases the writer lock (held until process exit) on the
+    # way out. A non-connectivity failure returns [] and scoring proceeds as before.
+    available_models = fetch_available_models(client)
+    if available_models is None:
+        conn.close()
+        sys.exit("ERROR: the Anthropic API is unreachable (network down?); skipping this run.")
+    check_model_currency(available_models, model)
     rows        = conn.execute(f"SELECT * FROM jobs {where}", params).fetchall()
     scored       = 0
     failed       = 0
