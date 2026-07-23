@@ -165,6 +165,11 @@ STATUS_FILTERS = {
     # Ghosted counts as a presumptive rejection (applied, no response, auto-aged out), so
     # it's included here alongside explicit rejections. It also still shows under Applied.
     "rejected":  ("Rejected",  "status IN ('rejected', 'ghosted')"),
+    # Manually skipped only (NOT 'autoskipped', which is the low-viability auto-decision) —
+    # the point is to revisit *my own* skip decisions, e.g. pair with the High viability
+    # filter to reconsider a strong role I passed on. Autoskipped jobs are always low
+    # viability, so folding them in would only add noise to that pairing.
+    "skipped":   ("Skipped",   "status = 'skipped'"),
     "all":       ("All",       None),
 }
 
