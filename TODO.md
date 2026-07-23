@@ -26,3 +26,21 @@ Add an `archived` boolean column rather than a separate database. Archiving sets
 removes that filter to show everything. No cross-DB canonical_id complications, no ATTACH
 overhead, and SQLite handles the current scale (and years more of it) without any
 performance concern. Discussed: 2026-05-28.
+
+## Salary fallback: parse the description when the feed's AI misses it
+
+*Only if this starts happening often — first observed 2026-07-23 (all four Intrado Life &
+Safety postings), handled by manual override for now, so low priority.*
+
+Apify's AI salary extraction sometimes returns null `ai_salary_*_value` fields (and a zeroed
+`salary` object) even when the range is plainly stated in the description text
+(e.g. "$67,000-70,000"). `extract_salary` (`ingest.py`) reads only those AI fields, so salary
+ends up NULL. The designed remedy today is the manual [Salary override](docs/features.md#salary-override).
+
+If it recurs enough to be worth automating: add a `salary_from_description` fallback that runs
+*only* when the AI fields are empty (never overriding a real feed value). Regex the prose for a
+clear annual range and feed it through the existing `_normalize_salary` path. Must be
+conservative — free-text salary parsing is error-prone: distinguish annual from hourly, a real
+comp band from an unrelated dollar amount (revenue, budget, "$1M in savings"), and handle
+`$67,000-70,000` / `$67K–$70K` / "up to $70,000" forms. Well-tested against those cases before
+trusting it. Revisit once there's evidence it's a pattern, not a one-off.
