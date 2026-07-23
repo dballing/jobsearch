@@ -33,7 +33,7 @@ All `.sh` wrappers activate `.venv` and `cd` into the repo first, so they work f
 ./run_app.sh --port 5002     # override port; FLASK_NO_DEBUG=1 disables the reloader
 ./ingest.sh                  # fetch new Apify run results into jobs.db
 ./ingest.sh --dry-run        # show pending run counts without fetching or writing
-./rescore_viability.sh       # AI-score jobs needing it (--dry-run, --force, --all, --early-stage, --autoskipped, --since, --previous_days)
+./rescore_viability.sh       # AI-score jobs needing it (--dry-run, --force, --all, --early-stage, --autoskipped, --status, --current-viability, --since, --previous-days)
 ./import_linkedin.sh --status applied <url-or-id>...   # bulk-import known applications
 ./run_tests.sh               # pytest suite (hermetic; run before committing). Passes args through, e.g. -k config
 UPDATE_SNAPSHOTS=1 ./run_tests.sh  # regenerate HTML goldens incl. tests/snapshots/mock_screenshot.html

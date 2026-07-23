@@ -9,6 +9,7 @@ import argparse
 
 import pytest
 
+import app
 import rescore_viability as rv
 
 
@@ -53,6 +54,40 @@ def test_autoskipped_targets_only_autoskipped_not_skipped():
 def test_force_all_no_date_is_empty_where():
     where, params = rv.build_selection(current_hash=HASH, force=True, all_statuses=True)
     assert where == "" and params == []                    # truly everything
+
+
+def test_explicit_status_is_parameterized_and_has_no_escape():
+    """--status=skipped selects exactly that status, parameterized (no NULL/needs_rescored
+    escape that would sweep in other statuses)."""
+    where, params = rv.build_selection(current_hash=HASH, status="skipped")
+    assert "status = ?" in where
+    assert "status NOT IN" not in where and "viability IS NULL OR needs_rescored" not in where
+    assert params == [HASH, "skipped"]                     # staleness hash first, then status
+
+
+# ── build_selection: current-viability axis + the target composition ──────────
+def test_current_viability_adds_score_filter():
+    where, params = rv.build_selection(current_hash=HASH, current_viability="high")
+    assert "viability = ?" in where
+    assert params == [HASH, "high"]
+
+
+def test_status_and_current_viability_compose_with_param_order():
+    """The headline use case: skipped-but-high. Forced (so no staleness gate), the two
+    filters AND together with params in placeholder order (status then viability)."""
+    where, params = rv.build_selection(
+        current_hash=HASH, force=True, status="skipped", current_viability="high")
+    assert "status = ?" in where and "viability = ?" in where and " AND " in where
+    assert params == ["skipped", "high"]                   # no hash (forced), status, viability
+
+
+def test_status_current_viability_keep_staleness_when_not_forced():
+    """Without --force the staleness gate still applies, so the explicit selection only
+    reaches the stale subset; param order stays hash → status → viability."""
+    where, params = rv.build_selection(
+        current_hash=HASH, status="skipped", current_viability="high")
+    assert "viability_prompt_hash != ?" in where
+    assert params == [HASH, "skipped", "high"]
 
 
 # ── build_selection: ingest-date axis + param ordering ────────────────────────
@@ -149,3 +184,36 @@ def test_positive_int_accepts_positive_rejects_rest():
     for bad in ("0", "-3", "x", "2.5"):
         with pytest.raises(argparse.ArgumentTypeError):
             rv.positive_int(bad)
+
+
+def test_valid_status_accepts_known_normalizes_case_rejects_junk():
+    assert rv.valid_status("skipped") == "skipped"
+    assert rv.valid_status(" SKIPPED ") == "skipped"       # trimmed + lowercased
+    for bad in ("skip", "", "activeish", "high"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            rv.valid_status(bad)
+
+
+def test_valid_viability_accepts_tiers_rejects_rest():
+    for good in ("high", "Medium", " low "):
+        assert rv.valid_viability(good) == good.strip().lower()
+    for bad in ("unscored", "", "hi", "skipped"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            rv.valid_viability(bad)
+
+
+# ── cross-module constant sync ────────────────────────────────────────────────
+# rescore_viability duplicates the status/viability vocabularies (VALID_STATUSES /
+# VALID_VIABILITIES) rather than importing app, so the batch script stays standalone
+# (importing app spins up a Flask app). That duplication can silently drift — a status
+# added in app.STATUSES but not here would make --status reject a real status. These lock
+# the two definitions together so a future edit to one side fails loudly until both agree.
+def test_rescore_statuses_match_app():
+    assert set(rv.VALID_STATUSES) == set(app.STATUSES), (
+        "rescore_viability.VALID_STATUSES has drifted from app.STATUSES; update both.")
+
+
+def test_rescore_viabilities_match_app():
+    # app enumerates the scored tiers as the VIABILITY_COLORS keys (NULL/unscored is implicit).
+    assert set(rv.VALID_VIABILITIES) == set(app.VIABILITY_COLORS), (
+        "rescore_viability.VALID_VIABILITIES has drifted from app.VIABILITY_COLORS; update both.")

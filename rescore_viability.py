@@ -23,7 +23,8 @@ and --force re-scores eligible jobs even when their hash is already current.
 
 Usage:
     python3 rescore_viability.py [--config PATH] [--dry-run] [--force]
-        [--all | --early-stage | --autoskipped] [--since YYYY-MM-DD | --previous_days N]
+        [--all | --early-stage | --autoskipped | --status STATUS]
+        [--current-viability LEVEL] [--since YYYY-MM-DD | --previous-days N]
 
 Flags:
     --config PATH      Path to TOML config (default: config.toml).
@@ -35,10 +36,18 @@ Flags:
                        no longer score at/below the auto-skip threshold back to 'new'. Meant
                        for after a prompt change — pair with --force if the prompt is
                        unchanged, since otherwise only stale autoskipped jobs are selected.
+    --status STATUS    Score only jobs with exactly this status (e.g. skipped). Unlike the
+                       default filter, no NULL/needs_rescored escape — you get exactly that
+                       status. Pair with --force to reach non-stale jobs too.
+    --current-viability LEVEL
+                       Score only jobs whose CURRENT stored score is LEVEL (high/medium/low).
+                       Composes with any status filter — e.g. --status skipped
+                       --current-viability high --force to revisit skipped-but-strong roles.
     --since DATE       Only jobs first ingested on DATE (UTC, YYYY-MM-DD) or later.
-    --previous_days N  Only jobs first ingested within the trailing N days.
+    --previous-days N  Only jobs first ingested within the trailing N days.
 
-(--all/--early-stage/--autoskipped are mutually exclusive, as are --since/--previous_days.)
+(--all/--early-stage/--autoskipped/--status are mutually exclusive, as are
+--since/--previous-days.)
 """
 
 import argparse
@@ -205,7 +214,7 @@ def valid_since_date(value: str) -> str:
 
 
 def positive_int(value: str) -> int:
-    """argparse type for --previous_days: a whole number of days >= 1."""
+    """argparse type for --previous-days: a whole number of days >= 1."""
     try:
         n = int(value)
     except ValueError:
@@ -213,6 +222,38 @@ def positive_int(value: str) -> int:
     if n < 1:
         raise argparse.ArgumentTypeError(f"must be >= 1, got {n}")
     return n
+
+
+# The full job-status vocabulary, mirrored from app.STATUSES. Duplicated rather than
+# imported so this script stays standalone (importing app spins up a Flask app); statuses
+# are stable, and validating --status against a fixed set turns a typo into a clear error
+# instead of a silent zero-row run.
+VALID_STATUSES = (
+    "new", "skipped", "autoskipped", "reviewing", "deferred",
+    "applied", "rejected", "ghosted", "interviewing", "offered",
+    "withdrawn", "closed",
+)
+# The stored viability tiers (NULL = unscored, which staleness already always selects, so
+# it isn't offered here). Used to validate --current-viability.
+VALID_VIABILITIES = ("high", "medium", "low")
+
+
+def valid_status(value: str) -> str:
+    """argparse type for --status: one exact job status from VALID_STATUSES."""
+    v = value.strip().lower()
+    if v not in VALID_STATUSES:
+        raise argparse.ArgumentTypeError(
+            f"unknown status {value!r}; choose one of: {', '.join(VALID_STATUSES)}")
+    return v
+
+
+def valid_viability(value: str) -> str:
+    """argparse type for --current-viability: one stored viability tier (high/medium/low)."""
+    v = value.strip().lower()
+    if v not in VALID_VIABILITIES:
+        raise argparse.ArgumentTypeError(
+            f"unknown viability {value!r}; choose one of: {', '.join(VALID_VIABILITIES)}")
+    return v
 
 
 def should_unskip(rating: str, auto_skip_threshold: int) -> bool:
@@ -258,6 +299,8 @@ def build_selection(
     all_statuses: bool = False,
     early_stage: bool = False,
     autoskipped: bool = False,
+    status: str | None = None,
+    current_viability: str | None = None,
     since: str | None = None,
     previous_days: int | None = None,
 ) -> tuple[str, list]:
@@ -270,11 +313,21 @@ def build_selection(
       * status: the default is the active set (with NULL-viability / needs_rescored escapes
         so a corrected inactive job still gets looked at); ``all_statuses`` drops the status
         filter entirely; ``early_stage`` limits to new/reviewing/deferred; ``autoskipped``
-        limits to the autoskipped set (for post-prompt-change re-evaluation). These four are
-        mutually exclusive (enforced at the argparse layer).
+        limits to the autoskipped set (for post-prompt-change re-evaluation); ``status``
+        limits to one exact status (e.g. 'skipped'). These are mutually exclusive (enforced
+        at the argparse layer). Like ``autoskipped``, an explicit ``status`` gets NO
+        NULL/needs_rescored escape — you asked for exactly that status, so that's all you get.
+      * current stored viability (optional): ``current_viability`` limits to jobs whose
+        EXISTING score is that tier (high/medium/low) — e.g. pair status='skipped' with
+        current_viability='high' to revisit skipped-but-strong roles. It filters on the score
+        as it stands *before* this run; the run may then change it.
       * ingest-date window (optional): ``since`` is a 'YYYY-MM-DD' lower bound compared to
         ``date(first_seen)``; ``previous_days`` is a rolling N*24h window ending now. Also
         mutually exclusive with each other.
+
+    Note on staleness vs. an explicit selection: unless ``force`` is set, the staleness gate
+    still applies, so ``status``/``current_viability`` select only the *stale* subset of the
+    matching jobs. To rescore every match regardless of hash, add ``force``.
     """
     conditions: list[str] = []
     params: list = []
@@ -294,11 +347,20 @@ def build_selection(
         # Only the autoskipped set — never plain 'skipped'. No NULL/needs_rescored escape
         # here: --autoskipped is a deliberate, narrow re-evaluation of exactly that status.
         conditions.append("status = 'autoskipped'")
+    elif status is not None:
+        # Exactly this status, parameterized. Like --autoskipped, no NULL/needs_rescored
+        # escape: an explicit --status is a deliberate, narrow selection of one status.
+        conditions.append("status = ?")
+        params.append(status)
     else:
         conditions.append(
             "(status NOT IN ('skipped', 'autoskipped', 'rejected', 'withdrawn', 'ghosted', 'closed')"
             " OR viability IS NULL OR needs_rescored = 1)"
         )
+
+    if current_viability is not None:
+        conditions.append("viability = ?")
+        params.append(current_viability)
 
     if since is not None:
         conditions.append("date(first_seen) >= ?")
@@ -343,6 +405,20 @@ def main() -> None:
              "score at/below the auto-skip threshold back to 'new'. Use after a prompt change "
              "to recover jobs the old prompt auto-skipped.",
     )
+    status_group.add_argument(
+        "--status", type=valid_status, metavar="STATUS",
+        help="Score only jobs with exactly this status (e.g. skipped). Mutually exclusive "
+             "with --all/--early-stage/--autoskipped. Combine with --current-viability and "
+             "--force to revisit a targeted set (e.g. skipped-but-high roles).",
+    )
+    # Filter on the score a job ALREADY has (independent of the status axis above). Not in a
+    # mutually-exclusive group — it composes with any status selection.
+    parser.add_argument(
+        "--current-viability", dest="current_viability",
+        type=valid_viability, metavar="LEVEL",
+        help="Score only jobs whose CURRENT stored score is this tier (high/medium/low). "
+             "Filters on the score before this run; the run may then change it.",
+    )
     # Ingest-date window (mutually exclusive): limit to jobs first_seen on/after a date, or
     # within a trailing number of days.
     date_group = parser.add_mutually_exclusive_group()
@@ -351,7 +427,7 @@ def main() -> None:
         help="Only jobs first ingested on this date (UTC) or later.",
     )
     date_group.add_argument(
-        "--previous-days", "--previous_days", dest="previous_days",
+        "--previous-days", dest="previous_days",
         type=positive_int, metavar="N",
         help="Only jobs first ingested within the trailing N days.",
     )
@@ -432,6 +508,8 @@ def main() -> None:
         all_statuses=args.all,
         early_stage=args.early_stage,
         autoskipped=args.autoskipped,
+        status=args.status,
+        current_viability=args.current_viability,
         since=args.since,
         previous_days=args.previous_days,
     )
