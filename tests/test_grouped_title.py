@@ -49,3 +49,21 @@ def test_representative_prefers_root_even_when_not_first():
     job = app.build_grouped_job(_header("root", 3), subs)
     assert job["title"] == "Alpha Title"
     assert job["title_varies"] is True
+
+
+def test_grouped_salary_shows_root_band_and_flags_varies():
+    """Differing member salaries → show the ROOT's band, not '(varied)' or an envelope,
+    with salary_varies set so the template appends '(varies)'."""
+    subs = [_sub("root", "T", salary_display="$200k – $250k"),
+            _sub("m2", "T", salary_display="$180k – $210k")]
+    job = app.build_grouped_job(_header("root", 2), subs)
+    assert job["group_salary"] == "$200k – $250k"
+    assert job["salary_varies"] is True
+
+
+def test_grouped_salary_uniform_has_no_varies_flag():
+    subs = [_sub("root", "T", salary_display="$200k – $250k"),
+            _sub("m2", "T", salary_display="$200k – $250k")]
+    job = app.build_grouped_job(_header("root", 2), subs)
+    assert job["group_salary"] == "$200k – $250k"
+    assert job["salary_varies"] is False

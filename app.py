@@ -215,19 +215,35 @@ def effective_salary(row: dict) -> tuple[int | None, int | None]:
     return row.get("salary_min"), row.get("salary_max")
 
 
+def _root_pref(col: str, agg: str = "MIN") -> str:
+    """SQL for a grouped-header column that should reflect the canonical *root's* value.
+
+    The header row's identity columns (title, company, status, dates) are used to SORT the
+    grouped view, and their display now shows the root's title — so sorting must order by
+    the canonical root too, not by an arbitrary member picked by MIN(). Within each
+    COALESCE(canonical_id, job_id) group the root is the row with canonical_id IS NULL, so
+    MAX(CASE WHEN canonical_id IS NULL THEN col END) isolates its value (NULL for members,
+    which the aggregate skips). Falls back to the plain group aggregate when the root row is
+    filtered out of the current view (e.g. a closed root under an active member), mirroring
+    _root_sub_row's fallback so sort and display stay in step. Applies to salary too — the
+    grouped cell shows the root's band (not a synthetic MIN-low/MAX-high envelope across the
+    group), so its comp-search range and column sort track that same root band."""
+    return f"COALESCE(MAX(CASE WHEN canonical_id IS NULL THEN {col} END), {agg}({col}))"
+
+
 # Grouped header query — one row per canonical group.
 # Jobs linked via canonical_id are grouped together; others are their own group.
 GROUPED_HEADERS = f"""
     SELECT COALESCE(canonical_id, job_id) AS group_key,
-           MIN(title)           AS title,
-           MIN(COALESCE(company_actual, company)) AS company_eff,
+           {_root_pref("title")}           AS title,
+           {_root_pref("COALESCE(company_actual, company)")} AS company_eff,
            COUNT(*)             AS location_count,
-           MIN(first_seen)      AS first_seen,
-           MIN(posted_date)     AS posted_date,
-           MIN({EFF_SALARY_MIN}) AS salary_min,
-           MAX({EFF_SALARY_MAX}) AS salary_max,
+           {_root_pref("first_seen")}      AS first_seen,
+           {_root_pref("posted_date")}     AS posted_date,
+           {_root_pref(EFF_SALARY_MIN)} AS salary_min,
+           {_root_pref(EFF_SALARY_MAX, "MAX")} AS salary_max,
            MIN(salary_currency) AS salary_currency,
-           MIN(status)          AS status,
+           {_root_pref("status")}          AS status,
            MIN(source)          AS source,
            MAX(source)          AS source_max
     FROM jobs {{where}}
@@ -667,17 +683,18 @@ def _group_field(sub_rows: list[dict], key: str, fmt=None) -> object:
     return first if all(v == first for v in vals) else GROUP_VARIED
 
 
-def _representative_title(sub_rows: list[dict], group_key) -> object:
-    """A single concrete title for a grouped header row — never '(varied)'.
+def _root_sub_row(sub_rows: list[dict], group_key) -> "dict | None":
+    """The canonical root's processed sub-row (job_id == group_key), or the first sub-row
+    when the root is filtered out of the current view.
 
-    Prefers the canonical root's title (the posting the group formed around, whose job_id
-    equals the group_key); falls back to the first sub-row. So a fuzzy group whose members
-    carry slightly different titles ('- AI' vs '-Ai/ML') still shows a real, identifiable
-    title instead of an opaque '(varied)' — the template appends a small '(varies)' note
-    when they disagree (see the title_varies flag in build_grouped_job)."""
-    root = next((s for s in sub_rows if s.get("job_id") == group_key), None)
-    src = root or (sub_rows[0] if sub_rows else None)
-    return src.get("title") if src else None
+    This is the posting a grouped header speaks for: its title/salary/etc. stand in for the
+    whole group, so a fuzzy group whose members carry slightly different values ('- AI' vs
+    '-Ai/ML' titles, or feed-noise salary differences) shows one real, identifiable value
+    instead of an opaque '(varied)' — the template appends a small '(varies)' note when the
+    members disagree (see the *_varies flags in build_grouped_job). Falling back to the first
+    sub-row keeps it non-null when the root itself doesn't pass the active filter."""
+    return next((s for s in sub_rows if s.get("job_id") == group_key),
+                sub_rows[0] if sub_rows else None)
 
 
 def group_member_ids(db: sqlite3.Connection, job_id: str) -> list[str]:
@@ -729,16 +746,18 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
     # is_fuzzy_group: more than one job in this canonical group (canonical + ≥1 duplicate)
     is_fuzzy_group = h["location_count"] > 1
     multi          = is_fuzzy_group
-    # Title/company may vary within a fuzzy group (different titles from different
-    # sources). Compare whitespace-normalized values so a cosmetic difference (e.g.
-    # a stray double space from one source) doesn't count as a real variation.
-    # Title gets special treatment: rather than collapse a genuine variation to an
-    # unhelpful '(varied)' (which hides *what* the group is), always show one concrete
-    # title (the root's) and set title_varies so the template can append a small
-    # '(varies)'. Company keeps the plain '(varied)' behaviour.
+    # Title/salary may vary within a fuzzy group (different titles/salaries from different
+    # sources). Rather than collapse a genuine variation to an unhelpful '(varied)' (which
+    # hides *what* the group is / *what* it pays), show the canonical root's concrete value
+    # and set a *_varies flag so the template appends a small '(varies)'. Compare
+    # whitespace-normalized titles (and rounded salary_display strings) so cosmetic feed
+    # noise doesn't count as a real variation. Company keeps the plain '(varied)' behaviour.
+    root_row     = _root_sub_row(sub_rows, h["group_key"])
     title_norms  = {_norm_ws(s.get("title")) for s in sub_rows}
     title_varies = len(title_norms) > 1
-    title        = _representative_title(sub_rows, h["group_key"])
+    title        = root_row.get("title") if root_row else None
+    salary_displays = {s.get("salary_display") for s in sub_rows}
+    salary_varies   = len(salary_displays) > 1
     company = _group_field(sub_rows, "company_display", fmt=_norm_ws)
     sub_statuses      = [s.get("status", "new") for s in sub_rows]
     unique_statuses   = set(sub_statuses)
@@ -766,6 +785,7 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
     job = {
         "title":            title,
         "title_varies":     title_varies,
+        "salary_varies":    salary_varies,
         "company":          company,
         "company_display":  company,
         # Group-level employer site: first sub-row that has one (members of a real
@@ -774,8 +794,8 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
         # Group is hot if any member is a new/reviewing job at a hotlisted employer.
         "is_hot":           any(s.get("is_hot") for s in sub_rows),
         "location_count":   h["location_count"],
-        # Group's aggregate comp band (MIN low / MAX high); for a uniform group
-        # this is the shared range, used by the salary-cell comp-search icon.
+        # Group's comp band is the canonical root's (see _root_pref) — feeds the salary-cell
+        # comp-search icon and the salary column sort, matching the displayed group_salary.
         "salary_min":       h.get("salary_min"),
         "salary_max":       h.get("salary_max"),
         "multi":            multi,
@@ -794,7 +814,9 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
         "group_viability_tooltip": group_viability_tooltip,
         "group_applied":    _group_field(sub_rows, "applied_at",
                                          fmt=lambda v: (v or "")[:10]),
-        "group_salary":     _group_field(sub_rows, "salary_display"),
+        # Root's salary string (not '(varied)'): the canonical posting's band, with the
+        # template flagging '(varies)' when members differ — see salary_varies.
+        "group_salary":     root_row.get("salary_display") if root_row else None,
         "group_labels":     _group_field(sub_rows, "labels"),
         "group_posted":     _group_field(sub_rows, "posted_date",
                                          fmt=lambda v: (v or "")[:10]),
