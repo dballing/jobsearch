@@ -667,6 +667,19 @@ def _group_field(sub_rows: list[dict], key: str, fmt=None) -> object:
     return first if all(v == first for v in vals) else GROUP_VARIED
 
 
+def _representative_title(sub_rows: list[dict], group_key) -> object:
+    """A single concrete title for a grouped header row — never '(varied)'.
+
+    Prefers the canonical root's title (the posting the group formed around, whose job_id
+    equals the group_key); falls back to the first sub-row. So a fuzzy group whose members
+    carry slightly different titles ('- AI' vs '-Ai/ML') still shows a real, identifiable
+    title instead of an opaque '(varied)' — the template appends a small '(varies)' note
+    when they disagree (see the title_varies flag in build_grouped_job)."""
+    root = next((s for s in sub_rows if s.get("job_id") == group_key), None)
+    src = root or (sub_rows[0] if sub_rows else None)
+    return src.get("title") if src else None
+
+
 def group_member_ids(db: sqlite3.Connection, job_id: str) -> list[str]:
     """All job_ids in this job's current fuzzy-match group (canonical root + members).
 
@@ -718,8 +731,14 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
     multi          = is_fuzzy_group
     # Title/company may vary within a fuzzy group (different titles from different
     # sources). Compare whitespace-normalized values so a cosmetic difference (e.g.
-    # a stray double space from one source) doesn't render as '(varied)'.
-    title   = _group_field(sub_rows, "title", fmt=_norm_ws)
+    # a stray double space from one source) doesn't count as a real variation.
+    # Title gets special treatment: rather than collapse a genuine variation to an
+    # unhelpful '(varied)' (which hides *what* the group is), always show one concrete
+    # title (the root's) and set title_varies so the template can append a small
+    # '(varies)'. Company keeps the plain '(varied)' behaviour.
+    title_norms  = {_norm_ws(s.get("title")) for s in sub_rows}
+    title_varies = len(title_norms) > 1
+    title        = _representative_title(sub_rows, h["group_key"])
     company = _group_field(sub_rows, "company_display", fmt=_norm_ws)
     sub_statuses      = [s.get("status", "new") for s in sub_rows]
     unique_statuses   = set(sub_statuses)
@@ -746,6 +765,7 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
 
     job = {
         "title":            title,
+        "title_varies":     title_varies,
         "company":          company,
         "company_display":  company,
         # Group-level employer site: first sub-row that has one (members of a real

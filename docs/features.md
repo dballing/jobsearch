@@ -210,7 +210,7 @@ No company filter is applied — the same job often appears under different comp
 
 ### UI behavior
 
-Fuzzy-linked jobs are collapsed into a single group row when **Matched-Jobs** grouping is on. Expand to see each posting individually with its own status dropdown and description preview.
+Fuzzy-linked jobs are collapsed into a single group row when **Matched-Jobs** grouping is on. Expand to see each posting individually with its own status dropdown and description preview. When the group's postings carry slightly different titles (e.g. `- AI` vs `-Ai/ML` from different feeds), the header shows one concrete title — the canonical root's — followed by a small **(varies)** note, rather than an opaque "(varied)", so the group stays identifiable. Other collapsed fields (salary, viability, labels, dates) still show "(varied)" when members disagree.
 
 ### Status inheritance
 

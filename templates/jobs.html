@@ -217,7 +217,7 @@
           {# ── Multi-location grouped header row ── #}
           <tr class="table-group-header{{ ' row-hot' if job.is_hot }}">
             <td class="job-title fw-medium">
-              {{ job.title or '(no title)' }}
+              {{ job.title or '(no title)' }}{% if job.title_varies %} <span class="text-muted small fst-italic" title="Postings in this group have slightly different titles; showing one. Expand to see them all.">(varies)</span>{% endif %}
               {% if job.sub_rows | selectattr('refreshed_at') | list %}<span class="text-warning ms-1" title="One or more postings had their description changed and were reset to new"><i class="bi bi-arrow-repeat"></i></span>{% endif %}
               {% if job.preview_job_id %}
               <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('{{ job.preview_job_id }}')" title="Preview description"><i class="bi bi-card-text"></i></button>
@@ -230,7 +230,7 @@
                       title="Show locations">
                 <i class="bi bi-chevron-right"></i>
               </button>
-              {% if job.is_fuzzy_group and (job.title == group_varied or job.company == group_varied) %}
+              {% if job.is_fuzzy_group and (job.title_varies or job.company == group_varied) %}
               <span class="text-muted small">{{ job.location_count }} similar postings</span>
               {% elif job.is_fuzzy_group %}
               <span class="text-muted small">{{ job.location_count }} postings of this title by this company</span>
