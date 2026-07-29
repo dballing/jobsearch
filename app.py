@@ -111,14 +111,16 @@ WORK_ARRANGEMENTS = ["On-site", "Hybrid", "Fully remote", "Remote (hybrid if nea
                      GEO_UNSUPPORTED_ARRANGEMENT]
 
 STATUS_COLORS = {
-    "new":          "primary",
+    # 'new' gets the brighter cyan (info) so "jobs I still need to look at" stand out most;
+    # 'applied' takes the calmer blue (primary). Swapped deliberately — see below.
+    "new":          "info",
     "reviewing":    "secondary",
     # "deferred" is parked-but-alive; a custom purple accent keeps it visually distinct
     # from the grey "reviewing"/"withdrawn"/"ghosted". status_color is only used for the
     # status-select left-border accent (see applySelectColor in jobs.html), never as a
     # Bootstrap text-bg-* badge, so a non-Bootstrap token is safe here.
     "deferred":     "deferred",
-    "applied":      "info",
+    "applied":      "primary",
     "interviewing": "warning",
     "offered":      "success",
     "rejected":     "danger",
