@@ -279,12 +279,12 @@
               {% else %}—{% endif %}
             </td>
             <td class="text-nowrap col-posted">
-              {% if job.group_posted == group_varied %}<span class="text-muted fst-italic small">{{ group_varied }}</span>
-              {% else %}{{ job.group_posted or '—' }}{% endif %}
+              {# Group's earliest posted date (MIN), never '(varied)'. #}
+              {{ job.group_posted or '—' }}
             </td>
             <td class="text-nowrap col-firstseen">
-              {% if job.group_first_seen == group_varied %}<span class="text-muted fst-italic small">{{ group_varied }}</span>
-              {% elif job.group_first_seen %}<span data-utc="{{ job.group_first_seen }}">{{ job.group_first_seen }}</span>
+              {# Group's earliest first-seen (MIN), never '(varied)'. #}
+              {% if job.group_first_seen %}<span data-utc="{{ job.group_first_seen }}">{{ job.group_first_seen }}</span>
               {% else %}—{% endif %}
             </td>
           </tr>

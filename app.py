@@ -220,16 +220,20 @@ def effective_salary(row: dict) -> tuple[int | None, int | None]:
 def _root_pref(col: str, agg: str = "MIN") -> str:
     """SQL for a grouped-header column that should reflect the canonical *root's* value.
 
-    The header row's identity columns (title, company, status, dates) are used to SORT the
-    grouped view, and their display now shows the root's title — so sorting must order by
-    the canonical root too, not by an arbitrary member picked by MIN(). Within each
+    The header row's identity columns (title, company, status, salary) are used to SORT the
+    grouped view, and their display shows the root's value — so sorting must order by the
+    canonical root too, not by an arbitrary member picked by MIN(). Within each
     COALESCE(canonical_id, job_id) group the root is the row with canonical_id IS NULL, so
     MAX(CASE WHEN canonical_id IS NULL THEN col END) isolates its value (NULL for members,
     which the aggregate skips). Falls back to the plain group aggregate when the root row is
     filtered out of the current view (e.g. a closed root under an active member), mirroring
     _root_sub_row's fallback so sort and display stay in step. Applies to salary too — the
     grouped cell shows the root's band (not a synthetic MIN-low/MAX-high envelope across the
-    group), so its comp-search range and column sort track that same root band."""
+    group), so its comp-search range and column sort track that same root band.
+
+    NOT for the date columns: 'first seen'/'first posted' are semantically MIN (the group was
+    first seen/posted on its earliest member's date), so those stay plain MIN() in both
+    display and sort — see _group_earliest_date."""
     return f"COALESCE(MAX(CASE WHEN canonical_id IS NULL THEN {col} END), {agg}({col}))"
 
 
@@ -240,8 +244,8 @@ GROUPED_HEADERS = f"""
            {_root_pref("title")}           AS title,
            {_root_pref("COALESCE(company_actual, company)")} AS company_eff,
            COUNT(*)             AS location_count,
-           {_root_pref("first_seen")}      AS first_seen,
-           {_root_pref("posted_date")}     AS posted_date,
+           MIN(first_seen)      AS first_seen,
+           MIN(posted_date)     AS posted_date,
            {_root_pref(EFF_SALARY_MIN)} AS salary_min,
            {_root_pref(EFF_SALARY_MAX, "MAX")} AS salary_max,
            MIN(salary_currency) AS salary_currency,
@@ -685,6 +689,20 @@ def _group_field(sub_rows: list[dict], key: str, fmt=None) -> object:
     return first if all(v == first for v in vals) else GROUP_VARIED
 
 
+def _group_earliest_date(sub_rows: list[dict], key: str) -> "str | None":
+    """Earliest date across the group for a 'first seen'/'first posted' column (as YYYY-MM-DD).
+
+    Unlike other collapsed fields, dates have a meaningful group aggregate: the group was
+    first seen / first posted on its EARLIEST member's date, so we show that MIN rather than
+    an opaque '(varied)' when members differ. Dates are stored as ISO strings (date or
+    timestamp), so a lexical MIN over the YYYY-MM-DD prefix is chronological. Ignores missing
+    values; None (rendered '—') when the whole group lacks the date. Matches the SQL MIN() the
+    grouped view sorts these columns by, so display and sort agree."""
+    dates = [(s.get(key) or "")[:10] for s in sub_rows]
+    dates = [d for d in dates if d]
+    return min(dates) if dates else None
+
+
 def _root_sub_row(sub_rows: list[dict], group_key) -> "dict | None":
     """The canonical root's processed sub-row (job_id == group_key), or the first sub-row
     when the root is filtered out of the current view.
@@ -820,10 +838,10 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
         # template flagging '(varies)' when members differ — see salary_varies.
         "group_salary":     root_row.get("salary_display") if root_row else None,
         "group_labels":     _group_field(sub_rows, "labels"),
-        "group_posted":     _group_field(sub_rows, "posted_date",
-                                         fmt=lambda v: (v or "")[:10]),
-        "group_first_seen": _group_field(sub_rows, "first_seen",
-                                         fmt=lambda v: (v or "")[:10]),
+        # Dates use the group's earliest member (MIN), the meaningful "first seen/posted"
+        # value, rather than '(varied)' — matches the SQL MIN() these columns sort by.
+        "group_posted":     _group_earliest_date(sub_rows, "posted_date"),
+        "group_first_seen": _group_earliest_date(sub_rows, "first_seen"),
     }
     if not multi and sub_rows:
         s = sub_rows[0]

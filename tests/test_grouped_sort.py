@@ -59,6 +59,15 @@ def test_header_salary_is_root_band_not_group_envelope(jobs_db):
     assert row["salary_max"] == 250000   # root's, not MAX(250000, 300000)
 
 
+def test_header_first_seen_is_min_not_root(jobs_db):
+    """Dates are the exception to root-preference: 'first seen' is the group's EARLIEST
+    member date (MIN), so display and sort agree on when the group first appeared."""
+    _insert(jobs_db, "root", "T", first_seen="2026-06-10 00:00:00")
+    _insert(jobs_db, "m1", "T", canonical_id="root", first_seen="2026-06-05 00:00:00")
+    row = _grouped(jobs_db)[0]
+    assert row["first_seen"] == "2026-06-05 00:00:00"   # MIN, not the root's 2026-06-10
+
+
 def test_grouped_sort_orders_by_root_title_not_min(jobs_db):
     """The whole point: sort order uses the root's title. A group whose root sorts late
     must not jump early just because a member has an alphabetically-early title."""

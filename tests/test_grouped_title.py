@@ -67,3 +67,21 @@ def test_grouped_salary_uniform_has_no_varies_flag():
     job = app.build_grouped_job(_header("root", 2), subs)
     assert job["group_salary"] == "$200k – $250k"
     assert job["salary_varies"] is False
+
+
+def test_group_dates_use_earliest_not_varied_or_root():
+    """Posted/First-Seen show the group's EARLIEST date (the true 'first seen/posted'),
+    not '(varied)' and not necessarily the root's — here the earliest posted is a member's."""
+    subs = [_sub("root", "T", first_seen="2026-06-10 08:00:00", posted_date="2026-06-09"),
+            _sub("m2", "T", first_seen="2026-06-12 09:00:00", posted_date="2026-06-08")]
+    job = app.build_grouped_job(_header("root", 2), subs)
+    assert job["group_first_seen"] == "2026-06-10"   # earliest first_seen
+    assert job["group_posted"] == "2026-06-08"       # earliest posted (the member's, not root's)
+
+
+def test_group_earliest_date_ignores_missing():
+    rows = [{"first_seen": "2026-06-12 10:00:00"}, {"first_seen": None},
+            {"first_seen": "2026-06-09 23:00:00"}]
+    assert app._group_earliest_date(rows, "first_seen") == "2026-06-09"
+    assert app._group_earliest_date([{"first_seen": None}], "first_seen") is None
+    assert app._group_earliest_date([], "first_seen") is None

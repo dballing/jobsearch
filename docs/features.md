@@ -210,7 +210,7 @@ No company filter is applied — the same job often appears under different comp
 
 ### UI behavior
 
-Fuzzy-linked jobs are collapsed into a single group row when **Matched-Jobs** grouping is on. Expand to see each posting individually with its own status dropdown and description preview. When the group's postings carry slightly different **titles** or **salaries** (e.g. `- AI` vs `-Ai/ML`, or feed-noise salary differences), the header shows the canonical root's concrete value followed by a small **(varies)** note, rather than an opaque "(varied)" — so the group stays identifiable and the salary is a real posting's band (not a synthetic MIN–MAX envelope). Column sorting and the salary comp-search likewise track the root's value. The remaining collapsed fields (viability, labels, dates) still show "(varied)" when members disagree.
+Fuzzy-linked jobs are collapsed into a single group row when **Matched-Jobs** grouping is on. Expand to see each posting individually with its own status dropdown and description preview. When the group's postings carry slightly different **titles** or **salaries** (e.g. `- AI` vs `-Ai/ML`, or feed-noise salary differences), the header shows the canonical root's concrete value followed by a small **(varies)** note, rather than an opaque "(varied)" — so the group stays identifiable and the salary is a real posting's band (not a synthetic MIN–MAX envelope). Column sorting and the salary comp-search likewise track the root's value. The **Posted** and **First Seen** columns show the group's *earliest* member date (the group was first posted/seen on that date) rather than "(varied)". The remaining collapsed fields (viability, labels, applied date) still show "(varied)" when members disagree.
 
 ### Status inheritance
 
