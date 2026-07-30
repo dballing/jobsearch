@@ -781,26 +781,42 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
     company = _group_field(sub_rows, "company_display", fmt=_norm_ws)
     sub_statuses      = [s.get("status", "new") for s in sub_rows]
     unique_statuses   = set(sub_statuses)
-    viability_vals         = [s.get("viability") for s in sub_rows]
-    unique_viabilities     = set(viability_vals)
-    group_viability        = viability_vals[0] if len(unique_viabilities) == 1 else GROUP_VARIED
-    group_viability_color  = VIABILITY_COLORS.get(group_viability or "", "")
-    group_viability_stale  = any(s.get("viability_stale") for s in sub_rows)
-    # Build tooltip: one representative reason per distinct viability level.
-    _seen_levels: dict[str, str] = {}
+    unique_viabilities = {s.get("viability") for s in sub_rows}
+    # All distinct reasons per level (in member order, deduped), so a level's badge tooltip
+    # shows EVERY posting's reasoning at that level — not just one representative.
+    _reasons_by_level: dict[str, list[str]] = {}
     for s in sub_rows:
         v, r = s.get("viability"), s.get("viability_reason")
-        if v and r and v not in _seen_levels:
-            _seen_levels[v] = r
-    _tooltip_lines = []
-    if group_viability_stale:
-        _tooltip_lines.append("Stale — re-run rescore_viability.sh")
-    for _level in ("high", "medium", "low"):
-        if _level in _seen_levels:
-            _tooltip_lines.append(f"{_level}: {_seen_levels[_level]}")
-    group_viability_tooltip = "\n\n".join(_tooltip_lines)
-    # group_source: the single source if all sub-rows agree, else GROUP_VARIED
-    group_source = h["source"] if h.get("source") == h.get("source_max") else GROUP_VARIED
+        if v and r:
+            lst = _reasons_by_level.setdefault(v, [])
+            if r not in lst:
+                lst.append(r)
+    # Viability/labels/source are set-like "tags": a mixed group shows the UNION of the
+    # distinct values (one badge each) rather than an opaque '(varied)'. Viability badges run
+    # best→worst; each carries its colour, whether any posting at that level is stale (dimmed),
+    # and every reason at that level (bulleted when more than one) as a tooltip.
+    def _level_badge(lv: str) -> dict:
+        stale   = any(s.get("viability_stale") for s in sub_rows if s.get("viability") == lv)
+        reasons = _reasons_by_level.get(lv, [])
+        if len(reasons) == 1:
+            body = f"{lv}: {reasons[0]}"
+        elif reasons:
+            body = f"{lv}:\n" + "\n".join(f"• {r}" for r in reasons)
+        else:
+            body = ""
+        title = ("Stale — re-run rescore_viability.sh\n\n" if stale else "") + body
+        return {"level": lv, "color": VIABILITY_COLORS.get(lv, ""), "stale": stale, "title": title}
+    group_viabilities = [_level_badge(lv) for lv in ("high", "medium", "low")
+                         if lv in unique_viabilities]
+    # Scalar hint for the status-select's data-viability: the level when the group agrees,
+    # else '' (a mixed group has no single level to hint).
+    group_viability = group_viabilities[0]["level"] if len(group_viabilities) == 1 else ""
+    # Union of the distinct sources present, one badge each (display name + badge class).
+    group_sources = [
+        {"value": src, "display": SOURCE_NAMES.get(src, src),
+         "badge": SOURCE_BADGE_CLASSES.get(src, SOURCE_BADGE_DEFAULT)}
+        for src in sorted({s.get("source") for s in sub_rows if s.get("source")})
+    ]
 
     job = {
         "title":            title,
@@ -823,21 +839,19 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
         "sub_rows":         sub_rows,
         "preview_job_id":   sub_rows[0]["job_id"] if sub_rows else None,
         "group_status":     next(iter(unique_statuses)) if len(unique_statuses) == 1 else None,
-        "group_source":     group_source,
-        "group_source_display": SOURCE_NAMES.get(group_source, "") if group_source else None,
+        "group_sources":    group_sources,
         "sub_job_ids":      [s["job_id"] for s in sub_rows if s.get("job_id")],
         "has_company_override":    any(s.get("company_actual") for s in sub_rows),
         "has_salary_override":     any(s.get("has_salary_override") for s in sub_rows),
-        "group_viability":         group_viability,
-        "group_viability_color":   group_viability_color,
-        "group_viability_stale":   group_viability_stale,
-        "group_viability_tooltip": group_viability_tooltip,
+        "group_viability":   group_viability,
+        "group_viabilities": group_viabilities,
         "group_applied":    _group_field(sub_rows, "applied_at",
                                          fmt=lambda v: (v or "")[:10]),
         # Root's salary string (not '(varied)'): the canonical posting's band, with the
         # template flagging '(varies)' when members differ — see salary_varies.
         "group_salary":     root_row.get("salary_display") if root_row else None,
-        "group_labels":     _group_field(sub_rows, "labels"),
+        # Union of every label across the group (sorted), rendered as one badge each.
+        "group_labels":     sorted({lbl for s in sub_rows for lbl in (s.get("labels") or [])}),
         # Dates use the group's earliest member (MIN), the meaningful "first seen/posted"
         # value, rather than '(varied)' — matches the SQL MIN() these columns sort by.
         "group_posted":     _group_earliest_date(sub_rows, "posted_date"),

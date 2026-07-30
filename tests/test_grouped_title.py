@@ -85,3 +85,59 @@ def test_group_earliest_date_ignores_missing():
     assert app._group_earliest_date(rows, "first_seen") == "2026-06-09"
     assert app._group_earliest_date([{"first_seen": None}], "first_seen") is None
     assert app._group_earliest_date([], "first_seen") is None
+
+
+# ── tag-like columns union instead of collapsing to '(varied)' ────────────────
+def test_group_viability_unions_distinct_levels_best_first():
+    subs = [_sub("root", "T", viability="medium"), _sub("m2", "T", viability="high")]
+    job = app.build_grouped_job(_header("root", 2), subs)
+    assert [v["level"] for v in job["group_viabilities"]] == ["high", "medium"]  # best→worst
+    assert job["group_viability"] == ""          # mixed → no single-level hint for the select
+
+
+def test_group_viability_single_level_keeps_hint():
+    subs = [_sub("root", "T", viability="high"), _sub("m2", "T", viability="high")]
+    job = app.build_grouped_job(_header("root", 2), subs)
+    assert [v["level"] for v in job["group_viabilities"]] == ["high"]
+    assert job["group_viability"] == "high"
+
+
+def test_group_viability_empty_when_all_unscored():
+    subs = [_sub("root", "T", viability=None), _sub("m2", "T", viability=None)]
+    job = app.build_grouped_job(_header("root", 2), subs)
+    assert job["group_viabilities"] == []
+
+
+def test_group_viability_badge_lists_all_distinct_reasons_for_a_level():
+    """A level's tooltip shows EVERY posting's reason at that level (deduped), not one."""
+    subs = [_sub("root", "T", viability="high", viability_reason="Reason A"),
+            _sub("m2", "T", viability="high", viability_reason="Reason B"),
+            _sub("m3", "T", viability="high", viability_reason="Reason A")]  # dup of A
+    job = app.build_grouped_job(_header("root", 3), subs)
+    high = next(v for v in job["group_viabilities"] if v["level"] == "high")
+    assert "Reason A" in high["title"] and "Reason B" in high["title"]
+    assert high["title"].count("Reason A") == 1          # deduped
+    assert "•" in high["title"]                           # bulleted when more than one
+
+
+def test_group_viability_single_reason_stays_plain():
+    subs = [_sub("root", "T", viability="high", viability_reason="Solo high"),
+            _sub("m2", "T", viability="medium", viability_reason="Solo medium")]
+    job = app.build_grouped_job(_header("root", 2), subs)
+    high = next(v for v in job["group_viabilities"] if v["level"] == "high")
+    assert high["title"] == "high: Solo high"            # one reason → plain, no bullet
+
+
+def test_group_labels_are_unioned_and_sorted():
+    subs = [_sub("root", "T", labels=["DC"]), _sub("m2", "T", labels=["DC", "Remote"])]
+    job = app.build_grouped_job(_header("root", 2), subs)
+    assert job["group_labels"] == ["DC", "Remote"]   # union, sorted — never '(varied)'
+
+
+def test_group_sources_are_unioned_with_display_and_badge():
+    subs = [_sub("root", "T", source="linkedin"), _sub("m2", "T", source="careersite")]
+    job = app.build_grouped_job(_header("root", 2), subs)
+    assert [s["value"] for s in job["group_sources"]] == ["careersite", "linkedin"]
+    displays = {s["display"] for s in job["group_sources"]}
+    assert displays == {"Career Sites", "LinkedIn"}
+    assert all(s["badge"] for s in job["group_sources"])

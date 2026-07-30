@@ -241,34 +241,23 @@
             </td>
             {% if show_viability_filter %}
             <td class="col-viability">
-              {% if job.group_viability == group_varied %}
-                <span class="text-muted fst-italic small"
-                      {% if job.group_viability_tooltip %}title="{{ job.group_viability_tooltip }}" style="cursor:help;"{% endif %}>{{ group_varied }}</span>
-              {% elif job.group_viability %}
-                <span class="badge text-bg-{{ job.group_viability_color }}{% if job.group_viability_stale %} opacity-50{% endif %}"
-                      title="{{ job.group_viability_tooltip }}">{{ job.group_viability }}</span>
-              {% else %}
-                <span class="text-muted">—</span>
-              {% endif %}
+              {% if job.group_viabilities %}{% for v in job.group_viabilities %}<span class="badge text-bg-{{ v.color }}{% if v.stale %} opacity-50{% endif %}"{% if v.title %} title="{{ v.title }}" style="cursor:help;"{% endif %}>{{ v.level }}</span>{% if not loop.last %} {% endif %}{% endfor %}
+              {% else %}<span class="text-muted">—</span>{% endif %}
             </td>
             {% endif %}
             <td class="col-label">
-              {% if job.group_labels == group_varied %}<span class="text-muted fst-italic small">{{ group_varied }}</span>
-              {% elif job.group_labels %}{% for r in job.group_labels %}<span class="badge bg-secondary">{{ r }}</span> {% endfor %}
+              {% if job.group_labels %}{% for r in job.group_labels %}<span class="badge bg-secondary">{{ r }}</span> {% endfor %}
               {% else %}—{% endif %}
             </td>
             {% if sources|length > 1 %}
             <td class="col-source">
-              {% if job.group_source == group_varied %}
-                <span class="text-muted small fst-italic">{{ group_varied }}</span>
-              {% else %}
-                <span class="badge {{ source_badges.get(job.group_source, source_badge_default) }}">{{ job.group_source_display }}</span>
-              {% endif %}
+              {% if job.group_sources %}{% for s in job.group_sources %}<span class="badge {{ s.badge }}">{{ s.display }}</span>{% if not loop.last %} {% endif %}{% endfor %}
+              {% else %}<span class="text-muted">—</span>{% endif %}
             </td>
             {% endif %}
             <td>
               {% if job.group_status is not none %}
-                {{ group_status_select(job.sub_job_ids, job.group_status, job.group_viability if job.group_viability and job.group_viability != group_varied else '') }}
+                {{ group_status_select(job.sub_job_ids, job.group_status, job.group_viability) }}
               {% else %}
                 <span class="text-muted small fst-italic">{{ group_varied }}</span>
               {% endif %}
