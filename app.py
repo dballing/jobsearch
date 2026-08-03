@@ -241,7 +241,7 @@ def _root_pref(col: str, agg: str = "MIN") -> str:
 # Jobs linked via canonical_id are grouped together; others are their own group.
 GROUPED_HEADERS = f"""
     SELECT COALESCE(canonical_id, job_id) AS group_key,
-           {_root_pref("title")}           AS title,
+           {_root_pref("COALESCE(title_actual, title)")} AS title,
            {_root_pref("COALESCE(company_actual, company)")} AS company_eff,
            COUNT(*)             AS location_count,
            MIN(first_seen)      AS first_seen,
@@ -362,6 +362,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
     if "company_actual" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN company_actual TEXT")
+    if "title_actual" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN title_actual TEXT")
     if "salary_min_actual" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN salary_min_actual INTEGER")
     if "salary_max_actual" not in cols:
@@ -539,7 +541,7 @@ def build_where(label: str, status_filter: str, q: str = "", source: str = "",
     if q:
         # Tokenized (whitespace-insensitive) so a search built from a displayed,
         # whitespace-normalized title still finds its raw stored original.
-        q_clause, q_params = search_token_where(q, ["title", "company", "company_actual"])
+        q_clause, q_params = search_token_where(q, ["title", "title_actual", "company", "company_actual"])
         if q_clause:
             conditions.append(q_clause)
             params.extend(q_params)
@@ -618,6 +620,13 @@ def process_job_row(row: sqlite3.Row | dict, hotlist: "set[str] | frozenset" = f
     """
     j = dict(row)
     j["labels"]           = decode_labels(j.get("labels"))
+    # Effective title: a manual override (title_actual) wins over the scraped title. Keep the
+    # original under title_original so the UI can show "originally listed as", and expose it as
+    # `title` directly so every display path (flat/grouped/preview) uses the effective value.
+    j["title_original"]      = j.get("title")
+    j["title_actual"]        = j.get("title_actual")
+    j["has_title_override"]  = bool(j.get("title_actual"))
+    j["title"]               = j.get("title_actual") or j.get("title")
     j["company_actual"]   = j.get("company_actual")
     j["company_display"]  = j.get("company_actual") or j.get("company") or ""
     j["status_color"]     = STATUS_COLORS.get(j.get("status", "new"), "secondary")
@@ -842,6 +851,7 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
         "group_sources":    group_sources,
         "sub_job_ids":      [s["job_id"] for s in sub_rows if s.get("job_id")],
         "has_company_override":    any(s.get("company_actual") for s in sub_rows),
+        "has_title_override":      any(s.get("has_title_override") for s in sub_rows),
         "has_salary_override":     any(s.get("has_salary_override") for s in sub_rows),
         "group_viability":   group_viability,
         "group_viabilities": group_viabilities,
@@ -1047,6 +1057,11 @@ def index():
         # flat rows compute it inline.
         sort_expr = ("company_eff COLLATE NOCASE" if view == "grouped"
                      else "COALESCE(company_actual, company) COLLATE NOCASE")
+    elif sort == "title":
+        # Effective (override-aware) title, matching what the table shows. Grouped exposes
+        # it via the `title` aggregate (already COALESCE'd); flat rows compute it inline.
+        sort_expr = ("title COLLATE NOCASE" if view == "grouped"
+                     else "COALESCE(title_actual, title) COLLATE NOCASE")
     elif sort == "salary_min":
         # Sort by effective (override-aware) salary. The grouped query already
         # aliases salary_min to the effective aggregate; flat rows compute it inline.
@@ -1316,7 +1331,7 @@ def report_weekly():
     # collapse to one entry per canonical group below.
     rows = db.execute(
         """SELECT job_id, COALESCE(canonical_id, job_id) AS group_key, canonical_id,
-                  title, company, company_actual, company_url, job_url, apply_url,
+                  title, title_actual, company, company_actual, company_url, job_url, apply_url,
                   applied_at, history
            FROM jobs
            WHERE applied_at IS NOT NULL OR history LIKE '%"event":"status"%'"""
@@ -1376,7 +1391,7 @@ def report_weekly():
             or rep["job_url"]
         company_url = next((m["company_url"] for m in members if (m["company_url"] or "").strip()), None)
         employers.setdefault(company, []).append({
-            "title": rep["title"] or "—",
+            "title": rep["title_actual"] or rep["title"] or "—",
             "job_id": rep["job_id"],  # representative posting, for the description preview panel
             "url": url,
             "company_url": company_url,
@@ -1586,6 +1601,7 @@ def get_job(job_id: str):
         # preview pane shows the "Promote to canonical" control only in that case.
         "canonical_id":     job.get("canonical_id"),
         "title":            job["title"],
+        "title_actual":     job.get("title_actual"),
         "company":          job["company"],
         "company_actual":   job.get("company_actual"),
         "company_url":      job.get("company_url"),
@@ -1710,6 +1726,28 @@ def set_company_actual(job_id: str):
     )
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     append_history(db, job_id, {"ts": ts, "event": "company_actual", "from": old, "to": value})
+    db.commit()
+    return "", 204
+
+
+@app.route("/job/<job_id>/title_actual", methods=["POST"])
+def set_title_actual(job_id: str):
+    """Override the scraped job title for one posting (e.g. an aggregator's mangled/generic
+    title). Empty clears it. Per-job (not fanned out across a matched group — postings in a
+    group legitimately carry different titles). The title feeds the viability prompt, so flag
+    for rescoring on change."""
+    value = request.form.get("title_actual", "").strip() or None
+    db = get_db()
+    row = db.execute("SELECT title_actual FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    if not row:
+        return "Not found", 404
+    old = row["title_actual"]
+    db.execute(
+        "UPDATE jobs SET title_actual = ?, needs_rescored = 1 WHERE job_id = ?",
+        (value, job_id),
+    )
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    append_history(db, job_id, {"ts": ts, "event": "title_actual", "from": old, "to": value})
     db.commit()
     return "", 204
 
@@ -2223,7 +2261,7 @@ def jobs_autocomplete():
         return []
     db = get_db()
     token_clauses, token_params = search_token_where(
-        q, ["j.title", "j.company", "COALESCE(j.company_actual, j.company)"])
+        q, ["j.title", "j.title_actual", "j.company", "COALESCE(j.company_actual, j.company)"])
     if not token_clauses:
         return []
     # The source job's group root, so we can drop it from the merge candidates.
@@ -2235,7 +2273,7 @@ def jobs_autocomplete():
         source_root = r["root"] if r else exclude
     rows = db.execute(
         f"""
-        SELECT r.job_id AS root_id, r.title AS title,
+        SELECT r.job_id AS root_id, COALESCE(r.title_actual, r.title) AS title,
                COALESCE(r.company_actual, r.company) AS company,
                grp.size AS size, grp.first_seen AS first_seen, grp.sources AS sources
         FROM (

@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     applied_at            TEXT,
     history               TEXT NOT NULL DEFAULT '[]',
     company_actual        TEXT,
+    title_actual          TEXT,
     salary_min_actual     INTEGER,
     salary_max_actual     INTEGER,
     work_arrangement_actual TEXT,

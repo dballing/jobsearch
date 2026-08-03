@@ -176,7 +176,9 @@ def build_score_message(job: dict, geo_note: str | None = None) -> str:
     absent are omitted rather than sent blank, so the candidate prompt handles the neutral
     case.
     """
-    title       = (job.get("title")    or "(no title)").strip()
+    # A manual title override (title_actual) wins over the scraped title — the user has
+    # corrected a mangled/generic feed title, so score against the corrected one.
+    title       = (job.get("title_actual") or job.get("title") or "(no title)").strip()
     company_raw = (job.get("company")  or "(unknown company)").strip()
     company_actual = (job.get("company_actual") or "").strip()
     # If a company-name override exists, show both — the model needs the real employer to

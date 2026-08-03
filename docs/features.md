@@ -85,6 +85,15 @@ When a job is posted by a third party (e.g. a job board or recruiting firm) rath
 
 **Canonical rename (change the underlying name).** The same editor has a checkbox, **"Change the underlying company name everywhere (adds a permanent alias)"** — off by default. With it checked, Save doesn't set a per-job "(via …)" override; instead it treats the typed value as the employer's real name and, in one step: (1) rewrites the scraped `company` on **every** job with that name, flagging each for rescoring and logging a `company_renamed` history event; and (2) appends the mapping to `[company_aliases]` in `config.toml` (with an `# Added YYYY-MM-DD via web app.` comment) so future ingests normalize it too — that alias is what keeps the rewrite from reverting on the next re-scrape. The feed's original spelling is still preserved in each job's `raw`. Use this for a genuine variant spelling ("X, LLC" → "X"); use the plain override for a third-party "posted via" correction.
 
+### Job title override
+
+When a feed's title is mangled or generic (e.g. an aggregator's "Program Manager - Req# 12345"), open the job preview and type the real title in the **Title override** field below the meta bar, then Save or Enter.
+
+- The override replaces the displayed title everywhere it's shown (table, grouped header, preview panel, cover-letter prompt) and is what viability scoring sees. The preview shows the original in muted italic as "(originally …)".
+- In the table an asterisk (<sup>*</sup>) appears next to the title; hovering shows the original. Both the original and the override are searched by the title/company search bar, and column-sorting orders by the effective (override-aware) title.
+- It's **per-job**, not fanned out across a matched group — postings in a group legitimately carry different titles, so each is overridden on its own. (Group headers still show one representative title with "(varies)".)
+- Changing it flags the job for rescoring (the title feeds the AI prompt). Clear it by emptying the field and saving; the original scraped title is always preserved.
+
 ### Company website link
 
 Ingest records the employer's own site in a `company_url` column, taken from the feed (preferring the real domain — LinkedIn's `linkedin_org_url` / careersite's `domain_derived` — and falling back to the source's `organization_url`, i.e. a LinkedIn/ATS company page). It's surfaced in three places:

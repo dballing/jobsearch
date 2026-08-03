@@ -110,6 +110,14 @@ def test_company_override_shows_both():
     assert "Company: Capital One (posted via Ladders)" in msg
 
 
+def test_title_override_wins_in_score_message():
+    """A title override replaces the scraped title the model scores against."""
+    msg = viability.build_score_message(
+        {"title": "Generic Req 12345", "title_actual": "Senior TPM", "company": "Acme"})
+    assert msg.startswith("Job title: Senior TPM\n")
+    assert "Generic Req 12345" not in msg
+
+
 def test_salary_variants():
     both = viability.build_score_message({"title": "T", "company": "C",
                                           "salary_min": 150000, "salary_max": 200000})

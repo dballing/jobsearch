@@ -2180,6 +2180,8 @@ Solid fit; re-score pending.">medium</span>
     document.getElementById('coverLetterBtn').classList.add('d-none');
     const _prevEditor = document.getElementById('companyActualEditor');
     if (_prevEditor) _prevEditor.remove();
+    const _prevTitleEditor = document.getElementById('titleActualEditor');
+    if (_prevTitleEditor) _prevTitleEditor.remove();
     bootstrap.Offcanvas.getOrCreateInstance(panel).show();
 
     fetch('/job/' + jobId)
@@ -2193,7 +2195,11 @@ Solid fit; re-score pending.">medium</span>
       })
       .then(job => {
         const viabilityColors = {high: 'success', medium: 'warning', low: 'danger'};
-        titleEl.textContent = job.title || '(no title)';
+        // Effective title (override wins), with an "(originally …)" note when overridden.
+        titleEl.innerHTML = escHtml(job.title_actual || job.title || '(no title)')
+          + (job.title_actual
+             ? ` <span class="text-muted fst-italic" style="font-size:.7em">(originally ${escHtml(job.title)})</span>`
+             : '');
         // Effective employer name, linked to the company's own site when we have one
         // (cleaner in the panel than a separate icon). An override keeps its "(via …)" note.
         const effName = escHtml(job.company_actual || job.company || '');
@@ -2240,6 +2246,7 @@ Solid fit; re-score pending.">medium</span>
             else if (e.event === 'promoted_canonical') desc = 'Promoted to canonical of its matched group';
             else if (e.event === 'canonical_demoted')  desc = 'Replaced as group canonical by another posting';
             else if (e.event === 'company_actual')  desc = e.to ? `Company override set: <strong>${escHtml(e.to)}</strong>` : 'Company override cleared';
+            else if (e.event === 'title_actual')    desc = e.to ? `Title override set: <strong>${escHtml(e.to)}</strong>` : 'Title override cleared';
             else if (e.event === 'work_arrangement') desc = e.to ? `Work arrangement override: <strong>${escHtml(e.to)}</strong>` : 'Work arrangement override cleared';
             else if (e.event === 'company_normalized') desc = `Company normalized: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong> <span class="text-muted fst-italic">(auto)</span>`;
             else if (e.event === 'company_renamed') desc = `Company renamed: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong> <span class="text-muted fst-italic">(manual — canonical + alias)</span>`;
@@ -2367,6 +2374,48 @@ Solid fit; re-score pending.">medium</span>
 
         editorDiv.append(hotWrap, inputEl, saveBtn, clearBtn, feedbackEl, renameWrap);
         metaEl.insertAdjacentElement('afterend', editorDiv);
+
+        // Title override editor — for when the feed's title is mangled/generic. Per-job (not
+        // fanned out across the group: postings in a group legitimately differ in title).
+        // Wins in display, sort, and viability scoring. Sits just under the meta bar.
+        const existingTitleEditor = document.getElementById('titleActualEditor');
+        if (existingTitleEditor) existingTitleEditor.remove();
+        const titleEditor = document.createElement('div');
+        titleEditor.id = 'titleActualEditor';
+        titleEditor.className = 'px-3 py-2 border-bottom d-flex align-items-center gap-2 small flex-wrap';
+        const titleLabel = document.createElement('span');
+        titleLabel.className = 'text-muted'; titleLabel.textContent = 'Title override:';
+        const titleInput = document.createElement('input');
+        titleInput.type = 'text'; titleInput.className = 'form-control form-control-sm';
+        titleInput.placeholder = 'Actual title (if the feed’s is wrong)…';
+        titleInput.value = job.title_actual || '';
+        titleInput.style.minWidth = '240px'; titleInput.style.flex = '1';
+        const titleSave = document.createElement('button');
+        titleSave.className = 'btn btn-sm btn-outline-primary'; titleSave.textContent = 'Save';
+        const titleClear = document.createElement('button');
+        titleClear.className = 'btn btn-sm btn-outline-secondary' + (job.title_actual ? '' : ' d-none');
+        titleClear.textContent = 'Clear';
+        const titleFb = document.createElement('span'); titleFb.className = 'small';
+
+        async function saveTitleActual(value) {
+          const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/title_actual`,
+            {method: 'POST', body: new URLSearchParams({title_actual: value})});
+          if (resp.ok) {
+            job.title_actual = value || null;
+            titleFb.className = 'text-success small'; titleFb.textContent = 'Saved!';
+            // Override changes the displayed title, the title-sort order, and flags a
+            // rescore — all recomputed server-side, so reload once committed.
+            setTimeout(() => location.reload(), 450);
+          } else {
+            titleFb.className = 'text-danger small';
+            titleFb.textContent = (await resp.text().catch(() => '')) || 'Save failed.';
+          }
+        }
+        titleSave.addEventListener('click', () => saveTitleActual(titleInput.value.trim()));
+        titleClear.addEventListener('click', () => { titleInput.value = ''; saveTitleActual(''); });
+        titleInput.addEventListener('keydown', e => { if (e.key === 'Enter') titleSave.click(); });
+        titleEditor.append(titleLabel, titleInput, titleSave, titleClear, titleFb);
+        metaEl.insertAdjacentElement('afterend', titleEditor);
 
         // Salary override editor — for when the feed is missing (or wrong) but the
         // figure is in the description. Fans out across the matched group server-side.
@@ -2571,7 +2620,7 @@ Solid fit; re-score pending.">medium</span>
         clBtn.onclick = function() {
           const parts = [
             'Please write a cover letter for the following position using our established template and process.\n',
-            `**Job Title:** ${job.title || '(no title)'}`,
+            `**Job Title:** ${job.title_actual || job.title || '(no title)'}`,
             job.company_actual
               ? `**Company:** ${job.company_actual} (advertised by ${job.company})`
               : `**Company:** ${job.company || '(unknown)'}`,
