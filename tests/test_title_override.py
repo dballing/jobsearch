@@ -57,6 +57,34 @@ def test_route_unknown_job_is_404(sample_app_db):
     assert resp.status_code == 404
 
 
+def test_single_job_group_flatten_keeps_title_original():
+    """A single-job 'group' (grouped view, not a fuzzy group) is flattened to a flat-style
+    row that the template renders with the same 'originally: …' override tooltip. That
+    tooltip reads job.title_original, so the flatten must carry it through — otherwise a
+    grouped-view single job shows an empty 'originally:' even though its '*' is present."""
+    sub = app.process_job_row({"job_id": "j1", "title": "Raw Feed Title",
+                               "title_actual": "Corrected Title", "labels": "[]",
+                               "status": "new"})
+    header = {"group_key": "j1", "location_count": 1,
+              "source": "linkedin", "source_max": "linkedin",
+              "salary_min": None, "salary_max": None}
+    job = app.build_grouped_job(header, [sub])
+    assert job["multi"] is False                       # single job → flattened row
+    assert job["has_title_override"] is True
+    assert job["title"] == "Corrected Title"           # effective title shown
+    assert job["title_original"] == "Raw Feed Title"   # original kept for the "*" tooltip
+
+
+def test_grouped_view_single_job_shows_original_in_tooltip(sample_app_db):
+    """End-to-end in grouped view: an overridden single job's '*' tooltip names the original
+    scraped title (regression — the grouped flatten previously dropped title_original)."""
+    client = app.app.test_client()
+    client.post("/job/cs_review/title_actual", data={"title_actual": "Overridden Title XYZ"})
+    html = client.get("/?status_filter=all&group_match=1&per_page=200").get_data(as_text=True)
+    assert "Overridden Title XYZ" in html
+    assert "originally: Photocopier Repair Technician" in html
+
+
 def test_override_renders_effective_title_and_original_tooltip(sample_app_db):
     """End-to-end: after overriding, the table shows the effective title and keeps the
     original in the '*' tooltip."""

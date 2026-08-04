@@ -872,6 +872,10 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
         job.update({
             "job_id":           s.get("job_id"),
             "job_url":          s.get("job_url"),
+            # The scraped title, for the "originally: …" tooltip on the override "*". The
+            # single-location row template reads job.title_original (same as a flat row);
+            # without this it renders an empty "originally:" for an overridden single job.
+            "title_original":   s.get("title_original"),
             "location_primary": s.get("location") or "—",
             "locations_all":    s.get("locations_all", ""),
             "locations_count":  s.get("locations_count", 1),
