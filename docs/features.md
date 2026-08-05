@@ -60,6 +60,8 @@ The **Per page** dropdown sets how many rows are shown per page — 25 (default)
 
 With **Matched-Jobs** grouping on, if all postings in a group share the same status, a group-level dropdown updates all of them at once.
 
+**Applied date on a status change.** Changing status keeps the **Applied** date in step automatically. Moving into an *early* status (`new`, `reviewing`, `deferred`, `skipped`, `autoskipped`) means no application is outstanding, so it **clears** the date. Moving into any *applied-family* status (`applied`, `interviewing`, `offered`, `rejected`, `withdrawn`, `ghosted`) **stamps the current time — but only when the date is empty**, so a real application date is never overwritten by a later toggle (e.g. `applied → interviewing` keeps the original date). This means a job that reaches the applied family by any path (e.g. straight to `interviewing`, or back to `applied` after being cleared) always ends up with a date rather than sitting blank.
+
 > **Tip:** If a job you've marked `skipped` (or that was auto-set to `autoskipped`) has its description updated by the employer, it is automatically reset to `new` on the next ingest run. These jobs display a ↻ icon next to their title.
 
 ### Previewing job descriptions

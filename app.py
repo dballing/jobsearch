@@ -101,6 +101,34 @@ STATUSES = [
     "withdrawn", "closed",
 ]
 
+# Status buckets that drive applied_at when status changes, kept in one place so the per-job
+# and bulk status routes (and the manual-add stamp) all agree. "Early" statuses mean no
+# application has been submitted, so moving into one CLEARS applied_at. The "applied family"
+# statuses all imply an application went out; moving into any of them STAMPS applied_at with
+# now() — but only when it's still empty, so a real application date is never overwritten by a
+# later toggle (e.g. applied→interviewing keeps the original date). This fills the gap where a
+# job that reaches the family by a path that never stamped (e.g. new→interviewing directly, or
+# an applied step after the date was cleared) would otherwise sit at applied_at=NULL forever.
+_EARLY_STATUSES = ("new", "reviewing", "deferred", "skipped", "autoskipped")
+_APPLIED_FAMILY = ("applied", "rejected", "ghosted", "interviewing", "offered", "withdrawn")
+
+
+def _sql_str_list(values: "tuple[str, ...]") -> str:
+    """Render our own status-bucket tuples as a SQL `('a', 'b')` literal list for an IN clause.
+    Only ever called on the module constants above (never user input), so plain quoting is safe."""
+    return "(" + ", ".join(f"'{v}'" for v in values) + ")"
+
+
+# Shared applied_at recomputation for a status change, parameterized by the NEW status (the two
+# `?` are both the new status). Order: clear for early statuses; else stamp now() when entering
+# the applied family with no date yet; else keep the existing date. Both status routes embed it.
+_APPLIED_AT_CASE_SQL = (
+    "CASE "
+    f"WHEN ? IN {_sql_str_list(_EARLY_STATUSES)} THEN NULL "
+    f"WHEN applied_at IS NULL AND ? IN {_sql_str_list(_APPLIED_FAMILY)} THEN CURRENT_TIMESTAMP "
+    "ELSE applied_at END"
+)
+
 # Manual work-arrangement override options (self-explanatory phrasings sent verbatim to
 # the viability scorer — see viability._work_arrangement). The preview panel serves these
 # to its dropdown via /job/<id>; the endpoint validates against this exact set.
@@ -1663,12 +1691,8 @@ def update_jobs_status():
         ).fetchall()
     }
     db.executemany(
-        """UPDATE jobs SET status = ?, refreshed_at = NULL,
-           applied_at = CASE
-             WHEN ? = 'applied' AND status IN ('new','reviewing','deferred','skipped','autoskipped') THEN CURRENT_TIMESTAMP
-             WHEN ? IN ('new','reviewing','deferred','skipped','autoskipped') THEN NULL
-             ELSE applied_at
-           END
+        f"""UPDATE jobs SET status = ?, refreshed_at = NULL,
+           applied_at = {_APPLIED_AT_CASE_SQL}
            WHERE job_id = ?""",
         [(new_status, new_status, new_status, jid) for jid in job_ids],
     )
@@ -1705,12 +1729,8 @@ def update_status(job_id: str):
         ).fetchall()
     }
     db.executemany(
-        """UPDATE jobs SET status = ?, refreshed_at = NULL,
-           applied_at = CASE
-             WHEN ? = 'applied' AND status IN ('new','reviewing','deferred','skipped','autoskipped') THEN CURRENT_TIMESTAMP
-             WHEN ? IN ('new','reviewing','deferred','skipped','autoskipped') THEN NULL
-             ELSE applied_at
-           END
+        f"""UPDATE jobs SET status = ?, refreshed_at = NULL,
+           applied_at = {_APPLIED_AT_CASE_SQL}
            WHERE job_id = ?""",
         [(new_status, new_status, new_status, mid) for mid in members],
     )
@@ -2051,10 +2071,6 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
     append_history(db, job_id, {"ts": ts, "event": "viability", "rating": rating, "reason": reason})
     db.commit()
     return True, rating
-
-
-# Statuses that represent a submitted application, used to auto-stamp applied_at.
-_APPLIED_FAMILY = {"applied", "interviewing", "offered", "rejected", "withdrawn", "ghosted"}
 
 
 @app.route("/jobs/manual", methods=["POST"])
