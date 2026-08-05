@@ -110,6 +110,14 @@ The feed classifies each job's work arrangement (remote / hybrid / on-site), and
 
 The dropdown also carries a special **Remote (unsupported location)** flag for the one geographic dead end the feed and the location sub-call can't catch: a role that genuinely is remote but only for residents of states/regions you can't be in. Such postings report a plain "Remote OK" and hide the restriction in an *implicit* list of eligible states rather than an explicit eligibility sentence, so the location sub-call rates the remote option a good fit and the job scores viable. (Observed: NVIDIA's "Senior Manager, Customer Program Management," remote only in CA/TX/WA.) Selecting this flag skips the AI location call and deterministically forces the score to **low** with a reason that attributes the clamp to the manual flag — the same mechanism as an AI-assessed POOR geographic fit, just triggered by hand.
 
+### Location viability override
+
+The positive counterpart to the "unsupported location" flag: when you'd take a job at its stated location even though the geographic check would otherwise sink it, tick **Location viability: Acceptable (override)** in the preview panel (or, for a hand-entered job, the same checkbox in the [Add a job manually](#add-a-job-manually) dialog). This is the usual reason a job gets entered by hand at all — you're tracking it *because* you'd work it.
+
+- When set, the job's geographic fit is forced to **ACCEPTABLE**: the AI location sub-call is skipped (no cost), and — because ACCEPTABLE isn't POOR — the job is spared the POOR→low geographic clamp, so the scorer judges it on scope/comp/industry without a location penalty.
+- It's per-job (the assertion is about this specific posting/location, not a whole matched group) and, like the other overrides, flags the job for rescoring. Only "Acceptable" is offered — you're asserting the location is *workable*, not ranking it — and the override wins over the "unsupported location" flag if a job somehow carries both.
+- Untick it to clear the override; the next rescore returns the job to the AI-assessed geographic fit.
+
 ### Company name normalization
 
 Feeds spell the same employer inconsistently (e.g. "Sirius XM" vs "Sirius XM Radio"). The optional `[company_aliases]` config table maps variant spellings to one canonical name, applied automatically at ingest — so the stored value, and therefore grouping, employer search, viability scoring, and display, all use a single consistent name. See [Configuration](configuration.md#company-name-normalization-company_aliases).
@@ -150,9 +158,9 @@ When any `new` jobs on the current page have a `low` viability score, a **Skip N
 
 ### Add a job manually
 
-The green **Add job** button in the toolbar opens a form for jobs that didn't come through an Apify feed — e.g. an application you submitted directly. **Title** and **company** are required (validated client- and server-side); everything else is optional: location, status, applied date, job/apply URLs, salary min/max/currency (the `k` shorthand works), posted date, labels, description, and notes.
+The green **Add job** button in the toolbar opens a form for jobs that didn't come through an Apify feed — e.g. an application you submitted directly. **Title** and **company** are required (validated client- and server-side); everything else is optional: location, status, applied date, job/apply URLs, salary min/max/currency (the `k` shorthand works), posted date, labels, description, and notes. The **Applied at** field has a **Now** button that fills it with the current date and time. The form is cleared each time the dialog opens, so a previous entry never carries over.
 
-Manually added jobs get `source = manual` (shown as "Manual" and filterable once one exists) and a `manual_`-prefixed id. A **Score viability now** checkbox scores the job inline; unchecked (or when AI is disabled/unconfigured — which surfaces a note), it starts unscored and the next scheduled rescore evaluates it. An applied-family status with no explicit applied date stamps the current time so the [weekly contact report](#weekly-contact-report) picks it up.
+Manually added jobs get `source = manual` (shown as "Manual" and filterable once one exists) and a `manual_`-prefixed id. A **Score viability now** checkbox scores the job inline; unchecked (or when AI is disabled/unconfigured — which surfaces a note), it starts unscored and the next scheduled rescore evaluates it. A **Location viability: Acceptable** checkbox sets the [location viability override](#location-viability-override) at entry time, so the inline score treats the location as workable. An applied-family status with no explicit applied date stamps the current time so the [weekly contact report](#weekly-contact-report) picks it up.
 
 ### Company hotlist
 
@@ -289,7 +297,7 @@ Or chain after ingestion in cron:
 - Each job is scored in one Anthropic API call. Your candidate `prompt` is sent as a cached system prompt, so repeated calls within a session only pay full token cost on the first.
 - A SHA-256 hash of the prompt is stored with each score. On subsequent runs, only jobs with a missing or stale hash are re-scored.
 - Jobs with `NULL` viability are always scored regardless of status (they may have inherited a status from a canonical without ever being evaluated).
-- Jobs are also flagged for re-scoring when a viability-relevant field changes independently of the prompt — currently a manual [salary override](#salary-override) or [company override](#company-name-override). Such a flagged job is re-scored on the next run even if its prompt hash is current and even if it is `skipped`/`closed` (so a correction that improves it can resurface it). The flag clears once the job is successfully re-scored.
+- Jobs are also flagged for re-scoring when a viability-relevant field changes independently of the prompt — a manual [salary override](#salary-override), [company override](#company-name-override), [job title override](#job-title-override), [work arrangement override](#work-arrangement-override), or [location viability override](#location-viability-override). Such a flagged job is re-scored on the next run even if its prompt hash is current and even if it is `skipped`/`closed` (so a correction that improves it can resurface it). The flag clears once the job is successfully re-scored.
 - When a linked (`skipped`/`autoskipped`) job scores strictly better than both its canonical and its own previous score, it is automatically reset to `new` for human review — unless `auto_skip` is enabled and the score is still below the threshold, in which case it updates to `autoskipped` instead. This only fires when the canonical's own score is **current** (its prompt hash matches this run's): a stale canonical score is an apples-to-oranges yardstick that would spuriously promote duplicates purely because of a prompt change, so the comparison waits until the canonical is itself re-scored.
 
 ### Auto-skip

@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     salary_min_actual     INTEGER,
     salary_max_actual     INTEGER,
     work_arrangement_actual TEXT,
+    geo_fit_actual        TEXT,
     needs_rescored        INTEGER NOT NULL DEFAULT 0,
     job_description_formatted TEXT,
     description_hash          TEXT,

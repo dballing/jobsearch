@@ -400,6 +400,8 @@
     if (_prevEditor) _prevEditor.remove();
     const _prevTitleEditor = document.getElementById('titleActualEditor');
     if (_prevTitleEditor) _prevTitleEditor.remove();
+    const _prevGeoEditor = document.getElementById('geoFitEditor');
+    if (_prevGeoEditor) _prevGeoEditor.remove();
     bootstrap.Offcanvas.getOrCreateInstance(panel).show();
 
     fetch('/job/' + jobId)
@@ -465,6 +467,7 @@
             else if (e.event === 'canonical_demoted')  desc = 'Replaced as group canonical by another posting';
             else if (e.event === 'company_actual')  desc = e.to ? `Company override set: <strong>${escHtml(e.to)}</strong>` : 'Company override cleared';
             else if (e.event === 'title_actual')    desc = e.to ? `Title override set: <strong>${escHtml(e.to)}</strong>` : 'Title override cleared';
+            else if (e.event === 'geo_fit_actual')  desc = e.to ? `Location viability override: <strong>${escHtml(e.to)}</strong>` : 'Location viability override cleared';
             else if (e.event === 'work_arrangement') desc = e.to ? `Work arrangement override: <strong>${escHtml(e.to)}</strong>` : 'Work arrangement override cleared';
             else if (e.event === 'company_normalized') desc = `Company normalized: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong> <span class="text-muted fst-italic">(auto)</span>`;
             else if (e.event === 'company_renamed') desc = `Company renamed: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong> <span class="text-muted fst-italic">(manual — canonical + alias)</span>`;
@@ -717,6 +720,38 @@
         });
         waEditor.append(waLabel, waSelect, waFb);
         salEditor.insertAdjacentElement('afterend', waEditor);
+
+        // Location-viability override — the candidate asserting "I'd work here" for a job whose
+        // geography would otherwise sink it. Checked → geo fit is forced to ACCEPTABLE, which
+        // skips the billed location sub-call and spares the job the POOR→low clamp. Per-job.
+        const existingGeoEditor = document.getElementById('geoFitEditor');
+        if (existingGeoEditor) existingGeoEditor.remove();
+        const geoEditor = document.createElement('div');
+        geoEditor.id = 'geoFitEditor';
+        geoEditor.className = 'px-3 py-2 border-bottom d-flex align-items-center gap-2 small flex-wrap';
+        const geoCheck = document.createElement('input');
+        geoCheck.type = 'checkbox'; geoCheck.className = 'form-check-input m-0';
+        geoCheck.id = 'geoFitCheck';
+        geoCheck.checked = (job.geo_fit_actual === 'acceptable');
+        const geoLabel = document.createElement('label');
+        geoLabel.className = 'text-muted mb-0'; geoLabel.setAttribute('for', 'geoFitCheck');
+        geoLabel.textContent = 'Location viability: Acceptable (override)';
+        const geoFb = document.createElement('span'); geoFb.className = 'small';
+        geoCheck.addEventListener('change', async () => {
+          const value = geoCheck.checked ? 'acceptable' : '';
+          const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/geo_fit_actual`,
+            {method: 'POST', body: new URLSearchParams({geo_fit_actual: value})});
+          if (resp.ok) {
+            job.geo_fit_actual = value || null;
+            geoFb.className = 'text-success small'; geoFb.textContent = 'Saved — will rescore.';
+            setTimeout(() => { geoFb.textContent = ''; }, 1500);
+          } else {
+            geoCheck.checked = !geoCheck.checked;  // revert the visual toggle on failure
+            geoFb.className = 'text-danger small'; geoFb.textContent = 'Save failed.';
+          }
+        });
+        geoEditor.append(geoCheck, geoLabel, geoFb);
+        waEditor.insertAdjacentElement('afterend', geoEditor);
 
         // Promote-to-canonical — only shown for a grouped member (one that points at a
         // canonical). Makes THIS posting the group's root, re-pointing the former root and

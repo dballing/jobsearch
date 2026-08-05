@@ -300,6 +300,51 @@ def is_manual_geo_poor(job: dict) -> bool:
     return str(job.get("work_arrangement_actual") or "").strip() == GEO_UNSUPPORTED_ARRANGEMENT
 
 
+# The manual "I'd take this job at this location" override — the positive counterpart to the
+# GEO_UNSUPPORTED_ARRANGEMENT flag. When a posting's geography would otherwise sink it (the AI
+# location sub-call rates it POOR, or it's a manually-tracked job the candidate is only
+# entering *because* they'd work it), the user flags the location fit ACCEPTABLE. That verdict
+# is fed to the scorer verbatim in place of the billed sub-call and — being ACCEPTABLE, not
+# POOR — never trips the low-clamp. Only "acceptable" is offered (the candidate is asserting
+# "workable", not ranking the location); the column holds the general geo tier so it stays
+# symmetric with GEO_FITS should that ever grow.
+MANUAL_GEO_FIT_CHOICES = ("acceptable",)
+
+
+def manual_geo_fit(job: dict) -> str | None:
+    """The manual geographic-fit override (geo_fit_actual) for a job, or None.
+
+    When set (only 'acceptable' today), the caller uses it as the geographic verdict and
+    SKIPS the billed location sub-call — the candidate has asserted the location is workable,
+    so there's nothing to assess. Returns a value only when it's a recognized GEO_FITS tier,
+    so a stray column value can't inject a bogus verdict. Pure, so it's unit-testable without
+    the DB."""
+    v = str(job.get("geo_fit_actual") or "").strip().lower()
+    return v if v in GEO_FITS else None
+
+
+def manual_geo_verdict(job: dict) -> "tuple[str | None, str | None, bool]":
+    """Resolve any *manual* geographic verdict for a job, before the (billed) AI location call.
+
+    Returns (fit, gnote, manual_poor):
+      - An ACCEPTABLE override (manual_geo_fit) WINS over everything: (that tier, its note,
+        False) — the candidate has asserted the location is workable.
+      - Else the 'remote in an unsupported location' flag (is_manual_geo_poor): a deterministic
+        POOR verdict → ('poor', its note, True).
+      - Else (None, None, False): no manual verdict, so the caller should run assess_location_fit.
+    A `fit` of None is the sole signal to fall through to the AI call. manual_poor is echoed so
+    the caller passes it to clamp_viability_for_geo for the honest 'manual flag' reason suffix —
+    and, since the override branch returns manual_poor=False, an ACCEPTABLE override also
+    suppresses the low-clamp a coexisting POOR flag would otherwise apply. Pure, so the whole
+    precedence is unit-testable without an API call."""
+    override = manual_geo_fit(job)
+    if override:
+        return override, geo_note(override, ""), False
+    if is_manual_geo_poor(job):
+        return "poor", geo_note("poor", ""), True
+    return None, None, False
+
+
 # Appended to the score reason when a POOR geographic fit forces the rating down (see
 # clamp_viability_for_geo). Leads with the trigger so the override is self-explaining in the UI.
 _GEO_POOR_SUFFIX = (

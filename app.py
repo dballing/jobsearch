@@ -24,8 +24,9 @@ from flask import Flask, abort, g, render_template, request, send_file, url_for
 from werkzeug.utils import secure_filename
 from ingest import append_history, bootstrap_history
 from viability import (
-    _work_arrangement, GEO_UNSUPPORTED_ARRANGEMENT, assess_location_fit,
-    clamp_viability_for_geo, geo_note, is_manual_geo_poor, prompt_hash, score_job,
+    _work_arrangement, GEO_UNSUPPORTED_ARRANGEMENT, MANUAL_GEO_FIT_CHOICES,
+    assess_location_fit, clamp_viability_for_geo, geo_note, manual_geo_verdict,
+    prompt_hash, score_job,
 )
 
 app = Flask(__name__)
@@ -382,6 +383,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # Manual override of the feed's ai_work_arrangement (e.g. recruiter says a role
         # is hybrid though the posting reads on-site); wins in viability scoring.
         conn.execute("ALTER TABLE jobs ADD COLUMN work_arrangement_actual TEXT")
+    if "geo_fit_actual" not in cols:
+        # Manual geographic-fit override (see viability.manual_geo_fit): the candidate
+        # asserts the location is workable (ACCEPTABLE), skipping the billed location
+        # sub-call and sparing the job the POOR→low clamp.
+        conn.execute("ALTER TABLE jobs ADD COLUMN geo_fit_actual TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_jobs_description_hash ON jobs(description_hash)"
     )
@@ -1614,6 +1620,8 @@ def get_job(job_id: str):
         # What the feed says (glossed), shown as a hint next to the override control.
         "work_arrangement_feed":    _work_arrangement({**job, "work_arrangement_actual": None}),
         "work_arrangement_options": WORK_ARRANGEMENTS,
+        # Manual geographic-fit override ('acceptable' or None) — see set_geo_fit_actual.
+        "geo_fit_actual":   job.get("geo_fit_actual"),
         "location":         job["location"],
         "job_url":          job["job_url"],
         "apply_url":        job["apply_url"],
@@ -1752,6 +1760,31 @@ def set_title_actual(job_id: str):
     )
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     append_history(db, job_id, {"ts": ts, "event": "title_actual", "from": old, "to": value})
+    db.commit()
+    return "", 204
+
+
+@app.route("/job/<job_id>/geo_fit_actual", methods=["POST"])
+def set_geo_fit_actual(job_id: str):
+    """Manually override a posting's geographic fit (see viability.manual_geo_fit). The only
+    accepted value is 'acceptable' — the candidate asserting they'd work this location, which
+    skips the billed location sub-call and spares the job the POOR→low clamp. Empty clears it.
+    Per-job (the assertion is about this specific posting/location, not the whole group). Feeds
+    the viability verdict, so flag for rescoring on change."""
+    value = request.form.get("geo_fit_actual", "").strip().lower() or None
+    if value is not None and value not in MANUAL_GEO_FIT_CHOICES:
+        return "Invalid geographic-fit override.", 400
+    db = get_db()
+    row = db.execute("SELECT geo_fit_actual FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    if not row:
+        return "Not found", 404
+    old = row["geo_fit_actual"]
+    db.execute(
+        "UPDATE jobs SET geo_fit_actual = ?, needs_rescored = 1 WHERE job_id = ?",
+        (value, job_id),
+    )
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    append_history(db, job_id, {"ts": ts, "event": "geo_fit_actual", "from": old, "to": value})
     db.commit()
     return "", 204
 
@@ -1993,14 +2026,11 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
     try:
         import anthropic
         client = anthropic.Anthropic(api_key=api_key)
-        gnote = None
-        fit = None  # geographic-fit tier, kept so a POOR verdict can clamp the final rating
-        # A manual "remote in an unsupported location" flag is a deterministic POOR verdict —
-        # skip the (billed) geo sub-call and let the clamp force the rating to low.
-        manual_geo_poor = is_manual_geo_poor(dict(row))
-        if manual_geo_poor:
-            fit, gnote = "poor", geo_note("poor", "")
-        elif location_prompt:
+        # A manual geographic verdict (ACCEPTABLE override, or the remote-in-unsupported-
+        # location POOR flag) short-circuits the billed sub-call; fit is None only when
+        # neither applies, which is the signal to run the AI location call. See the helper.
+        fit, gnote, manual_geo_poor = manual_geo_verdict(dict(row))
+        if fit is None and location_prompt:
             fit, match, _gu = assess_location_fit(
                 client, location_prompt, dict(row), model=geo_model,
                 include_description=geo_uses_description)
@@ -2059,6 +2089,13 @@ def add_manual_job():
     # Keep only configured labels; silently drop anything unrecognized.
     labels = [lbl for lbl in f.getlist("labels") if lbl in LABEL_NAMES]
 
+    # Manual geographic-fit override ('acceptable' or None). A manual entry often exists only
+    # because the candidate would work this location, so let them assert it at entry time; it
+    # feeds the inline score below just like it feeds a later rescore. See set_geo_fit_actual.
+    geo_fit_actual = f.get("geo_fit_actual", "").strip().lower() or None
+    if geo_fit_actual is not None and geo_fit_actual not in MANUAL_GEO_FIT_CHOICES:
+        return "Invalid geographic-fit override.", 400
+
     # Applied timestamp: honor an explicit value, else stamp now when the initial status
     # is an applied-family one so applied_at (and the weekly report) has a time to show.
     applied_at = f.get("applied_at", "").strip() or None
@@ -2070,11 +2107,11 @@ def add_manual_job():
         """INSERT INTO jobs
              (job_id, title, company, location, posted_date, job_url, apply_url, company_url,
               easy_apply, salary_min, salary_max, salary_currency, job_description, notes,
-              status, applied_at, labels, source, raw)
+              status, applied_at, labels, geo_fit_actual, source, raw)
            VALUES
              (:job_id, :title, :company, :location, :posted_date, :job_url, :apply_url, :company_url,
               0, :salary_min, :salary_max, :salary_currency, :job_description, :notes,
-              :status, :applied_at, :labels, 'manual', :raw)""",
+              :status, :applied_at, :labels, :geo_fit_actual, 'manual', :raw)""",
         {
             "job_id": job_id, "title": title, "company": company,
             "location":        f.get("location", "").strip() or None,
@@ -2090,6 +2127,7 @@ def add_manual_job():
             "status":          status,
             "applied_at":      applied_at,
             "labels":          json.dumps(labels),
+            "geo_fit_actual":  geo_fit_actual,
             # raw is NOT NULL; store the submitted form as the provenance record.
             "raw":             json.dumps(dict(f)),
         },

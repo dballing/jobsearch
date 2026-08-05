@@ -64,7 +64,7 @@ from ingest import append_history
 from runlock import acquire_run_lock
 from viability import (
     _job_locations, _work_arrangement, assess_location_fit,
-    clamp_viability_for_geo, geo_note, is_manual_geo_poor, prompt_hash, score_job,
+    clamp_viability_for_geo, geo_note, manual_geo_verdict, prompt_hash, score_job,
 )
 
 # Numeric ranking of ratings. Used two ways: to compare a score against the auto-skip
@@ -586,18 +586,17 @@ def main() -> None:
             print(f"\r\033[K  [{i}/{count}] Scoring: {label}", end="", flush=True)
 
         job = dict(row)
-        # Focused geographic pre-assessment (only when a location_prompt is configured).
-        # Its verdict replaces the raw location list in the scorer message; on any failure
-        # geo_note is None and the scorer falls back to the raw list. Cache by location set.
-        gnote = None
-        fit = None  # geographic-fit tier, kept so a POOR verdict can clamp the final rating
-        # A manual "remote in an unsupported location" flag is a deterministic POOR verdict —
-        # the one geo dead end the feed/sub-call can't catch (plain "Remote OK" + an implicit
-        # state list). Short-circuit the (billed) geo AI call; the clamp forces the score low.
-        manual_geo_poor = is_manual_geo_poor(job)
-        if manual_geo_poor:
-            fit, gnote = "poor", geo_note("poor", "")
-        elif location_prompt:
+        # A manual geographic verdict short-circuits the billed sub-call: an ACCEPTABLE override
+        # ("I'd work here") wins over everything and — being ACCEPTABLE, not POOR — never trips
+        # the clamp below; failing that, a "remote in an unsupported location" flag is a
+        # deterministic POOR verdict (the one geo dead end the feed/sub-call can't catch: plain
+        # "Remote OK" + an implicit state list) which does force the score low. fit is None only
+        # when neither applies — the signal to run the AI sub-call. See the helper.
+        fit, gnote, manual_geo_poor = manual_geo_verdict(job)
+        # Focused geographic pre-assessment (only when a location_prompt is configured and no
+        # manual verdict applied). Its verdict replaces the raw location list in the scorer
+        # message; on failure geo_note is None and the scorer falls back to the raw list.
+        if fit is None and location_prompt:
             # Key includes the description only when the sub-call reads it: then two jobs
             # sharing a location set but differing in prose (one state-restricts remote, one
             # doesn't) must NOT share a verdict (identical fuzzy-group reposts still dedup).

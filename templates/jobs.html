@@ -92,8 +92,12 @@
             </div>
             <div class="col-md-3">
               <label class="form-label small fw-semibold">Applied at</label>
-              <input type="datetime-local" name="applied_at" class="form-control form-control-sm"
-                     title="Optional. Left blank, an applied-family status stamps now.">
+              <div class="input-group input-group-sm">
+                <input type="datetime-local" name="applied_at" class="form-control form-control-sm"
+                       title="Optional. Left blank, an applied-family status stamps now.">
+                <button type="button" class="btn btn-outline-secondary" id="appliedNowBtn"
+                        title="Fill with the current date & time">Now</button>
+              </div>
             </div>
             <div class="col-md-6">
               <label class="form-label small fw-semibold">Job URL <span class="text-danger">*</span></label>
@@ -142,6 +146,18 @@
             <div class="col-12">
               <label class="form-label small fw-semibold">Notes</label>
               <textarea name="notes" class="form-control form-control-sm" rows="2"></textarea>
+            </div>
+            <div class="col-12">
+              <div class="form-check">
+                {# Manual geo-fit override. Value 'acceptable' → forced ACCEPTABLE fit (see
+                   viability.manual_geo_fit): skips the location sub-call and the POOR→low
+                   clamp. Apt for a hand-entered job the candidate is tracking because they'd
+                   work this location despite it not otherwise fitting. #}
+                <input class="form-check-input" type="checkbox" name="geo_fit_actual" value="acceptable" id="addJobGeoFit">
+                <label class="form-check-label small" for="addJobGeoFit">
+                  Location viability: Acceptable — I'd work this location (overrides the AI geographic check)
+                </label>
+              </div>
             </div>
             <div class="col-12">
               <div class="form-check">
@@ -1035,12 +1051,30 @@ async function submitManualJob(event) {
   return false;
 }
 
-// Default the Add-job "Posted date" to today (local) whenever the modal opens and the
-// field is still empty — so it re-defaults across a midnight boundary but never clobbers
-// a date the user typed. en-CA gives the YYYY-MM-DD a date input expects.
+// Reset the Add-job form every time the modal opens, then re-default the Posted date to
+// today (local). Without the reset, a completed add reloads the page and the browser's
+// form-state restoration re-populates the fields with the previous entry — so the next
+// "Add job" opens pre-filled with stale data (a bug). Resetting on open guarantees a clean
+// form. reset() restores HTML defaults, so 'Score viability now' stays checked and Status
+// stays 'new'. en-CA gives the YYYY-MM-DD a date input expects.
 document.getElementById('addJobModal')?.addEventListener('show.bs.modal', function () {
+  const form = this.querySelector('#addJobForm');
+  if (form) form.reset();
+  document.getElementById('addJobError')?.classList.add('d-none');
   const el = this.querySelector('[name="posted_date"]');
   if (el && !el.value) el.value = new Date().toLocaleDateString('en-CA');
+});
+
+// "Now" button beside the Add-job "Applied at" field: fill it with the current local time
+// in the YYYY-MM-DDTHH:MM a datetime-local input expects. Built from local parts (not
+// toISOString, which is UTC) so the shown time matches the user's clock.
+document.getElementById('appliedNowBtn')?.addEventListener('click', function () {
+  const el = document.querySelector('#addJobForm [name="applied_at"]');
+  if (!el) return;
+  const n = new Date();
+  const p = v => String(v).padStart(2, '0');
+  el.value = `${n.getFullYear()}-${p(n.getMonth() + 1)}-${p(n.getDate())}` +
+             `T${p(n.getHours())}:${p(n.getMinutes())}`;
 });
 
 // "Search all" seeded with an arbitrary query string (clean slate + restore),
