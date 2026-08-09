@@ -598,7 +598,8 @@
 
         // Title override editor — for when the feed's title is mangled/generic. Per-job (not
         // fanned out across the group: postings in a group legitimately differ in title).
-        // Wins in display, sort, and viability scoring. Sits just under the meta bar.
+        // Wins in display, sort, and viability scoring. Sits just under the company override
+        // (below it, since the company name is corrected far more often than the title).
         const existingTitleEditor = document.getElementById('titleActualEditor');
         if (existingTitleEditor) existingTitleEditor.remove();
         const titleEditor = document.createElement('div');
@@ -636,7 +637,8 @@
         titleClear.addEventListener('click', () => { titleInput.value = ''; saveTitleActual(''); });
         titleInput.addEventListener('keydown', e => { if (e.key === 'Enter') titleSave.click(); });
         titleEditor.append(titleLabel, titleInput, titleSave, titleClear, titleFb);
-        metaEl.insertAdjacentElement('afterend', titleEditor);
+        // Anchor below the company override (not the meta bar), so company sits on top.
+        editorDiv.insertAdjacentElement('afterend', titleEditor);
 
         // Salary override editor — for when the feed is missing (or wrong) but the
         // figure is in the description. Fans out across the matched group server-side.
@@ -688,7 +690,9 @@
         salMin.addEventListener('keydown', e => { if (e.key === 'Enter') salSave.click(); });
         salMax.addEventListener('keydown', e => { if (e.key === 'Enter') salSave.click(); });
         salEditor.append(salLabel, salMin, salDash, salMax, salSave, salClear, salHint, salFb);
-        editorDiv.insertAdjacentElement('afterend', salEditor);
+        // After the title override (which now sits below the company override), keeping the
+        // stack order: company, title, salary, work arrangement, location viability.
+        titleEditor.insertAdjacentElement('afterend', salEditor);
 
         // Work-arrangement override — for when the feed's classification is wrong (e.g. a
         // recruiter confirms hybrid though the posting reads on-site). Wins in viability
