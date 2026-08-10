@@ -43,6 +43,10 @@
        viewports. table-dark gives the sticky th an opaque background already. */
     .jobs-table-pane { max-height: calc(100vh - 200px); overflow: auto; }
     .jobs-table-pane thead th { position: sticky; top: 0; z-index: 2; }
+    /* "Manual" source badge: a distinct purple (unused by the LinkedIn/careersite/label/
+       viability badges) that stays legible in both themes — bg-dark blended into the dark
+       page background. White text clears contrast on the purple in light and dark alike. */
+    .badge.source-manual { background-color: var(--bs-purple, #6f42c1); color: #fff; }
   </style>
 </head>
 <body>
@@ -682,7 +686,7 @@ Solid fit; re-score pending.">medium</span>
               
             </td>
             
-            <td class="col-source"><span class="badge bg-dark">Manual</span></td>
+            <td class="col-source"><span class="badge source-manual">Manual</span></td>
             
             <td>
 <select class="form-select form-select-sm status-select"

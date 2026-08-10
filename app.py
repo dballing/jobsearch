@@ -171,8 +171,9 @@ SOURCE_NAMES = {
 SOURCE_BADGE_CLASSES = {
     "linkedin":   "bg-primary",
     "careersite": "bg-info text-dark",
-    # Dark (not grey/secondary) so it's distinct from the adjacent grey Label badges.
-    "manual":     "bg-dark",
+    # A distinct purple (custom .source-manual class in base.html): unused by the other source
+    # or label badges, and legible in both themes — bg-dark blended into the dark page bg.
+    "manual":     "source-manual",
 }
 SOURCE_BADGE_DEFAULT = "bg-info text-dark"
 
