@@ -31,9 +31,10 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
     # Current models (latest generation).
     "claude-fable-5":    _pricing(10.00, 50.00),
     "claude-mythos-5":   _pricing(10.00, 50.00),  # Project Glasswing only; same specs/price as Fable 5
+    "claude-opus-5":     _pricing(5.00, 25.00),
     "claude-opus-4-8":   _pricing(5.00, 25.00),
-    # Sonnet 5 introductory pricing ($2/$10) runs through 2026-08-31; it then
-    # reverts to the standard $3.00 / $15.00 — bump these two numbers after that date.
+    # Sonnet 5's launch "introductory" $2/$10 is now the permanent standard price:
+    # Anthropic cancelled the increase to $3/$15 that had been scheduled for 2026-09-01.
     "claude-sonnet-5":   _pricing(2.00, 10.00),
     "claude-haiku-4-5":  _pricing(1.00, 5.00),
     # Legacy (still active).
