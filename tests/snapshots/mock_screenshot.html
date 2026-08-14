@@ -2199,6 +2199,8 @@ Solid fit; re-score pending.">medium</span>
     if (_prevEditor) _prevEditor.remove();
     const _prevTitleEditor = document.getElementById('titleActualEditor');
     if (_prevTitleEditor) _prevTitleEditor.remove();
+    const _prevHotEditor = document.getElementById('hotlistEditor');
+    if (_prevHotEditor) _prevHotEditor.remove();
     const _prevGeoEditor = document.getElementById('geoFitEditor');
     if (_prevGeoEditor) _prevGeoEditor.remove();
     bootstrap.Offcanvas.getOrCreateInstance(panel).show();
@@ -2296,26 +2298,10 @@ Solid fit; re-score pending.">medium</span>
         const editorDiv = document.createElement('div');
         editorDiv.id = 'companyActualEditor';
         editorDiv.className = 'px-3 py-2 border-bottom d-flex align-items-center gap-2 small flex-wrap';
-        // Hotlist star: toggles this employer on/off the hotlist (workspace-wide). A
-        // new/reviewing job at a hotlisted employer is tinted in the jobs table.
-        const hotWrap = document.createElement('span');
-        hotWrap.className = 'd-flex align-items-center gap-1 me-1';
-        const hotLabel = document.createElement('span');
-        hotLabel.className = 'text-muted'; hotLabel.textContent = 'Hotlist:';
-        const hotBtn = document.createElement('button');
-        hotBtn.type = 'button'; hotBtn.className = 'btn btn-sm btn-link p-0';
-        const renderHot = () => {
-          hotBtn.innerHTML = `<i class="bi ${job.company_hotlisted ? 'bi-star-fill text-warning' : 'bi-star text-muted'}"></i>`;
-          hotBtn.title = job.company_hotlisted ? 'On the hotlist — click to remove' : 'Add this employer to the hotlist';
-        };
-        renderHot();
-        hotBtn.addEventListener('click', async () => {
-          const on = !job.company_hotlisted;
-          const resp = await fetch('/company/hotlist', {method: 'POST',
-            body: new URLSearchParams({company: job.company_actual || job.company || '', on: on ? '1' : '0'})});
-          if (resp.ok) { job.company_hotlisted = on; renderHot(); }
-        });
-        hotWrap.append(hotLabel, hotBtn);
+        // Leading label, matching the sibling override rows (title/salary/…). The hotlist star
+        // used to sit here; it now lives on its own row just below (see hotlistEditor).
+        const companyLabel = document.createElement('span');
+        companyLabel.className = 'text-muted'; companyLabel.textContent = 'Company override:';
         const inputEl = document.createElement('input');
         inputEl.type = 'text';
         inputEl.className = 'form-control form-control-sm';
@@ -2392,13 +2378,37 @@ Solid fit; re-score pending.">medium</span>
         clearBtn.addEventListener('click', () => { inputEl.value = ''; renameCheck.checked = false; saveCompanyActual(''); });
         inputEl.addEventListener('keydown', e => { if (e.key === 'Enter') saveBtn.click(); });
 
-        editorDiv.append(hotWrap, inputEl, saveBtn, clearBtn, feedbackEl, renameWrap);
+        editorDiv.append(companyLabel, inputEl, saveBtn, clearBtn, feedbackEl, renameWrap);
         metaEl.insertAdjacentElement('afterend', editorDiv);
+
+        // Hotlist toggle for this employer (workspace-wide) — its own row directly below the
+        // company override. A new/reviewing job at a hotlisted employer is tinted in the table.
+        const existingHotEditor = document.getElementById('hotlistEditor');
+        if (existingHotEditor) existingHotEditor.remove();
+        const hotlistEditor = document.createElement('div');
+        hotlistEditor.id = 'hotlistEditor';
+        hotlistEditor.className = 'px-3 py-2 border-bottom d-flex align-items-center gap-2 small flex-wrap';
+        const hotLabel = document.createElement('span');
+        hotLabel.className = 'text-muted'; hotLabel.textContent = 'Hotlist this company:';
+        const hotBtn = document.createElement('button');
+        hotBtn.type = 'button'; hotBtn.className = 'btn btn-sm btn-link p-0';
+        const renderHot = () => {
+          hotBtn.innerHTML = `<i class="bi ${job.company_hotlisted ? 'bi-star-fill text-warning' : 'bi-star text-muted'}"></i>`;
+          hotBtn.title = job.company_hotlisted ? 'On the hotlist — click to remove' : 'Add this employer to the hotlist';
+        };
+        renderHot();
+        hotBtn.addEventListener('click', async () => {
+          const on = !job.company_hotlisted;
+          const resp = await fetch('/company/hotlist', {method: 'POST',
+            body: new URLSearchParams({company: job.company_actual || job.company || '', on: on ? '1' : '0'})});
+          if (resp.ok) { job.company_hotlisted = on; renderHot(); }
+        });
+        hotlistEditor.append(hotLabel, hotBtn);
+        editorDiv.insertAdjacentElement('afterend', hotlistEditor);
 
         // Title override editor — for when the feed's title is mangled/generic. Per-job (not
         // fanned out across the group: postings in a group legitimately differ in title).
-        // Wins in display, sort, and viability scoring. Sits just under the company override
-        // (below it, since the company name is corrected far more often than the title).
+        // Wins in display, sort, and viability scoring. Sits just under the hotlist row.
         const existingTitleEditor = document.getElementById('titleActualEditor');
         if (existingTitleEditor) existingTitleEditor.remove();
         const titleEditor = document.createElement('div');
@@ -2436,8 +2446,8 @@ Solid fit; re-score pending.">medium</span>
         titleClear.addEventListener('click', () => { titleInput.value = ''; saveTitleActual(''); });
         titleInput.addEventListener('keydown', e => { if (e.key === 'Enter') titleSave.click(); });
         titleEditor.append(titleLabel, titleInput, titleSave, titleClear, titleFb);
-        // Anchor below the company override (not the meta bar), so company sits on top.
-        editorDiv.insertAdjacentElement('afterend', titleEditor);
+        // Anchor below the hotlist row, keeping the stack: company override, hotlist, title.
+        hotlistEditor.insertAdjacentElement('afterend', titleEditor);
 
         // Salary override editor — for when the feed is missing (or wrong) but the
         // figure is in the description. Fans out across the matched group server-side.
