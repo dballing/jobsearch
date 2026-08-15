@@ -104,10 +104,38 @@ def test_has_title_and_company_lines():
     assert "Job title: Staff PM" in msg and "Company: Acme" in msg
 
 
-def test_company_override_shows_both():
+def test_company_override_drops_via_note_for_a_known_job_board():
+    """A job board (Ladders) is pure distribution — surfacing 'posted via Ladders' made the model
+    infer a staffing/contract role, so with the override we show just the real employer."""
     msg = viability.build_score_message(
         {"title": "T", "company": "Ladders", "company_actual": "Capital One"})
-    assert "Company: Capital One (posted via Ladders)" in msg
+    assert "Company: Capital One\n" in msg
+    assert "posted via" not in msg
+
+
+def test_company_override_keeps_via_note_for_a_possible_recruiter():
+    """An unknown source could be a recruiter/staffing firm — keep the 'posted via' context so the
+    model can weigh a genuine contract arrangement."""
+    msg = viability.build_score_message(
+        {"title": "T", "company": "BigStaffing LLC", "company_actual": "Capital One"})
+    assert "Company: Capital One (posted via BigStaffing LLC)" in msg
+
+
+def test_is_job_board_normalizes_names():
+    for name in ("Ladders", "The Ladders", "ladders.com", "LINKEDIN", "We Work Remotely",
+                 "RemoteHunter", "Built In"):
+        assert viability.is_job_board(name), name
+    for name in ("Capital One", "Jobot", "Robert Half", "Netflix", "", "Talent Solutions Inc"):
+        assert not viability.is_job_board(name), name
+
+
+def test_boilerplate_defers_contract_judgment_to_the_via_note():
+    """The employment-relationship guidance must stay in the system boilerplate: judge a
+    contract/staffing arrangement from the '(posted via …)' note or explicit terms, not from
+    generic 'client' body text. Wording can evolve; these stable anchors guard the intent."""
+    bp = viability._SYSTEM_BOILERPLATE.lower()
+    assert "posted via" in bp                    # the curated third-party signal
+    assert "client" in bp and "neutral" in bp    # generic client boilerplate = neutral
 
 
 def test_title_override_wins_in_score_message():

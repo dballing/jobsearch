@@ -19,8 +19,11 @@ VIABILITY_RATINGS = {"low", "medium", "high"}
 # Boilerplate prepended to every system prompt before the candidate description.
 # The single-line-JSON instruction keeps the reply tiny and trivially parseable; the
 # compensation note teaches the model the cents=hourly / round=annual heuristic so it
-# normalizes pay before judging fit. Changing this constant changes prompt_hash, which
-# correctly invalidates every existing score (they were produced under the old prompt).
+# normalizes pay before judging fit; the employment-relationship note stops it inferring a
+# contract/staffing arrangement from generic "client" boilerplate (aggregated postings are full
+# of it), deferring instead to the curated "(posted via …)" note (see is_job_board /
+# build_score_message) or explicit contract terms. Changing this constant changes prompt_hash,
+# which correctly invalidates every existing score (they were produced under the old prompt).
 _SYSTEM_BOILERPLATE = (
     "You evaluate job postings for a specific candidate. "
     "Respond ONLY with a JSON object on a single line — no markdown, no explanation:\n"
@@ -29,6 +32,15 @@ _SYSTEM_BOILERPLATE = (
     "wages, not annual salaries. Convert hourly rates to annual (multiply by ~2,080) "
     "before comparing against the candidate's expectations. Round numbers "
     "(e.g. $120,000 or $120k) are annual.\n\n"
+    "Employment relationship note: decide whether a role is a third-party "
+    "contract/staffing/outsourced arrangement ONLY from the Company line's "
+    "'(posted via <agent>)' note or from an EXPLICIT statement of contract terms in the "
+    "description (e.g. 'contract role', 'W2 contract', 'corp-to-corp', a fixed engagement "
+    "length). Generic listing or marketing boilerplate — references to serving 'clients' or "
+    "'our client', vertical/industry mentions, or templated wording — is common on aggregated "
+    "postings and is NOT by itself evidence of such an arrangement; treat it as neutral. Absent "
+    "a 'posted via' note or explicit contract terms, treat the posting as a direct hire at the "
+    "named employer.\n\n"
 )
 
 
@@ -57,8 +69,19 @@ _SYSTEM_BOILERPLATE = (
 # the description clause + model escalation changed the scoring behavior *after* 9 was already on
 # disk, where a cron rescore (or the --debug single-job rescore) could have stamped scores hash-9
 # with that intermediate behavior — the re-bump invalidates any such score so all re-run under the
-# final geo path.
-_SCORING_INPUT_VERSION = "10"
+# final geo path. 11 = two paired changes to how the third-party/contract signal is conveyed:
+# (a) build_score_message drops the "(posted via <source>)" company note when the source is a
+# known job board/aggregator (is_job_board) — pure distribution, not a recruiter/contract signal,
+# which was making the scorer infer staffing arrangements for aggregator reposts (e.g. a Netflix
+# role relisted via Ladders scored low); unknown sources (a possible recruiter) keep the note;
+# and (b) the _SYSTEM_BOILERPLATE now tells the model to judge a contract/staffing arrangement
+# ONLY from that (now-curated) "posted via" note or explicit contract terms, treating generic
+# "our client"/vertical boilerplate in the description as neutral. 12 = re-bumped because 11 was
+# briefly on disk (the app auto-reloads under --debug) while the two paired changes above were
+# still being written, and a cron rescore fired in that window — so some scores got stamped
+# hash-11 under intermediate behavior and would look current forever; 12 invalidates them so all
+# re-run under the final (a)+(b) behavior.
+_SCORING_INPUT_VERSION = "12"
 
 # Cap on locations included in the scoring message — bounds token cost for the rare job
 # posted across dozens of sites, while staying generous enough to almost never truncate
@@ -160,6 +183,38 @@ def _location_line(job: dict) -> str:
     return "Location: " + "; ".join(shown) + (f" (+{extra} more)" if extra > 0 else "") + "\n"
 
 
+# Known job boards / aggregators — pure *distribution* channels that repost a real employer's
+# listing under their own name (so an ingested job can arrive scraped as "<board>" and inherit
+# the true employer as a company_actual override). These are NOT recruiters/staffing firms: when
+# a job's "posted via <source>" is one of these, the source says nothing about the employment
+# arrangement, and surfacing it to the scorer made it wrongly infer a contract/staffing role (a
+# Netflix posting relisted "via Ladders" scored low as if it were a staffing gig). Deliberately
+# excludes staffing firms (Jobot, Robert Half, …), whose "via" genuinely IS a recruiter signal
+# worth keeping. Stored normalized (see _normalize_org); match is on the normalized scraped name.
+_KNOWN_JOB_BOARDS = frozenset({
+    "ladders", "linkedin", "indeed", "ziprecruiter", "glassdoor", "monster", "dice", "builtin",
+    "jobgether", "remotehunter", "weworkremotely", "wellfound", "angellist", "simplyhired",
+})
+
+
+def _normalize_org(name: str) -> str:
+    """Collapse an org name to a bare comparison key: lowercase, drop a leading 'the', strip a
+    trailing TLD-ish suffix (.com/.io/…), and remove all non-alphanumerics — so 'The Ladders',
+    'Ladders.com', and 'ladders' all become 'ladders' (and 'We Work Remotely' -> 'weworkremotely')."""
+    s = (name or "").strip().lower()
+    if s.startswith("the "):
+        s = s[4:]
+    s = re.sub(r"\.[a-z]{2,4}$", "", s)          # trailing .com / .io / .co / .org …
+    return re.sub(r"[^a-z0-9]", "", s)
+
+
+def is_job_board(name: str) -> bool:
+    """True when `name` is a recognized job board / aggregator (pure distribution) rather than a
+    recruiter/staffing firm — used to decide whether a 'posted via <name>' note is meaningful
+    context for the scorer or misleading noise. Pure, so it's unit-testable without the DB."""
+    return _normalize_org(name) in _KNOWN_JOB_BOARDS
+
+
 def build_score_message(job: dict, geo_note: str | None = None) -> str:
     """Build the per-job user message the scorer sends (title/company/location/salary +
     description). Pure and self-contained so it can be unit-tested without an API call.
@@ -181,10 +236,17 @@ def build_score_message(job: dict, geo_note: str | None = None) -> str:
     title       = (job.get("title_actual") or job.get("title") or "(no title)").strip()
     company_raw = (job.get("company")  or "(unknown company)").strip()
     company_actual = (job.get("company_actual") or "").strip()
-    # If a company-name override exists, show both — the model needs the real employer to
-    # judge fit, but seeing the posting agent (recruiter/aggregator) adds context.
-    company = (f"{company_actual} (posted via {company_raw})"
-               if company_actual and company_actual != company_raw else company_raw)
+    # With a company-name override, always show the real employer. Keep the scraped "(posted via
+    # <source>)" note ONLY when the source could be a recruiter/staffing firm — that context helps
+    # the model judge a genuine contract arrangement. For a known job board/aggregator (Ladders,
+    # LinkedIn, Indeed, …) the "via" is pure distribution and says nothing about the employment
+    # structure; surfacing it made the model wrongly infer a contract/staffing role, so drop it
+    # and show the employer alone. See is_job_board.
+    if company_actual and company_actual != company_raw:
+        company = (company_actual if is_job_board(company_raw)
+                   else f"{company_actual} (posted via {company_raw})")
+    else:
+        company = company_raw
     # Cap the description for scoring: the model only needs the gist to rate fit, and this
     # bounds token cost per job. (Reformatting, by contrast, sends the full text.)
     description = (job.get("job_description") or "").strip()[:4000]
