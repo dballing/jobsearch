@@ -138,6 +138,73 @@ def test_boilerplate_defers_contract_judgment_to_the_via_note():
     assert "client" in bp and "neutral" in bp    # generic client boilerplate = neutral
 
 
+def test_boilerplate_demands_a_single_plain_reason():
+    """The one-sentence rule that keeps a reasoning model from dumping its scratchpad into
+    `reason` must stay in the boilerplate."""
+    bp = viability._SYSTEM_BOILERPLATE.lower()
+    assert "single plain sentence" in bp and "scratchpad" in bp
+
+
+def test_boilerplate_keeps_named_company_exclusions_from_generalizing():
+    """A named-company preference must not bleed onto similar/adjacent companies (the guardrail
+    that stopped a Google-only 'avoid' from penalizing Microsoft)."""
+    bp = viability._SYSTEM_BOILERPLATE.lower()
+    assert "company-preference note" in bp and "adjacent" in bp
+
+
+# ── _scorer_thinking: adaptive for reasoning models, disabled for Haiku/older ──
+def test_scorer_thinking_adaptive_for_reasoning_models():
+    for m in ("claude-sonnet-5", "claude-opus-5", "claude-opus-4-8", "claude-fable-5",
+              "claude-sonnet-4-6"):
+        assert viability._scorer_thinking(m) == {"type": "adaptive"}, m
+
+
+def test_scorer_thinking_disabled_for_haiku_and_older():
+    for m in ("claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-sonnet-4-5", "", None):
+        assert viability._scorer_thinking(m) == {"type": "disabled"}, m
+
+
+# ── score_job: wiring (parsed rating/reason + per-model thinking) via the fake client ──
+def test_score_job_uses_adaptive_thinking_and_medium_effort_for_sonnet_5():
+    client = _FakeClient('{"rating": "high", "reason": "Strong scope and comp match."}')
+    rating, reason, usage = viability.score_job(
+        client, "candidate prompt", {"title": "Staff PM", "company": "Acme"},
+        model="claude-sonnet-5")
+    assert (rating, reason) == ("high", "Strong scope and comp match.")
+    assert client.last_kwargs["thinking"] == {"type": "adaptive"}
+    assert client.last_kwargs["output_config"] == {"effort": "medium"}
+    assert client.last_kwargs["max_tokens"] >= 2048     # headroom for the thinking tokens
+    assert usage is not None
+
+
+def test_score_job_keeps_thinking_disabled_and_tiny_budget_for_haiku():
+    client = _FakeClient('{"rating": "medium", "reason": "Decent but comp is light."}')
+    rating, reason, _ = viability.score_job(
+        client, "p", {"title": "T", "company": "C"}, model="claude-haiku-4-5")
+    assert (rating, reason) == ("medium", "Decent but comp is light.")
+    assert client.last_kwargs["thinking"] == {"type": "disabled"}
+    assert "output_config" not in client.last_kwargs
+    assert client.last_kwargs["max_tokens"] == 256
+
+
+def test_score_job_reads_the_text_block_past_a_leading_thinking_block():
+    """With thinking on, content[0] is a thinking block — the parser must find the text block."""
+    class _ThinkThenText:
+        def __init__(self):
+            self.messages = self
+        def create(self, **kwargs):
+            think = type("T", (), {"type": "thinking", "thinking": "…hidden…"})()
+            text = type("X", (), {"type": "text",
+                                  "text": '{"rating": "low", "reason": "Poor scope fit."}'})()
+            m = type("M", (), {})()
+            m.content = [think, text]
+            m.usage = _FakeUsage()
+            return m
+    rating, reason, _ = viability.score_job(
+        _ThinkThenText(), "p", {"title": "T", "company": "C"}, model="claude-opus-5")
+    assert (rating, reason) == ("low", "Poor scope fit.")
+
+
 def test_title_override_wins_in_score_message():
     """A title override replaces the scraped title the model scores against."""
     msg = viability.build_score_message(
@@ -307,7 +374,7 @@ class _FakeClient:
     def create(self, **kwargs):
         self.last_kwargs = kwargs
         msg = type("M", (), {})()
-        msg.content = [type("C", (), {"text": self._reply})()]
+        msg.content = [type("C", (), {"type": "text", "text": self._reply})()]
         msg.usage = _FakeUsage()
         return msg
 

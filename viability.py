@@ -18,8 +18,15 @@ VIABILITY_RATINGS = {"low", "medium", "high"}
 
 # Boilerplate prepended to every system prompt before the candidate description.
 # The single-line-JSON instruction keeps the reply tiny and trivially parseable; the
-# compensation note teaches the model the cents=hourly / round=annual heuristic so it
-# normalizes pay before judging fit; the employment-relationship note stops it inferring a
+# one-plain-sentence rule keeps the `reason` a legible verdict rather than a leaked scratchpad
+# (a reasoning model run with thinking disabled otherwise dumps its analysis there — see
+# _scorer_thinking, which turns thinking back on for such models); the compensation note teaches
+# the model the cents=hourly / round=annual heuristic so it normalizes pay before judging fit;
+# the company-preference note pins a named-company exclusion to the exact employer, so it doesn't
+# bleed onto similar/adjacent companies or get confused with the candidate's own former employer
+# (a Google-only "avoid" — Google also being the candidate's background — was both dragging down
+# Microsoft as "Google-adjacent big tech" and, on one run, mislabeling Microsoft as excluded);
+# the employment-relationship note stops it inferring a
 # contract/staffing arrangement from generic "client" boilerplate (aggregated postings are full
 # of it), deferring instead to the curated "(posted via …)" note (see is_job_board /
 # build_score_message) or explicit contract terms. Changing this constant changes prompt_hash,
@@ -27,7 +34,10 @@ VIABILITY_RATINGS = {"low", "medium", "high"}
 _SYSTEM_BOILERPLATE = (
     "You evaluate job postings for a specific candidate. "
     "Respond ONLY with a JSON object on a single line — no markdown, no explanation:\n"
-    '{"rating": "low|medium|high", "reason": "one sentence"}\n\n'
+    '{"rating": "low|medium|high", "reason": "one sentence"}\n'
+    'The "reason" is a single plain sentence a person can read at a glance — the one biggest '
+    "factor behind the rating. State the conclusion, not your reasoning process: no step-by-step "
+    "analysis, no self-questions, no parenthetical asides, no scratchpad.\n\n"
     "Compensation note: dollar amounts with cents (e.g. $51.45, $62.99) are hourly "
     "wages, not annual salaries. Convert hourly rates to annual (multiply by ~2,080) "
     "before comparing against the candidate's expectations. Round numbers "
@@ -41,6 +51,13 @@ _SYSTEM_BOILERPLATE = (
     "postings and is NOT by itself evidence of such an arrangement; treat it as neutral. Absent "
     "a 'posted via' note or explicit contract terms, treat the posting as a direct hire at the "
     "named employer.\n\n"
+    "Company-preference note: apply the candidate's company-specific preferences literally and "
+    "precisely. A company exclusion lowers a rating ONLY when the posting's EMPLOYER is exactly "
+    "that named company. It never applies to a DIFFERENT company for being a competitor, similar "
+    "in size, in the same industry, or 'adjacent' to the excluded one; and never confuse the "
+    "excluded company with a company the candidate merely worked at in the past (the candidate's "
+    "own former employer is not an exclusion). When the employer is any other company, the "
+    "exclusion is irrelevant and must not lower the rating or appear in the reason.\n\n"
 )
 
 
@@ -80,8 +97,16 @@ _SYSTEM_BOILERPLATE = (
 # briefly on disk (the app auto-reloads under --debug) while the two paired changes above were
 # still being written, and a cron rescore fired in that window — so some scores got stamped
 # hash-11 under intermediate behavior and would look current forever; 12 invalidates them so all
-# re-run under the final (a)+(b) behavior.
-_SCORING_INPUT_VERSION = "12"
+# re-run under the final (a)+(b) behavior. 13 = stop the scorer's "reason" from becoming a leaked
+# scratchpad: a reasoning-capable model (e.g. the configured Sonnet 5) run with thinking DISABLED
+# reasons out loud into the only prose slot, the JSON "reason". Fix is paired: _scorer_thinking
+# now runs adaptive thinking (effort=medium, bigger max_tokens) on such models so the reasoning stays
+# in a hidden thinking block, and the boilerplate now demands a single plain-sentence reason. Also
+# folded in: a company-preference note telling the model not to generalize a named-company
+# exclusion to similar/adjacent companies (a Google-only "avoid" was penalizing Microsoft as
+# "Google-adjacent big tech"). The thinking change isn't a prompt_hash input (like model choice),
+# but the boilerplate changes are, and the bump makes existing scores re-run under all of it.
+_SCORING_INPUT_VERSION = "13"
 
 # Cap on locations included in the scoring message — bounds token cost for the rare job
 # posted across dozens of sites, while staying generous enough to almost never truncate
@@ -525,6 +550,27 @@ def assess_location_fit(
         return None, None, None
 
 
+# Scorer models on which we run WITH adaptive thinking. A Claude 4.6+/5 reasoning model run with
+# thinking *disabled* reasons out loud in the visible output — and since the only prose slot is
+# the JSON "reason" field, its whole scratchpad lands there (observed: a Sonnet-5 scorer emitting
+# multi-clause self-questioning "reason"s). Turning adaptive thinking back on moves that reasoning
+# into a hidden thinking block, leaving "reason" a clean sentence. Haiku 4.5 and older don't
+# support adaptive thinking (and don't leak), so they stay disabled — cheap and unaffected.
+_ADAPTIVE_THINKING_MODELS = (
+    "claude-fable-5", "claude-mythos-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7",
+    "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6",
+)
+
+
+def _scorer_thinking(model: str) -> dict:
+    """Thinking config for the scorer, by model: adaptive for reasoning-capable models (so their
+    reasoning stays hidden and the 'reason' field stays a single sentence), disabled for Haiku/
+    older. Pure, so it's unit-testable without an API call."""
+    m = (model or "").lower()
+    return ({"type": "adaptive"} if any(m.startswith(p) for p in _ADAPTIVE_THINKING_MODELS)
+            else {"type": "disabled"})
+
+
 def score_job(
     client,
     viability_prompt: str,
@@ -549,30 +595,34 @@ def score_job(
     """
     system_text = _SYSTEM_BOILERPLATE + f"Candidate description:\n{viability_prompt}"
 
+    # Reasoning-capable models run with adaptive thinking so their analysis stays in a hidden
+    # thinking block (keeping `reason` a clean sentence) — but that needs headroom for the
+    # thinking tokens, and a modest effort to keep this high-volume call affordable. effort=medium
+    # (vs low) measurably improved instruction-following — fewer stray asides in the reason — for a
+    # small extra cost. Haiku/older keep thinking disabled and the tiny budget (they don't leak).
+    thinking = _scorer_thinking(model)
+    adaptive = thinking["type"] == "adaptive"
+    create_kwargs = {
+        "model": model,
+        "max_tokens": 3072 if adaptive else 256,
+        "thinking": thinking,
+        "system": [{
+            "type": "text",
+            "text": system_text,
+            "cache_control": {"type": "ephemeral"},
+        }],
+        "messages": [{
+            "role": "user",
+            "content": build_score_message(job, geo_note=geo_note),
+        }],
+    }
+    if adaptive:
+        create_kwargs["output_config"] = {"effort": "medium"}
+
     try:
-        message = client.messages.create(
-            model=model,
-            max_tokens=256,  # only a one-line JSON verdict is expected (headroom for a longer reason)
-            # Disable the model's internal chain-of-thought: this is a trivial one-line
-            # classification that needs no reasoning, and the human-readable justification
-            # is the `reason` field of the JSON answer (normal output), NOT thinking.
-            # Models with adaptive thinking on by default (e.g. Sonnet 5, whose effort
-            # defaults to 'high') otherwise spend the whole small max_tokens budget
-            # thinking and return an empty/truncated verdict — every such job then "fails".
-            # (Always-on-thinking models like Fable 5 reject this, but they're not sensible
-            # choices for a cheap high-volume scorer, and the default is Haiku.)
-            thinking={"type": "disabled"},
-            system=[{
-                "type": "text",
-                "text": system_text,
-                "cache_control": {"type": "ephemeral"},
-            }],
-            messages=[{
-                "role": "user",
-                "content": build_score_message(job, geo_note=geo_note),
-            }],
-        )
-        raw = message.content[0].text.strip()
+        message = client.messages.create(**create_kwargs)
+        # With thinking on, content[0] is a thinking block — pull the text block explicitly.
+        raw = next((b.text for b in message.content if getattr(b, "type", "") == "text"), "").strip()
         # The model is told to emit bare JSON, but tolerate it wrapping the object in
         # backticks or stray prose — grab the first {...} block.
         m = re.search(r'\{.*\}', raw, re.DOTALL)
