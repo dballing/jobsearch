@@ -217,3 +217,50 @@ def test_rescore_viabilities_match_app():
     # app enumerates the scored tiers as the VIABILITY_COLORS keys (NULL/unscored is implicit).
     assert set(rv.VALID_VIABILITIES) == set(app.VIABILITY_COLORS), (
         "rescore_viability.VALID_VIABILITIES has drifted from app.VIABILITY_COLORS; update both.")
+
+
+# ── reconcile_autoskipped: one-off repair of already-current buried jobs ───────
+_CUR, _STALE = "cur-hash", "old-hash"
+_LOW_THRESHOLD = rv.VIABILITY_RANK["low"]      # auto_skip_confidence="low" → medium/high unskip
+
+
+def _insert(conn, job_id, status, viability, phash):
+    conn.execute(
+        "INSERT INTO jobs (job_id, title, status, viability, viability_prompt_hash, raw, history) "
+        "VALUES (?, 'T', ?, ?, ?, '{}', '[]')",
+        (job_id, status, viability, phash))
+
+
+def test_reconcile_flips_only_current_above_threshold_autoskipped(jobs_db):
+    _insert(jobs_db, "a", "autoskipped", "medium", _CUR)    # flip: above threshold, current
+    _insert(jobs_db, "b", "autoskipped", "high",   _CUR)    # flip
+    _insert(jobs_db, "c", "autoskipped", "low",    _CUR)    # stay: at/below threshold
+    _insert(jobs_db, "d", "autoskipped", "medium", _STALE)  # stay: stale score, not trustworthy
+    _insert(jobs_db, "e", "skipped",     "high",   _CUR)    # stay: manual skip, not autoskipped
+    _insert(jobs_db, "f", "new",         "high",   _CUR)    # stay: already active
+
+    reset = rv.reconcile_autoskipped(jobs_db, _CUR, _LOW_THRESHOLD)
+    assert sorted(j for j, _ in reset) == ["a", "b"]
+    statuses = {r["job_id"]: r["status"] for r in jobs_db.execute("SELECT job_id, status FROM jobs")}
+    assert statuses == {"a": "new", "b": "new", "c": "autoskipped",
+                        "d": "autoskipped", "e": "skipped", "f": "new"}
+    # A status-history entry records the reconcile on a flipped job.
+    hist_a = jobs_db.execute("SELECT history FROM jobs WHERE job_id='a'").fetchone()["history"]
+    assert '"to":"new"' in hist_a and "reconciled" in hist_a
+
+
+def test_reconcile_dry_run_reports_without_writing(jobs_db):
+    _insert(jobs_db, "a", "autoskipped", "high", _CUR)
+    reset = rv.reconcile_autoskipped(jobs_db, _CUR, _LOW_THRESHOLD, dry_run=True)
+    assert reset == [("a", "high")]                      # reported…
+    row = jobs_db.execute("SELECT status, history FROM jobs WHERE job_id='a'").fetchone()
+    assert row["status"] == "autoskipped" and row["history"] == "[]"   # …but nothing written
+
+
+def test_reconcile_respects_a_medium_threshold(jobs_db):
+    """With auto_skip_confidence='medium', a still-medium score is at/below threshold — only
+    high clears it."""
+    _insert(jobs_db, "m", "autoskipped", "medium", _CUR)
+    _insert(jobs_db, "h", "autoskipped", "high",   _CUR)
+    reset = rv.reconcile_autoskipped(jobs_db, _CUR, rv.VIABILITY_RANK["medium"])
+    assert [j for j, _ in reset] == ["h"]

@@ -292,6 +292,41 @@ def canonical_promotion_applies(
     return new_rank > canon_rank and new_rank > prev_rank
 
 
+def reconcile_autoskipped(conn, current_hash: str, auto_skip_threshold: int,
+                          *, dry_run: bool = False) -> "list[tuple[str, str]]":
+    """One-off repair: flip any 'autoskipped' job whose CURRENT-version score is already above
+    the auto-skip threshold back to 'new'.
+
+    Fixes jobs left buried by the pre-fix behaviour — an autoskipped job that rescored above the
+    threshold used to stay autoskipped outside --autoskipped mode. Only jobs whose stored score is
+    current (``viability_prompt_hash == current_hash``) are touched, so we act on trustworthy
+    scores and never resurrect a job off a stale one (a stale autoskipped job is re-scored by the
+    normal loop, which now handles the transition itself). Pure DB work — no AI call — so it's
+    cheap and unit-testable. Writes a status-history entry per job and commits unless ``dry_run``.
+    Returns the list of (job_id, viability) it reset (or would reset, under dry_run)."""
+    unskip = [r for r in ("low", "medium", "high") if should_unskip(r, auto_skip_threshold)]
+    if not unskip:
+        return []
+    placeholders = ",".join("?" * len(unskip))
+    rows = conn.execute(
+        f"SELECT job_id, viability FROM jobs WHERE status = 'autoskipped' "
+        f"AND viability_prompt_hash = ? AND viability IN ({placeholders})",
+        [current_hash, *unskip],
+    ).fetchall()
+    result = [(r["job_id"], r["viability"]) for r in rows]
+    if dry_run or not result:
+        return result
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for job_id, rating in result:
+        conn.execute("UPDATE jobs SET status = 'new' WHERE job_id = ?", (job_id,))
+        append_history(conn, job_id, {
+            "ts": ts, "event": "status", "from": "autoskipped", "to": "new",
+            "note": f"reconciled: current score above auto-skip threshold (viability: {rating})",
+        })
+    conn.commit()
+    return result
+
+
 def build_selection(
     *,
     current_hash: str,
@@ -435,6 +470,11 @@ def main() -> None:
         "--verbose", action="store_true",
         help="Print one line per job regardless of whether stdout is a TTY",
     )
+    parser.add_argument(
+        "--reconcile-autoskipped", action="store_true",
+        help="One-off: reset to 'new' any autoskipped job whose CURRENT score is already above "
+             "the auto-skip threshold (no re-scoring). Honors --dry-run. Ignores all other flags.",
+    )
     args = parser.parse_args()
 
     # Line-buffer stdout so each line is flushed on its newline. When output is
@@ -500,6 +540,21 @@ def main() -> None:
     # on it, so editing geography prefs must mark scores stale even when `prompt` is unchanged.
     current_hash = prompt_hash(viability_prompt, location_prompt, geo_uses_description)
     conn = open_db(db_path)
+
+    # One-off reconciliation: flip autoskipped jobs whose CURRENT-version score is already above
+    # the auto-skip threshold back to 'new', without re-scoring. Runs standalone (ignores the
+    # selection flags) and exits. Takes the writer lock for the actual write so it can't collide
+    # with a concurrent ingest/rescore; a dry-run only reads, so it needs no lock.
+    if args.reconcile_autoskipped:
+        if not args.dry_run:
+            _lock = acquire_run_lock(db_path, label="reconcile")  # noqa: F841 (held for lifetime)
+        matches = reconcile_autoskipped(conn, current_hash, auto_skip_threshold, dry_run=args.dry_run)
+        conn.close()
+        verb = "Would reset" if args.dry_run else "Reset"
+        print(f"{verb} {len(matches)} autoskipped job(s) with a current above-threshold score to 'new'.")
+        for job_id, rating in matches:
+            print(f"  {job_id}: {rating} → new")
+        return
 
     # Build the selection WHERE clause (see build_selection for the full filter matrix).
     where, params = build_selection(
@@ -659,13 +714,14 @@ def main() -> None:
             if change_note and not args.verbose:
                 print(f"\r\033[K{change_note}" if interactive else change_note, flush=True)
 
-            # --autoskipped re-evaluation: an autoskipped job that now scores strictly
-            # above the auto-skip threshold is surfaced back to 'new' for a fresh look;
-            # the rest stay autoskipped. This is the whole point of the mode — after a
-            # prompt change, recover jobs the old prompt had auto-skipped that would now
-            # pass. First in the chain so it, not the canonical-promotion branch below,
-            # governs autoskipped jobs in this mode.
-            if args.autoskipped:
+            # Autoskipped re-evaluation: an autoskipped job that now scores strictly above the
+            # auto-skip threshold is surfaced back to 'new' for a fresh look; ones still at/below
+            # stay autoskipped. This fires on EVERY rescore of an autoskipped job (not only in
+            # --autoskipped mode) — otherwise a job whose score recovered stays buried forever,
+            # since autoskipped jobs aren't otherwise re-scored. Being first in the chain and
+            # claiming ALL autoskipped jobs, it also means the canonical-promotion branch below
+            # governs only plain 'skipped' duplicates.
+            if current_status == "autoskipped":
                 if should_unskip(rating, auto_skip_threshold):
                     conn.execute(
                         "UPDATE jobs SET status = 'new' WHERE job_id = ?",
@@ -700,16 +756,15 @@ def main() -> None:
                 auto_skipped += 1
                 did_autoskip  = True
 
-            # Canonical promotion. A skipped/autoskipped duplicate normally stays
-            # hidden, but if a rescore makes it score strictly better than BOTH its
-            # canonical and its own prior score, it may be the better representative of
-            # the group and worth a fresh look. Surface it (→ new) unless auto-skip is
-            # on and it's still at/below threshold (then just re-record it). The
-            # `elif` means this never runs for a job already auto-skipped above.
-            # Gated on the canonical's score being CURRENT (see canonical_promotion_applies):
-            # comparing a fresh duplicate score against a stale canonical score spuriously
-            # promotes duplicates purely because of a prompt change, not real merit.
-            elif row["canonical_id"] and current_status in ("skipped", "autoskipped"):
+            # Canonical promotion. A manually 'skipped' duplicate normally stays hidden, but if a
+            # rescore makes it score strictly better than BOTH its canonical and its own prior
+            # score, it may be the better representative of the group and worth a fresh look.
+            # Surface it (→ new) unless auto-skip is on and it's still at/below threshold (then
+            # just re-record it). Autoskipped duplicates are handled by the first branch above, so
+            # this governs only plain 'skipped' jobs. Gated on the canonical's score being CURRENT
+            # (see canonical_promotion_applies): comparing a fresh duplicate score against a stale
+            # canonical score spuriously promotes duplicates purely from a prompt change, not merit.
+            elif row["canonical_id"] and current_status == "skipped":
                 canonical = conn.execute(
                     "SELECT viability, viability_prompt_hash FROM jobs WHERE job_id = ?",
                     (row["canonical_id"],),
