@@ -150,6 +150,13 @@ location_use_description = true        # optional; default true (see below)
 # Optional auto-skip (disabled by default):
 auto_skip            = false
 auto_skip_confidence = "low"   # "low" (only low) or "medium" (low + medium)
+
+# Optional company reject-list (employers you'll never work for). One name per line reads best
+# as the list grows; the inline form ["Initech", "Globex"] is equivalent (TOML parses both the same):
+reject_companies = [
+    "Initech",
+    "Globex",
+]
 ```
 
 > **Recommended: set `[viability].model` to a capable model such as `claude-sonnet-5`.**
@@ -184,6 +191,7 @@ auto_skip_confidence = "low"   # "low" (only low) or "medium" (low + medium)
 | `location_use_description` | `true` | Whether the location sub-call reads each job's description. On (default), it honors eligibility conditions in the prose — e.g. a "remote" role restricted to residents of certain states — but must run per unique description **and needs a capable model** (see `location_model`: the default auto-escalates to your viability `model`; a cheap model like Haiku mis-reads noisy descriptions and false-`POOR`s remote jobs). Off, it dedups hard by location set (fewer calls, cheaper, cheap model is fine) but can't see those conditions. Folded into the staleness hash, so flipping it re-scores. |
 | `auto_skip` | `false` | Automatically set `new`/`reviewing` jobs to `autoskipped` if they score at or below the threshold. |
 | `auto_skip_confidence` | `"low"` | Threshold: `"low"` skips only low-scored jobs; `"medium"` skips low and medium. |
+| `reject_companies` | *(none)* | A list of employer names you will **never** work for. Their jobs are forced to `viability = low` + `status = autoskipped` **without an AI call** (no tokens) — a hard human decision, not a judgment call, so it bypasses scoring entirely. Matching is **exact and case-insensitive** on the **whole** company field (never substring — `"Foo"` won't hit `"Foobar Inc"`) and runs **after `[company_aliases]`**, so the stored name is already canonical: list `"Foo"` once and it catches every `"Foo, LLC"`/`"Foo Co."` variant the alias map folds in. Only affects **pre-decision** jobs (`new`/`reviewing`/`deferred`) and already-`autoskipped` ones; a job you've already **applied** to or are **interviewing** for is left alone (your action outranks the list) and still scored normally. **Not** folded into the staleness hash (adding a name would otherwise force a full-DB re-score): instead, adding a company auto-skips its existing pre-decision jobs on the **next** rescore, and removing one takes effect on the next `rescore_viability.sh --autoskipped`, which re-scores the autoskipped set and promotes anything that now clears the bar. The stored reason reads `Autoskipped: <employer> is on your company reject-list.` *Caveat (shared with aliases):* a job ingested under an old spelling **before** you added its alias keeps that spelling until it's next re-ingested, so the reject-list won't catch that straggler until then — list the variant too, or let it re-ingest. |
 
 See [Features → Viability scoring](features.md#viability-scoring) for usage details.
 

@@ -173,6 +173,52 @@ def scoring_hash_for_config(config: dict) -> str | None:
                        geo_effort=effective_effort(geo_model, geo_effort))
 
 
+# Statuses on which a reject-listed company forces the job to low/autoskipped. This is the
+# pre-decision set (new/reviewing/deferred) plus autoskipped itself (so a --autoskipped
+# re-evaluation re-denies a still-listed company for free rather than paying to AI-score it and
+# possibly promoting it back). A job you've already acted on — applied, interviewing, etc. — is
+# deliberately NOT here: your human decision outranks a later reject-list edit, so those get a
+# normal AI score for reference and keep their status. Shared by the batch rescorer and the
+# web-UI single-job rescore so both honor the same guardrail.
+REJECT_DENYABLE_STATUSES = ("new", "reviewing", "deferred", "autoskipped")
+
+
+def build_reject_set(config: dict) -> "frozenset[str]":
+    """The set of reject-listed employer names (lowercased, trimmed) from
+    ``[viability].reject_companies`` — companies the candidate will never work for, whose jobs
+    are forced to low/autoskipped WITHOUT an AI call (a hard human decision, not a judgment call).
+
+    Matching is exact and case-insensitive against the *whole* company field — the same semantics
+    as [company_aliases] and, crucially, run AFTER it: the stored ``company`` is already the
+    alias-normalized canonical name at ingest time, so listing the canonical "Foo" here catches
+    every "Foo, LLC"/"Foo Co." variant the alias map folds into it. Empty/absent → empty set (the
+    feature is off, indistinguishable from a config with no [viability] section). Deliberately NOT
+    part of scoring_hash_for_config: folding it into the hash would mark the whole DB stale and
+    force a full-DB AI re-score just to add one name — instead, listed jobs are denied cheaply as
+    they flow through selection, and un-listing one re-scores it via `--autoskipped`."""
+    vcfg = config.get("viability", {}) or {}
+    raw = vcfg.get("reject_companies") or []
+    if not isinstance(raw, list):
+        return frozenset()
+    return frozenset(str(name).strip().lower() for name in raw if str(name).strip())
+
+
+def is_rejected_company(company: object, reject_set: "frozenset[str]") -> bool:
+    """True when ``company`` is on the reject-list. Case-insensitive, whitespace-trimmed, whole
+    field — never substring (so "Foo" never matches "Foobar Inc"). Empty set / blank company →
+    False."""
+    if not reject_set or not company:
+        return False
+    return str(company).strip().lower() in reject_set
+
+
+def reject_reason(company: object) -> str:
+    """The stored viability_reason for a job denied by the reject-list — names the employer so the
+    UI verdict is self-explanatory (vs. a bare 'low' with no rationale)."""
+    name = (str(company).strip() if company else "") or "this employer"
+    return f"Autoskipped: {name} is on your company reject-list."
+
+
 def _job_locations(job: dict) -> list[str]:
     """All locations for a job. The feed lists every site under raw.locations_derived, but
     the `location` column keeps only the first — which made a multi-site job (e.g. one

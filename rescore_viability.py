@@ -64,8 +64,9 @@ from ai_config import (format_token_summary, resolve_ai_settings, resolve_effort
 from ingest import append_history
 from runlock import acquire_run_lock
 from viability import (
-    _job_locations, _work_arrangement, assess_location_fit,
-    clamp_viability_for_geo, geo_note, manual_geo_verdict, score_job, scoring_hash_for_config,
+    REJECT_DENYABLE_STATUSES, _job_locations, _work_arrangement, assess_location_fit,
+    build_reject_set, clamp_viability_for_geo, geo_note, is_rejected_company, manual_geo_verdict,
+    reject_reason, score_job, scoring_hash_for_config,
 )
 
 # Numeric ranking of ratings. Used two ways: to compare a score against the auto-skip
@@ -339,6 +340,7 @@ def build_selection(
     current_viability: str | None = None,
     since: str | None = None,
     previous_days: int | None = None,
+    reject_companies: "frozenset[str] | None" = None,
 ) -> tuple[str, list]:
     """Build the (WHERE clause, params) selecting which jobs to (re)score this run.
 
@@ -406,6 +408,27 @@ def build_selection(
         params.append(f"-{int(previous_days)} days")
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    # Reject-list OR (default run only). The reject-list forces listed employers' pre-decision
+    # jobs to low/autoskipped without an AI call — but a job already scored under an old config is
+    # non-stale, so the staleness gate above would skip it, and adding a company to the list would
+    # never take effect on its existing jobs. OR-ing this in pulls such jobs into the run so the
+    # in-loop deny check (see main) can autoskip them promptly. Restricted to the plain scheduled
+    # run: an explicit narrowing (--all/--early-stage/--autoskipped/--status/--current-viability/
+    # date window) is a deliberate, bounded selection we must not silently widen — and each of
+    # those already reaches the listed jobs it cares about (autoskipped re-deny via --autoskipped,
+    # etc.). lower(trim(company)) mirrors is_rejected_company; the in-loop check is authoritative,
+    # so this only needs to be a superset of the true matches.
+    default_mode = not (all_statuses or early_stage or autoskipped or status is not None
+                        or current_viability is not None or since is not None
+                        or previous_days is not None)
+    if reject_companies and default_mode:
+        placeholders = ", ".join("?" * len(reject_companies))
+        reject_clause = ("status IN ('new', 'reviewing', 'deferred') "
+                         f"AND lower(trim(company)) IN ({placeholders})")
+        base = where[len("WHERE "):] if where else "1"
+        where = f"WHERE ({base}) OR ({reject_clause})"
+        params.extend(sorted(reject_companies))
     return where, params
 
 
@@ -543,6 +566,11 @@ def main() -> None:
             "Must be 'low' or 'medium'."
         )
     auto_skip_threshold = VIABILITY_RANK[auto_skip_conf_raw]
+    # Employers the candidate will never work for: their pre-decision jobs are forced to
+    # low/autoskipped WITHOUT an AI call (a hard human decision — see the in-loop deny check).
+    reject_set = build_reject_set(config)
+    if reject_set:
+        print(f"Company reject-list: {len(reject_set)} employer(s) will be auto-skipped without scoring.")
     db_path = config.get("db_path", "jobs.db")
 
     # The current scoring hash — centralized so the batch rescore, the on-demand single-job
@@ -577,6 +605,7 @@ def main() -> None:
         current_viability=args.current_viability,
         since=args.since,
         previous_days=args.previous_days,
+        reject_companies=reject_set,
     )
 
     count = conn.execute(f"SELECT COUNT(*) FROM jobs {where}", params).fetchone()[0]
@@ -618,6 +647,7 @@ def main() -> None:
     scored       = 0
     failed       = 0
     auto_skipped = 0
+    rejected     = 0   # jobs forced low/autoskipped by the company reject-list (no AI call)
     promoted     = 0   # autoskipped jobs surfaced back to 'new' by --autoskipped re-evaluation
     tally: dict[str, int] = {"high": 0, "medium": 0, "low": 0}
     tok_input   = 0
@@ -649,6 +679,51 @@ def main() -> None:
         elif interactive:
             # \r returns to start of line; \033[K erases to end of line.
             print(f"\r\033[K  [{i}/{count}] Scoring: {label}", end="", flush=True)
+
+        # Company reject-list: a listed employer's job in a pre-decision (or already-autoskipped)
+        # status is a hard human "never" — force it to low/autoskipped WITHOUT an AI call. Runs
+        # before any scoring so no tokens are spent, and before the geo sub-call so it short-
+        # circuits that too. Statuses you've acted on (applied/interviewing/…) aren't in
+        # REJECT_DENYABLE_STATUSES, so they fall through to a normal score (your decision stands).
+        # In --autoskipped mode this re-denies a still-listed company for free instead of paying to
+        # re-score it and possibly promoting it back. Un-listing a company simply stops this from
+        # firing; run --autoskipped afterward to give those jobs a real score.
+        current_status = row["status"]
+        if (reject_set and current_status in REJECT_DENYABLE_STATUSES
+                and is_rejected_company(company, reject_set)):
+            rating = "low"
+            reason = reject_reason(company)
+            old_rating = row["viability"]
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            conn.execute(
+                "UPDATE jobs SET viability = ?, viability_reason = ?, "
+                "viability_prompt_hash = ?, needs_rescored = 0 WHERE job_id = ?",
+                (rating, reason, current_hash, row["job_id"]),
+            )
+            # Mirror the scored-path history: first-ever verdict vs. a genuine change only.
+            if old_rating is None:
+                append_history(conn, row["job_id"], {
+                    "ts": ts, "event": "viability", "rating": rating, "reason": reason,
+                })
+            elif old_rating != rating:
+                append_history(conn, row["job_id"], {
+                    "ts": ts, "event": "rescore", "from": old_rating, "to": rating, "reason": reason,
+                })
+            if current_status != "autoskipped":
+                conn.execute("UPDATE jobs SET status = 'autoskipped' WHERE job_id = ?",
+                             (row["job_id"],))
+                append_history(conn, row["job_id"], {
+                    "ts": ts, "event": "status", "from": current_status, "to": "autoskipped",
+                    "note": "company on reject-list",
+                })
+            rejected += 1
+            note = f"  Reject-listed: {label} → autoskipped (low)"
+            if args.verbose:
+                print(note.strip())
+            else:
+                print(f"\r\033[K{note}" if interactive else note, flush=True)
+            conn.commit()
+            continue
 
         job = dict(row)
         # A manual geographic verdict short-circuits the billed sub-call: an ACCEPTABLE override
@@ -835,12 +910,13 @@ def main() -> None:
     breakdown      = ", ".join(f"{r}: {tally[r]}" for r in ("high", "medium", "low") if tally.get(r))
     fail_note      = f", {failed} failed" if failed else ""
     autoskip_note  = f", {auto_skipped} auto-skipped" if auto_skipped else ""
+    reject_note    = f", {rejected} reject-listed" if rejected else ""
     promoted_note  = f", {promoted} promoted to new" if promoted else ""
     # Per-job average over the whole selection (count = jobs processed), for spotting a
     # slow model/API at a glance in a tailed log.
     avg_note       = f" (avg {elapsed / count:.2f}s/job)" if count else ""
     # Lead with walltime (like ingest) so a tailed log surfaces slow runs at a glance.
-    print(f"Done in {elapsed:.1f}s{avg_note}. {scored} job(s) scored{fail_note}{autoskip_note}{promoted_note}." + (f" ({breakdown})" if breakdown else ""))
+    print(f"Done in {elapsed:.1f}s{avg_note}. {scored} job(s) scored{fail_note}{autoskip_note}{reject_note}{promoted_note}." + (f" ({breakdown})" if breakdown else ""))
     summary = format_token_summary(
         model, input=tok_input, output=tok_output,
         cache_write=tok_write, cache_read=tok_read,

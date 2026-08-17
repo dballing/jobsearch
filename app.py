@@ -2044,6 +2044,33 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
     row = db.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
     if not row:
         return False, "job not found"
+    # Company reject-list: a listed employer in a pre-decision (or already-autoskipped) status is
+    # forced to low/autoskipped WITHOUT an AI call, mirroring the batch rescorer's deny check so
+    # the "rescore this job" button honors the same guardrail. Statuses you've acted on aren't in
+    # REJECT_DENYABLE_STATUSES, so those still get a real score.
+    from viability import build_reject_set, is_rejected_company, reject_reason, REJECT_DENYABLE_STATUSES
+    reject_set = build_reject_set(cfg)
+    if (reject_set and row["status"] in REJECT_DENYABLE_STATUSES
+            and is_rejected_company(row["company"], reject_set)):
+        rating = "low"
+        reason = reject_reason(row["company"])
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        db.execute(
+            "UPDATE jobs SET viability = ?, viability_reason = ?, "
+            "viability_prompt_hash = ?, needs_rescored = 0 WHERE job_id = ?",
+            (rating, reason, scoring_hash_for_config(cfg), job_id),
+        )
+        old_rating = row["viability"]
+        if old_rating is None:
+            append_history(db, job_id, {"ts": ts, "event": "viability", "rating": rating, "reason": reason})
+        elif old_rating != rating:
+            append_history(db, job_id, {"ts": ts, "event": "rescore", "from": old_rating, "to": rating, "reason": reason})
+        if row["status"] != "autoskipped":
+            db.execute("UPDATE jobs SET status = 'autoskipped' WHERE job_id = ?", (job_id,))
+            append_history(db, job_id, {"ts": ts, "event": "status", "from": row["status"],
+                                        "to": "autoskipped", "note": "company on reject-list"})
+        db.commit()
+        return True, f"{rating} (reject-listed)"
     try:
         import anthropic
         client = anthropic.Anthropic(api_key=api_key)

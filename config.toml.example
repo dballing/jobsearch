@@ -29,6 +29,20 @@ uploads_dir = "uploads"
 #                                           # applies only on a reasoning model. Changing it re-scores.
 # auto_skip            = false              # auto-set low/medium jobs to 'autoskipped' during rescore
 # auto_skip_confidence = "low"             # threshold: "low" (only low) or "medium" (low + medium)
+# Company reject-list: employers you will NEVER work for. Their jobs are forced to viability=low +
+# status=autoskipped WITHOUT an AI call (no tokens spent) — a hard human decision, not a judgment.
+# Matching is exact + case-insensitive on the WHOLE company field (not substring), and runs AFTER
+# [company_aliases], so list the CANONICAL name once and it catches every alias-folded variant.
+# Only affects pre-decision jobs (new/reviewing/deferred) and autoskipped ones; a job you've
+# already applied to / are interviewing for is left alone and still scored normally. Not folded
+# into the re-score hash: adding a name denies that employer's existing jobs on the next rescore;
+# removing one takes effect on the next `rescore_viability.sh --autoskipped` (which gives its jobs
+# a real score again). One name per line reads best when the list grows (the inline form
+# ["Initech", "Globex"] is equivalent — TOML parses both identically):
+# reject_companies = [
+#     "Initech",
+#     "Globex",
+# ]
 # prompt  = """
 # Describe yourself as a candidate. Be specific: background, skills, years of
 # experience, preferred role types, company stage, and any deal-breakers.
