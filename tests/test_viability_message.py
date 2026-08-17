@@ -187,6 +187,64 @@ def test_score_job_keeps_thinking_disabled_and_tiny_budget_for_haiku():
     assert client.last_kwargs["max_tokens"] == 256
 
 
+def test_score_job_passes_configured_effort_on_a_reasoning_model():
+    client = _FakeClient('{"rating": "high", "reason": "Great."}')
+    viability.score_job(client, "p", {"title": "T", "company": "C"},
+                        model="claude-opus-5", effort="high")
+    assert client.last_kwargs["output_config"] == {"effort": "high"}
+    assert client.last_kwargs["thinking"] == {"type": "adaptive"}
+
+
+def test_score_job_throws_effort_away_on_a_non_reasoning_model():
+    client = _FakeClient('{"rating": "low", "reason": "Meh."}')
+    viability.score_job(client, "p", {"title": "T", "company": "C"},
+                        model="claude-haiku-4-5", effort="max")
+    assert "output_config" not in client.last_kwargs
+    assert client.last_kwargs["thinking"] == {"type": "disabled"}
+
+
+def test_assess_location_fit_uses_adaptive_thinking_effort_on_a_reasoning_model():
+    client = _FakeClient('{"fit": "good", "match": "Raleigh"}')
+    raw = _json.dumps({"locations_derived": ["Raleigh, NC, US"]})
+    viability.assess_location_fit(client, "prefs", {"title": "T", "company": "C", "raw": raw},
+                                  model="claude-sonnet-5", effort="low")
+    assert client.last_kwargs["thinking"] == {"type": "adaptive"}
+    assert client.last_kwargs["output_config"] == {"effort": "low"}
+
+
+def test_assess_location_fit_disables_thinking_on_a_non_reasoning_model():
+    client = _FakeClient('{"fit": "good", "match": "Raleigh"}')
+    raw = _json.dumps({"locations_derived": ["Raleigh, NC, US"]})
+    viability.assess_location_fit(client, "prefs", {"title": "T", "company": "C", "raw": raw},
+                                  model="claude-haiku-4-5", effort="high")
+    assert client.last_kwargs["thinking"] == {"type": "disabled"}
+    assert "output_config" not in client.last_kwargs
+
+
+# ── effort folds into the scoring hash — but only when it applies ──────────────
+def test_prompt_hash_folds_in_effort_and_geo_effort():
+    base = viability.prompt_hash("p", "lp", True)
+    assert viability.prompt_hash("p", "lp", True, effort="high") != base
+    assert viability.prompt_hash("p", "lp", True, geo_effort="low") != base
+    assert (viability.prompt_hash("p", "lp", True, effort="high")
+            == viability.prompt_hash("p", "lp", True, effort="high"))       # deterministic
+
+
+def test_scoring_hash_reacts_to_effort_only_on_a_reasoning_model():
+    """Editing [viability].effort re-scores when the model is a reasoning model, but is a no-op
+    on Haiku (effort is thrown away there, so it must not change the hash)."""
+    r_a = {"viability": {"prompt": "P", "model": "claude-sonnet-5", "effort": "medium"}}
+    r_b = {"viability": {"prompt": "P", "model": "claude-sonnet-5", "effort": "high"}}
+    assert viability.scoring_hash_for_config(r_a) != viability.scoring_hash_for_config(r_b)
+    h_a = {"viability": {"prompt": "P", "model": "claude-haiku-4-5", "effort": "medium"}}
+    h_b = {"viability": {"prompt": "P", "model": "claude-haiku-4-5", "effort": "high"}}
+    assert viability.scoring_hash_for_config(h_a) == viability.scoring_hash_for_config(h_b)
+
+
+def test_scoring_hash_is_none_without_a_prompt():
+    assert viability.scoring_hash_for_config({"viability": {}}) is None
+
+
 def test_score_job_reads_the_text_block_past_a_leading_thinking_block():
     """With thinking on, content[0] is a thinking block — the parser must find the text block."""
     class _ThinkThenText:

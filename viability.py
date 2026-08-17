@@ -13,6 +13,9 @@ import hashlib
 import json
 import re
 
+from ai_config import (DEFAULT_EFFORT, effective_effort, is_reasoning_model,
+                       resolve_ai_settings, resolve_effort, resolve_geo_effort, resolve_geo_model)
+
 # The valid rating values; anything else from the model is treated as a failure.
 VIABILITY_RATINGS = {"low", "medium", "high"}
 
@@ -106,7 +109,12 @@ _SYSTEM_BOILERPLATE = (
 # exclusion to similar/adjacent companies (a Google-only "avoid" was penalizing Microsoft as
 # "Google-adjacent big tech"). The thinking change isn't a prompt_hash input (like model choice),
 # but the boilerplate changes are, and the bump makes existing scores re-run under all of it.
-_SCORING_INPUT_VERSION = "13"
+# 14 = scorer/geo thinking effort became configurable ([viability].effort / .location_effort,
+# defaulting to [ai].effort → "medium"), and the geo sub-call now runs adaptive thinking on a
+# reasoning model too (was always thinking-disabled). The *effective* effort (None on a
+# non-reasoning model) is now folded into prompt_hash, so changing it re-scores only when it
+# actually changes behavior; the bump re-runs everything once under the new machinery.
+_SCORING_INPUT_VERSION = "14"
 
 # Cap on locations included in the scoring message — bounds token cost for the rare job
 # posted across dozens of sites, while staying generous enough to almost never truncate
@@ -119,22 +127,50 @@ _MAX_SCORE_LOCATIONS = 40
 _MAX_GEO_DESC_CHARS = 4000
 
 
-def prompt_hash(prompt: str, location_prompt: str = "", geo_uses_description: bool = True) -> str:
+def prompt_hash(prompt: str, location_prompt: str = "", geo_uses_description: bool = True,
+                effort: str | None = None, geo_effort: str | None = None) -> str:
     """Return a stable 32-char hex digest of everything that determines a job's score.
 
     Covers the fixed system boilerplate, the candidate description, the separate
     geographic-preferences prompt (location_prompt — fed to the focused location sub-call,
     see assess_location_fit), the location_use_description toggle (geo_uses_description —
-    whether that sub-call reads the description, which changes its verdict), AND the per-job
-    message schema version — so a config edit to any of them, a boilerplate change, OR a
-    change to which fields we send all correctly mark existing scores stale. The version is
-    hashed but never sent to the model. Truncated to 32 hex chars purely to keep the stored
-    value compact — collision resistance is irrelevant (it's a change-detector, not a
-    security hash).
+    whether that sub-call reads the description, which changes its verdict), the *effective*
+    scorer and geo thinking effort (``effort`` / ``geo_effort`` — pass the value actually used,
+    i.e. None on a non-reasoning model, so a config change re-scores only when it truly changes
+    behavior; unlike the model, which is never hashed), AND the per-job message schema version —
+    so a config edit to any of them, a boilerplate change, OR a change to which fields we send all
+    correctly mark existing scores stale. The version is hashed but never sent to the model.
+    Truncated to 32 hex chars purely to keep the stored value compact — collision resistance is
+    irrelevant (it's a change-detector, not a security hash).
     """
     material = (f"{_SCORING_INPUT_VERSION}\x00{_SYSTEM_BOILERPLATE}{prompt}"
-               f"\x00{location_prompt}\x00{geo_uses_description}")
+               f"\x00{location_prompt}\x00{geo_uses_description}\x00{effort}\x00{geo_effort}")
     return hashlib.sha256(material.encode()).hexdigest()[:32]
+
+
+def scoring_hash_for_config(config: dict) -> str | None:
+    """The current scoring hash for a loaded config — the single source every caller uses so the
+    batch rescore, the on-demand single-job rescore, and the web-UI staleness check derive an
+    IDENTICAL hash (a mismatch would make freshly-scored jobs read as permanently stale).
+
+    Resolves the same prompt / location-prompt / description-toggle the scorer sees, plus the
+    *effective* scorer and geo effort — effort folded in via effective_effort so it only affects
+    the hash when it actually applies (a reasoning model), never on a Haiku config, and the model
+    itself is never hashed. Returns None when no viability prompt is configured (nothing to score
+    or compare)."""
+    vcfg = config.get("viability", {}) or {}
+    viability_prompt = vcfg.get("prompt", "").strip()
+    if not viability_prompt:
+        return None
+    location_prompt = vcfg.get("location_prompt", "").strip()
+    gud = bool(vcfg.get("location_use_description", True))
+    v_model  = resolve_ai_settings(config, "viability")[1]
+    v_effort = resolve_effort(config, "viability")[0]
+    geo_model  = resolve_geo_model(config, gud)
+    geo_effort = resolve_geo_effort(config, gud)[0]
+    return prompt_hash(viability_prompt, location_prompt, gud,
+                       effort=effective_effort(v_model, v_effort),
+                       geo_effort=effective_effort(geo_model, geo_effort))
 
 
 def _job_locations(job: dict) -> list[str]:
@@ -484,6 +520,7 @@ def assess_location_fit(
     job: dict,
     model: str = "claude-haiku-4-5",
     include_description: bool = True,
+    effort: str = DEFAULT_EFFORT,
 ) -> tuple[str, str, object] | tuple[None, None, None]:
     """Classify one job's geographic fit as its own cheap, single-purpose AI call.
 
@@ -524,19 +561,23 @@ def assess_location_fit(
     system_text = (_GEO_SYSTEM + (_GEO_DESC_CLAUSE if description else "")
                    + f"Candidate location preferences:\n{location_prompt}")
 
+    # Reasoning model → adaptive thinking at `effort` (its reasoning stays hidden; on Sonnet 5
+    # this avoids the same scratchpad-in-output problem the main scorer had); Haiku/older →
+    # thinking disabled with a tiny budget (a trivial one-line JSON verdict), effort ignored.
+    cfg = _thinking_call_config(model, effort, disabled_max_tokens=128, adaptive_max_tokens=2048)
     try:
         message = client.messages.create(
             model=model,
-            max_tokens=128,  # a one-line JSON verdict — even smaller than the scorer's
-            thinking={"type": "disabled"},  # trivial classification; same rationale as score_job
             system=[{
                 "type": "text",
                 "text": system_text,
                 "cache_control": {"type": "ephemeral"},
             }],
             messages=[{"role": "user", "content": user_text}],
+            **cfg,
         )
-        raw = message.content[0].text.strip()
+        # With thinking on, content[0] is a thinking block — pull the text block explicitly.
+        raw = next((b.text for b in message.content if getattr(b, "type", "") == "text"), "").strip()
         m = re.search(r'\{.*\}', raw, re.DOTALL)
         if not m:
             return None, None, None
@@ -550,25 +591,27 @@ def assess_location_fit(
         return None, None, None
 
 
-# Scorer models on which we run WITH adaptive thinking. A Claude 4.6+/5 reasoning model run with
-# thinking *disabled* reasons out loud in the visible output — and since the only prose slot is
-# the JSON "reason" field, its whole scratchpad lands there (observed: a Sonnet-5 scorer emitting
-# multi-clause self-questioning "reason"s). Turning adaptive thinking back on moves that reasoning
-# into a hidden thinking block, leaving "reason" a clean sentence. Haiku 4.5 and older don't
-# support adaptive thinking (and don't leak), so they stay disabled — cheap and unaffected.
-_ADAPTIVE_THINKING_MODELS = (
-    "claude-fable-5", "claude-mythos-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7",
-    "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6",
-)
-
-
 def _scorer_thinking(model: str) -> dict:
-    """Thinking config for the scorer, by model: adaptive for reasoning-capable models (so their
-    reasoning stays hidden and the 'reason' field stays a single sentence), disabled for Haiku/
-    older. Pure, so it's unit-testable without an API call."""
-    m = (model or "").lower()
-    return ({"type": "adaptive"} if any(m.startswith(p) for p in _ADAPTIVE_THINKING_MODELS)
-            else {"type": "disabled"})
+    """Thinking config for an AI scorer/geo call, by model: adaptive for reasoning-capable models
+    (so their reasoning stays in a hidden block and the configured `effort` applies), disabled for
+    Haiku/older. A reasoning model run with thinking *disabled* reasons out loud in the visible
+    output — and since the only prose slot is the JSON "reason", its whole scratchpad lands there
+    (observed on a Sonnet-5 scorer). Pure, so it's unit-testable without an API call."""
+    return {"type": "adaptive"} if is_reasoning_model(model) else {"type": "disabled"}
+
+
+def _thinking_call_config(model: str, effort: str, *, disabled_max_tokens: int,
+                          adaptive_max_tokens: int) -> dict:
+    """The model-generation-aware bits of a messages.create() call — {max_tokens, thinking} plus
+    output_config when adaptive. On a reasoning model: adaptive thinking at `effort`, with the
+    larger token budget to leave room for the (hidden) thinking. On Haiku/older: thinking disabled
+    and the small budget, and `effort` is simply not sent (thrown away). Shared by score_job and
+    assess_location_fit so both handle the reasoning/non-reasoning split identically."""
+    thinking = _scorer_thinking(model)
+    if thinking["type"] == "adaptive":
+        return {"max_tokens": adaptive_max_tokens, "thinking": thinking,
+                "output_config": {"effort": effort}}
+    return {"max_tokens": disabled_max_tokens, "thinking": thinking}
 
 
 def score_job(
@@ -577,6 +620,7 @@ def score_job(
     job: dict,
     model: str = "claude-haiku-4-5",
     geo_note: str | None = None,
+    effort: str = DEFAULT_EFFORT,
 ) -> tuple[str, str, object] | tuple[None, None, None]:
     """Score a job posting for viability against the candidate description.
 
@@ -589,38 +633,30 @@ def score_job(
     geographic-fit verdict that replaces the raw location list in the message so the model
     doesn't re-derive geography itself. None → the raw location list is sent as before.
 
+    On a reasoning model the run uses adaptive thinking at ``effort`` (its reasoning stays in a
+    hidden block, keeping `reason` a clean sentence); a non-reasoning model runs thinking-disabled
+    and ignores ``effort`` (see _thinking_call_config).
+
     The system prompt (boilerplate + candidate profile) is identical for every job in
     a run, so it's marked for ephemeral prompt caching — only the per-job user message
     is uncached, making a full rescore cheap after the first call.
     """
     system_text = _SYSTEM_BOILERPLATE + f"Candidate description:\n{viability_prompt}"
-
-    # Reasoning-capable models run with adaptive thinking so their analysis stays in a hidden
-    # thinking block (keeping `reason` a clean sentence) — but that needs headroom for the
-    # thinking tokens, and a modest effort to keep this high-volume call affordable. effort=medium
-    # (vs low) measurably improved instruction-following — fewer stray asides in the reason — for a
-    # small extra cost. Haiku/older keep thinking disabled and the tiny budget (they don't leak).
-    thinking = _scorer_thinking(model)
-    adaptive = thinking["type"] == "adaptive"
-    create_kwargs = {
-        "model": model,
-        "max_tokens": 3072 if adaptive else 256,
-        "thinking": thinking,
-        "system": [{
-            "type": "text",
-            "text": system_text,
-            "cache_control": {"type": "ephemeral"},
-        }],
-        "messages": [{
-            "role": "user",
-            "content": build_score_message(job, geo_note=geo_note),
-        }],
-    }
-    if adaptive:
-        create_kwargs["output_config"] = {"effort": "medium"}
-
+    cfg = _thinking_call_config(model, effort, disabled_max_tokens=256, adaptive_max_tokens=3072)
     try:
-        message = client.messages.create(**create_kwargs)
+        message = client.messages.create(
+            system=[{
+                "type": "text",
+                "text": system_text,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{
+                "role": "user",
+                "content": build_score_message(job, geo_note=geo_note),
+            }],
+            model=model,
+            **cfg,
+        )
         # With thinking on, content[0] is a thinking block — pull the text block explicitly.
         raw = next((b.text for b in message.content if getattr(b, "type", "") == "text"), "").strip()
         # The model is told to emit bare JSON, but tolerate it wrapping the object in

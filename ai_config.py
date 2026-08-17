@@ -8,11 +8,34 @@ for both so the two features stay consistent.
 """
 
 import os
+import sys
 
 # Fallback model when neither the feature section nor [ai] specifies one. Haiku is the
 # cheapest current model — a sane default for high-volume, low-complexity AI calls
 # (description reformatting, viability scoring) where cost matters more than peak quality.
 DEFAULT_MODEL = "claude-haiku-4-5"
+
+# Fallback thinking effort for a reasoning model with no explicit setting. 'medium' balances
+# instruction-following against cost for these high-volume calls. Only ever applied when the
+# resolved model is a reasoning model (see is_reasoning_model); a non-reasoning model ignores it.
+DEFAULT_EFFORT = "medium"
+
+# Claude 4.6+/5 models that run with adaptive thinking, so a configured `effort` takes effect
+# (reasoning stays in a hidden thinking block; effort controls its depth/cost). Haiku 4.5 and
+# older don't support adaptive thinking, so effort is meaningless there and is thrown away.
+# Matched by prefix so dated snapshots (e.g. a future 'claude-sonnet-5-YYYYMMDD') still count.
+_REASONING_MODELS = (
+    "claude-fable-5", "claude-mythos-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7",
+    "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6",
+)
+
+
+def is_reasoning_model(model: str) -> bool:
+    """True when `model` runs with adaptive thinking, so a configured `effort` actually applies
+    (and, for reformat, `temperature` must be dropped). False for Haiku/older, where effort is
+    ignored. Pure, so it's unit-testable and shared by every AI call site."""
+    m = (model or "").lower()
+    return any(m.startswith(p) for p in _REASONING_MODELS)
 
 # Approximate pricing per token (USD). Update if Anthropic changes rates.
 # Source: https://platform.claude.com/docs/en/about-claude/models/overview (2026-07-02).
@@ -60,6 +83,55 @@ def resolve_ai_settings(config: dict, section: str) -> tuple[str | None, str]:
     model   = sect.get("model")   or ai.get("model")   or DEFAULT_MODEL
     api_key = sect.get("api_key") or ai.get("api_key") or os.environ.get("ANTHROPIC_API_KEY")
     return api_key, model
+
+
+def resolve_effort(config: dict, section: str) -> tuple[str, bool]:
+    """Return (effort, explicitly_set) for an AI feature section — the effort sibling of
+    resolve_ai_settings, with the same precedence:
+
+        [<section>].effort -> [ai].effort -> DEFAULT_EFFORT.
+
+    ``explicitly_set`` is True when the value came from config (either level) rather than the
+    built-in default, so a caller can warn that an explicit effort is being ignored on a
+    non-reasoning model. The effort is validated at the call site, not here (Anthropic rejects a
+    bad value)."""
+    sect = config.get(section, {}) or {}
+    ai   = config.get("ai", {}) or {}
+    if "effort" in sect:
+        return sect["effort"], True
+    if "effort" in ai:
+        return ai["effort"], True
+    return DEFAULT_EFFORT, False
+
+
+def resolve_geo_effort(config: dict, geo_uses_description: bool) -> tuple[str, bool]:
+    """Return (effort, explicitly_set) for the location sub-call — the effort sibling of
+    resolve_geo_model, mirroring its precedence: an explicit ``[viability].location_effort``
+    wins; otherwise it inherits the *viability* effort when the sub-call reads the description
+    (it escalates to the viability model there), else the ``[ai]`` effort."""
+    viability = config.get("viability", {}) or {}
+    if "location_effort" in viability:
+        return viability["location_effort"], True
+    if geo_uses_description:
+        return resolve_effort(config, "viability")
+    return resolve_effort(config, "ai")
+
+
+def effective_effort(model: str, effort: str) -> str | None:
+    """The effort a call will actually use: the resolved effort on a reasoning model, else None
+    (a non-reasoning model ignores it). Folding THIS into a scoring hash means a config effort
+    change re-scores only when it truly changes behavior — not on a Haiku config."""
+    return effort if is_reasoning_model(model) else None
+
+
+def warn_effort_ignored(label: str, model: str, effort: str, explicit: bool) -> None:
+    """Print a one-line stderr notice when an EXPLICITLY configured effort is being thrown away
+    because the resolved model isn't a reasoning model. Silent when the effort is just the
+    default, or when it actually applies. Called once at a batch driver's startup."""
+    if explicit and not is_reasoning_model(model):
+        print(f"NOTE: {label} effort={effort!r} is ignored — {model} is not a reasoning model "
+              "(effort only applies to Claude 4.6+/5 models with adaptive thinking).",
+              file=sys.stderr)
 
 
 def resolve_geo_model(config: dict, geo_uses_description: bool) -> str:

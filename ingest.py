@@ -23,7 +23,8 @@ from pathlib import Path
 
 import requests
 
-from ai_config import format_token_summary, resolve_ai_settings
+from ai_config import (DEFAULT_EFFORT, format_token_summary, resolve_ai_settings,
+                       resolve_effort, warn_effort_ignored)
 from reformat import content_preserved, description_hash, reformat_description
 from runlock import acquire_run_lock
 
@@ -764,9 +765,11 @@ class DescriptionFormatter:
     case. Tracks token usage and per-run counts for the summary line.
     """
 
-    def __init__(self, client=None, model: str = "claude-haiku-4-5"):
+    def __init__(self, client=None, model: str = "claude-haiku-4-5",
+                 effort: str = DEFAULT_EFFORT):
         self.client = client
         self.model = model
+        self.effort = effort   # thinking effort, applied only if `model` is a reasoning model
         self._cache: dict[str, str] = {}
         self.via_ai = 0
         self.reused = 0
@@ -805,7 +808,7 @@ class DescriptionFormatter:
             self._cache[desc_hash] = hit[0]
             self.reused += 1
             return hit[0]
-        md, usage = reformat_description(self.client, description, self.model)
+        md, usage = reformat_description(self.client, description, self.model, self.effort)
         if usage is not None:
             self.tok_input  += getattr(usage, "input_tokens",                0) or 0
             self.tok_output += getattr(usage, "output_tokens",               0) or 0
@@ -1304,9 +1307,11 @@ def main() -> None:
     formatter = DescriptionFormatter()  # disabled by default → heuristic renderer
     if descriptions_cfg.get("use_ai_on_descriptions", False) and not args.dry_run:
         api_key, model = resolve_ai_settings(config, "descriptions")
+        effort, effort_explicit = resolve_effort(config, "descriptions")
         if api_key:
             import anthropic
-            formatter = DescriptionFormatter(anthropic.Anthropic(api_key=api_key), model)
+            warn_effort_ignored("descriptions", model, effort, effort_explicit)
+            formatter = DescriptionFormatter(anthropic.Anthropic(api_key=api_key), model, effort)
             print(f"AI description reformatting enabled (model: {model}).")
         else:
             print("WARNING: use_ai_on_descriptions is set but no API key resolved "

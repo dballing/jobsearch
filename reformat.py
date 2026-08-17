@@ -11,6 +11,8 @@ import difflib
 import hashlib
 import re
 
+from ai_config import DEFAULT_EFFORT, is_reasoning_model
+
 # Strict instructions — emit only formatting changes, never content changes.
 # Kept as a module constant so it can be marked for prompt caching (the system
 # prompt is identical across every call in an ingest run).
@@ -97,7 +99,8 @@ def content_preserved(original: str, markdown: str) -> bool:
     return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio() >= CONTENT_THRESHOLD
 
 
-def reformat_description(client, text: str, model: str = "claude-haiku-4-5"):
+def reformat_description(client, text: str, model: str = "claude-haiku-4-5",
+                         effort: str = DEFAULT_EFFORT):
     """Reformat one description to Markdown.
 
     `client` is an anthropic.Anthropic instance injected by the caller (ingest.py),
@@ -106,18 +109,25 @@ def reformat_description(client, text: str, model: str = "claude-haiku-4-5"):
     The system prompt is marked for ephemeral prompt caching so repeated calls within
     one ingest run only pay full system-token cost once (the per-description user
     message is the only uncached part).
+
+    Model-generation-aware: a non-reasoning model (the Haiku default) runs at temperature 0 for
+    the least-creative, most-reproducible reformat. A reasoning model (Claude 4.6+/5) rejects
+    `temperature`, so we drop it and run adaptive thinking at `effort` instead (a faithful reformat
+    is trivial, so `effort` is best left low); `effort` is ignored on a non-reasoning model.
     """
     text = (text or "").strip()
     if not text:
         return None, None
+    if is_reasoning_model(model):
+        engine = {"thinking": {"type": "adaptive"}, "output_config": {"effort": effort}}
+    else:
+        # temperature 0 minimizes content drift and run-to-run variance (so a rejected result is
+        # more likely to reproduce when debugging). Not accepted on reasoning models (400).
+        engine = {"temperature": 0}
     try:
         message = client.messages.create(
             model=model,
             max_tokens=MAX_TOKENS,
-            # A faithful reformat wants the least-creative, most-reproducible output:
-            # temperature 0 minimizes both content drift and run-to-run variance (so a
-            # rejected result is more likely to reproduce when debugging).
-            temperature=0,
             system=[{
                 "type": "text",
                 "text": REFORMAT_SYSTEM,
@@ -127,6 +137,7 @@ def reformat_description(client, text: str, model: str = "claude-haiku-4-5"):
                 "role": "user",
                 "content": f"Reformat this job description:\n\n{text}",
             }],
+            **engine,
         )
         # Output truncated against MAX_TOKENS — the Markdown is missing its tail, so
         # treat it as a failure (don't return a partial that the integrity check would

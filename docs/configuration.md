@@ -98,16 +98,28 @@ engine configuration. Put the Anthropic key and default model here once:
 [ai]
 api_key = "sk-ant-xxxxxxxxxxxxxxxxxxxx"   # or set ANTHROPIC_API_KEY env var
 model   = "claude-haiku-4-5"              # default model for all AI features
+effort  = "medium"                        # default thinking effort (reasoning models only)
 ```
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `api_key` | *(env)* | Anthropic API key. Falls back to `ANTHROPIC_API_KEY`. |
 | `model` | `"claude-haiku-4-5"` | Default model; a feature section may override it. |
+| `effort` | `"medium"` | Default thinking effort (`low`/`medium`/`high`/`xhigh`/`max`); a feature section may override it. **Applies only to reasoning models** — see below. |
 
 **Resolution order** for each feature: a value in the feature's own section wins,
 then `[ai]`, then the built-in default / `ANTHROPIC_API_KEY`. This is backward
 compatible — an `api_key`/`model` left under `[viability]` still works as an override.
+
+**`effort` — how it's applied.** Effort controls how much a *reasoning* model (Claude 4.6+/5,
+e.g. `claude-sonnet-5`) thinks before answering. It parallels `model`: an `effort` sits alongside
+every `model` knob (`[ai]`, `[viability]` + its `location_effort`, `[descriptions]`), with the same
+resolution order. But it only *does* anything when the resolved model is a reasoning model — on the
+default Haiku (a non-reasoning model) the value is **ignored/thrown away**, and if you set it
+explicitly there, the batch runs print a one-line notice saying so. Unlike `model`, the *effective*
+effort (i.e. the value actually used — nothing on a non-reasoning model) is folded into the
+viability staleness hash, so **changing the effort re-scores every job** when it actually changes
+scoring, and is a no-op on a Haiku config.
 
 ## Viability scoring (`[viability]`)
 
@@ -115,6 +127,7 @@ compatible — an `api_key`/`model` left under `[viability]` still works as an o
 [viability]
 enabled = true
 model   = "claude-sonnet-5"     # optional: override [ai].model for scoring
+effort  = "medium"              # optional: thinking effort for the scorer (reasoning models only)
 prompt  = """
 Describe yourself as a candidate…
 """
@@ -131,6 +144,7 @@ assume it falls within my target areas (my searches are already geographically p
 and treat it as at least ACCEPTABLE.
 """
 location_model = "claude-haiku-4-5"   # optional; defaults to [ai].model
+location_effort = "low"               # optional; effort for the location sub-call (reasoning models only)
 location_use_description = true        # optional; default true (see below)
 
 # Optional auto-skip (disabled by default):
@@ -162,8 +176,10 @@ auto_skip_confidence = "low"   # "low" (only low) or "medium" (low + medium)
 | `enabled` | `false` | Enable viability scoring. |
 | `api_key` | *(from `[ai]`)* | Optional per-feature override of the Anthropic key. |
 | `model` | *(from `[ai]`)* | Optional per-feature override of the model. |
+| `effort` | *(from `[ai]`)* | Thinking effort for the scorer, applied only on a reasoning `model` (see `[ai].effort`). Its effective value is in the staleness hash, so changing it re-scores. |
 | `prompt` | *(required)* | Your candidate description. Be specific: background, target roles, deal-breakers. |
 | `location_prompt` | *(none)* | Your geographic/remote preferences. When set, a focused single-purpose AI call matches each job's location(s) against this and feeds only the verdict — one of four ordinal tiers `PREFERRED` > `GOOD` > `ACCEPTABLE` > `POOR` — to the main scorer, which reads geography far more reliably than parsing a multi-city list inline. The tier names are generic; **your** prompt decides which locations earn which tier. Put **all** location/remote judgments here and keep geography out of `prompt` so it isn't double-judged. Editing it re-scores every job (it's folded into the staleness hash). The sub-call also reads each job's **description**, so it honors eligibility conditions in the prose (e.g. a "remote" role that only accepts residents of certain states) — **include where you live** so it can tell whether such conditions include you. A **`POOR`** verdict — the bottom tier, meaning no listed location or remote option the candidate can actually work — **deterministically forces the overall viability to `low`** (geography is a hard disqualifier); the main scorer would otherwise discount it and still return `medium`. The other three tiers flow to the scorer as advisory context. When this override fires, the score's reason keeps the model's own explanation with a bracketed `[Forced to LOW: …]` note appended. *Tip:* if your ingest tasks already restrict searches by geography, you can tell the prompt to assume a bare-country location (`"United States"`) is in-area — the feed wouldn't have surfaced it otherwise. |
+| `location_effort` | *(auto)* | Thinking effort for the location sub-call (reasoning models only). Mirrors `location_model`'s source when unset: the viability effort when the sub-call reads descriptions, else `[ai].effort`. On a reasoning model the sub-call now runs adaptive thinking at this effort (it used to always run thinking-disabled). Folded into the staleness hash. |
 | `location_model` | *(auto)* | Optional model for the location sub-call. When set, it always wins. When unset, the default **depends on `location_use_description`**: with the description off, the sub-call is a trivial location match, so it uses the cheap `[ai]` model even when `model` above is pricier; with the description on, reading the prose to tell a real eligibility restriction from incidental office/regional wording is a comprehension task the cheap model gets wrong (it false-`POOR`s fully-remote roles), so it **escalates to the model viability scoring uses** — i.e. `[viability].model` if set, else `[ai].model` (so the escalation only buys a better sub-call when your scoring model is more capable than `[ai].model`; if your whole setup is on one cheap model, set `location_model` here). Set this explicitly to override either default. |
 | `location_use_description` | `true` | Whether the location sub-call reads each job's description. On (default), it honors eligibility conditions in the prose — e.g. a "remote" role restricted to residents of certain states — but must run per unique description **and needs a capable model** (see `location_model`: the default auto-escalates to your viability `model`; a cheap model like Haiku mis-reads noisy descriptions and false-`POOR`s remote jobs). Off, it dedups hard by location set (fewer calls, cheaper, cheap model is fine) but can't see those conditions. Folded into the staleness hash, so flipping it re-scores. |
 | `auto_skip` | `false` | Automatically set `new`/`reviewing` jobs to `autoskipped` if they score at or below the threshold. |
@@ -182,12 +198,14 @@ Optional. At ingest time, hand each job description to the model and store a cle
 [descriptions]
 use_ai_on_descriptions = true
 # model = "claude-haiku-4-5"   # optional: override [ai].model for reformatting
+# effort = "low"               # optional: effort if `model` is a reasoning model
 ```
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `use_ai_on_descriptions` | `false` | Enable AI reformatting at ingest. |
 | `api_key` / `model` | *(from `[ai]`)* | Optional per-feature overrides. |
+| `effort` | *(from `[ai]`)* | Thinking effort, applied only if `model` is a reasoning model. The Haiku default reformats at `temperature=0` and ignores it. (A faithful reformat is trivial, so keep it low.) |
 
 Notes:
 - **Scope:** only new jobs and jobs whose description changed are formatted (no

@@ -26,7 +26,7 @@ from ingest import append_history, bootstrap_history
 from viability import (
     _work_arrangement, GEO_UNSUPPORTED_ARRANGEMENT, MANUAL_GEO_FIT_CHOICES,
     assess_location_fit, clamp_viability_for_geo, geo_note, manual_geo_verdict,
-    prompt_hash, score_job,
+    score_job, scoring_hash_for_config,
 )
 
 app = Flask(__name__)
@@ -63,14 +63,10 @@ def _current_viability_hash() -> str | None:
             _cfg_mtime = mtime
             with open(_config_path, "rb") as _rf:
                 _live_cfg = tomllib.load(_rf)
-            _vcfg = _live_cfg.get("viability", {})
-            p = _vcfg.get("prompt", "").strip()
-            # location_prompt + the location_use_description toggle are folded into the hash
-            # too (both drive the geographic verdict the scorer sees), so editing either
-            # correctly flags scores stale.
-            lp = _vcfg.get("location_prompt", "").strip()
-            gud = bool(_vcfg.get("location_use_description", True))
-            _viability_hash_cache = prompt_hash(p, lp, gud) if p else None
+            # Centralized so this staleness hash matches the one the batch/on-demand rescore
+            # stamps exactly (prompt + location_prompt + the description toggle + effective
+            # scorer/geo effort). None when no viability prompt is configured.
+            _viability_hash_cache = scoring_hash_for_config(_live_cfg)
     except OSError:
         pass
     return _viability_hash_cache
@@ -2034,13 +2030,17 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
     # focused location sub-call and feed its verdict to the scorer in place of raw locations.
     location_prompt = vcfg.get("location_prompt", "").strip()
     geo_uses_description = bool(vcfg.get("location_use_description", True))
-    from ai_config import resolve_ai_settings, resolve_geo_model
+    from ai_config import resolve_ai_settings, resolve_effort, resolve_geo_effort, resolve_geo_model
     api_key, model = resolve_ai_settings(cfg, "viability")
     if not api_key:
         return False, "no Anthropic API key configured"
     # When the sub-call reads the description this escalates to the viability model — haiku
     # false-POORs remote jobs on noisy descriptions (see resolve_geo_model).
     geo_model = resolve_geo_model(cfg, geo_uses_description)
+    # Thinking effort for the scorer and geo sub-call (applied only on reasoning models; see
+    # viability._thinking_call_config). Resolved the same way rescore_viability does.
+    effort     = resolve_effort(cfg, "viability")[0]
+    geo_effort = resolve_geo_effort(cfg, geo_uses_description)[0]
     row = db.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
     if not row:
         return False, "job not found"
@@ -2054,9 +2054,10 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
         if fit is None and location_prompt:
             fit, match, _gu = assess_location_fit(
                 client, location_prompt, dict(row), model=geo_model,
-                include_description=geo_uses_description)
+                include_description=geo_uses_description, effort=geo_effort)
             gnote = geo_note(fit, match)
-        rating, reason, _usage = score_job(client, prompt, dict(row), model=model, geo_note=gnote)
+        rating, reason, _usage = score_job(client, prompt, dict(row), model=model,
+                                           geo_note=gnote, effort=effort)
         # A POOR geographic fit is disqualifying — clamp to low (the main scorer discounts it).
         rating, reason = clamp_viability_for_geo(fit, rating, reason, manual=manual_geo_poor)
     except Exception as e:  # network/SDK/config errors — stay fail-soft
@@ -2066,7 +2067,7 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
     db.execute(
         "UPDATE jobs SET viability = ?, viability_reason = ?, "
         "viability_prompt_hash = ?, needs_rescored = 0 WHERE job_id = ?",
-        (rating, reason, prompt_hash(prompt, location_prompt, geo_uses_description), job_id),
+        (rating, reason, scoring_hash_for_config(cfg), job_id),
     )
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     append_history(db, job_id, {"ts": ts, "event": "viability", "rating": rating, "reason": reason})

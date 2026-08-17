@@ -59,12 +59,13 @@ from pathlib import Path
 
 import anthropic
 
-from ai_config import format_token_summary, resolve_ai_settings, resolve_geo_model
+from ai_config import (format_token_summary, resolve_ai_settings, resolve_effort,
+                       resolve_geo_effort, resolve_geo_model, warn_effort_ignored)
 from ingest import append_history
 from runlock import acquire_run_lock
 from viability import (
     _job_locations, _work_arrangement, assess_location_fit,
-    clamp_viability_for_geo, geo_note, manual_geo_verdict, prompt_hash, score_job,
+    clamp_viability_for_geo, geo_note, manual_geo_verdict, score_job, scoring_hash_for_config,
 )
 
 # Numeric ranking of ratings. Used two ways: to compare a score against the auto-skip
@@ -526,6 +527,14 @@ def main() -> None:
             "config.toml, or the ANTHROPIC_API_KEY environment variable."
         )
 
+    # Thinking effort for the scorer and geo sub-call, resolved like the models (applied only on
+    # reasoning models — see viability._thinking_call_config). Warn once if an explicit effort is
+    # being thrown away because the resolved model doesn't support adaptive thinking.
+    effort,     effort_explicit     = resolve_effort(config, "viability")
+    geo_effort, geo_effort_explicit = resolve_geo_effort(config, geo_uses_description)
+    warn_effort_ignored("viability", model, effort, effort_explicit)
+    warn_effort_ignored("location sub-call", geo_model, geo_effort, geo_effort_explicit)
+
     auto_skip          = viability_cfg.get("auto_skip", False)
     auto_skip_conf_raw = viability_cfg.get("auto_skip_confidence", "low").lower().strip()
     if auto_skip_conf_raw not in VIABILITY_RANK:
@@ -536,9 +545,10 @@ def main() -> None:
     auto_skip_threshold = VIABILITY_RANK[auto_skip_conf_raw]
     db_path = config.get("db_path", "jobs.db")
 
-    # Fold location_prompt into the hash too: the geographic verdict the scorer sees depends
-    # on it, so editing geography prefs must mark scores stale even when `prompt` is unchanged.
-    current_hash = prompt_hash(viability_prompt, location_prompt, geo_uses_description)
+    # The current scoring hash — centralized so the batch rescore, the on-demand single-job
+    # rescore, and the web-UI staleness check all derive it identically (location_prompt, the
+    # description toggle, and the effective scorer/geo effort are folded in; the model is not).
+    current_hash = scoring_hash_for_config(config)
     conn = open_db(db_path)
 
     # One-off reconciliation: flip autoskipped jobs whose CURRENT-version score is already above
@@ -664,7 +674,7 @@ def main() -> None:
             else:
                 fit, match, gusage = assess_location_fit(
                     client, location_prompt, job, model=geo_model,
-                    include_description=geo_uses_description)
+                    include_description=geo_uses_description, effort=geo_effort)
                 geo_cache[geo_key] = (fit, match)
                 if gusage is not None:
                     geo_input  += getattr(gusage, "input_tokens",                0) or 0
@@ -673,7 +683,8 @@ def main() -> None:
                     geo_read   += getattr(gusage, "cache_read_input_tokens",     0) or 0
             gnote = geo_note(fit, match)
 
-        rating, reason, usage = score_job(client, viability_prompt, job, model=model, geo_note=gnote)
+        rating, reason, usage = score_job(client, viability_prompt, job, model=model,
+                                          geo_note=gnote, effort=effort)
         # A POOR geographic fit is disqualifying; clamp the (billed) score down to low rather
         # than trust the main model, which discounts the pre-assessed verdict (see the helper).
         rating, reason = clamp_viability_for_geo(fit, rating, reason, manual=manual_geo_poor)

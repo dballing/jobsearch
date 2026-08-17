@@ -11,6 +11,9 @@ uploads_dir = "uploads"
 # [ai]
 # api_key = "sk-ant-xxxxxxxxxxxxxxxxxxxx"   # Anthropic API key (or set ANTHROPIC_API_KEY env var)
 # model   = "claude-haiku-4-5"              # default Anthropic model (default: claude-haiku-4-5)
+# effort  = "medium"                        # default thinking effort (low|medium|high|xhigh|max).
+#                                           # ONLY applies to reasoning models (Claude 4.6+/5) —
+#                                           # thrown away on Haiku/older. Each feature may override.
 
 # Viability scoring — uses the Anthropic API to rate each job high/medium/low.
 # Run `rescore_viability.sh` after ingestion to score new/updated jobs (excludes closed).
@@ -22,6 +25,8 @@ uploads_dir = "uploads"
 # [viability]
 # enabled = true
 # model   = "claude-sonnet-5"               # optional per-feature override of [ai].model for scoring (recommended)
+# effort  = "medium"                        # thinking effort for the scorer (overrides [ai].effort);
+#                                           # applies only on a reasoning model. Changing it re-scores.
 # auto_skip            = false              # auto-set low/medium jobs to 'autoskipped' during rescore
 # auto_skip_confidence = "low"             # threshold: "low" (only low) or "medium" (low + medium)
 # prompt  = """
@@ -60,6 +65,9 @@ uploads_dir = "uploads"
 # city, assume it falls within my target areas (my searches are already geographically
 # pre-filtered to the tiers above) and treat it as at least ACCEPTABLE.
 # """
+# location_effort = "low"                    # optional; thinking effort for the location sub-call
+#   (applies only on a reasoning model). Unset: mirrors location_model's source — the viability
+#   effort when the sub-call reads descriptions, else [ai].effort.
 # location_model = "claude-haiku-4-5"        # optional; overrides the auto-selected sub-call model.
 #   When unset: with location_use_description OFF the sub-call is a cheap location match and uses
 #   [ai].model. With it ON, reading descriptions needs comprehension, so it uses whatever model
@@ -83,6 +91,8 @@ uploads_dir = "uploads"
 # [descriptions]
 # use_ai_on_descriptions = true
 # model = "claude-haiku-4-5"                # optional per-feature override of [ai].model
+# effort = "low"                            # thinking effort if `model` is a reasoning model
+#                                           # (Haiku default is temperature-based and ignores it).
 
 # Global defaults — all can be overridden per task.
 # reset_on_change  = true   # reset skipped jobs to new if description changes (default: true)

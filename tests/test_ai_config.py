@@ -1,7 +1,51 @@
 """Model/key resolution in ai_config — especially resolve_geo_model, which escalates the
 location sub-call to a capable model when it reads job descriptions — plus the pricing table."""
 
-from ai_config import DEFAULT_MODEL, MODEL_PRICING, estimate_cost, resolve_geo_model
+from ai_config import (DEFAULT_EFFORT, DEFAULT_MODEL, MODEL_PRICING, effective_effort,
+                       estimate_cost, is_reasoning_model, resolve_effort, resolve_geo_effort,
+                       resolve_geo_model)
+
+
+# ── effort resolution (parallels the model resolution) ────────────────────────
+def test_is_reasoning_model():
+    for m in ("claude-sonnet-5", "claude-opus-5", "claude-opus-4-6", "claude-fable-5",
+              "claude-sonnet-4-6"):
+        assert is_reasoning_model(m), m
+    for m in ("claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-sonnet-4-5", "", None):
+        assert not is_reasoning_model(m), m
+
+
+def test_resolve_effort_precedence_and_explicit_flag():
+    # section wins over [ai] wins over the built-in default; the bool reports "came from config".
+    assert resolve_effort({"ai": {"effort": "high"}, "viability": {"effort": "max"}},
+                          "viability") == ("max", True)
+    assert resolve_effort({"ai": {"effort": "high"}}, "viability") == ("high", True)
+    assert resolve_effort({}, "viability") == (DEFAULT_EFFORT, False)
+
+
+def test_resolve_geo_effort_mirrors_geo_model():
+    # explicit location_effort always wins
+    cfg = {"viability": {"location_effort": "xhigh", "effort": "high"}, "ai": {"effort": "low"}}
+    assert resolve_geo_effort(cfg, True) == ("xhigh", True)
+    # else inherits the viability effort when the sub-call reads descriptions, else [ai].effort
+    cfg2 = {"viability": {"effort": "high"}, "ai": {"effort": "low"}}
+    assert resolve_geo_effort(cfg2, True) == ("high", True)
+    assert resolve_geo_effort(cfg2, False) == ("low", True)
+    assert resolve_geo_effort({}, True) == (DEFAULT_EFFORT, False)
+
+
+def test_effective_effort_is_none_on_non_reasoning_model():
+    assert effective_effort("claude-sonnet-5", "high") == "high"
+    assert effective_effort("claude-haiku-4-5", "high") is None
+
+
+def test_warn_effort_ignored_only_when_explicit_and_non_reasoning(capsys):
+    from ai_config import warn_effort_ignored
+    warn_effort_ignored("viability", "claude-haiku-4-5", "high", True)   # explicit + non-reasoning
+    assert "ignored" in capsys.readouterr().err
+    warn_effort_ignored("viability", "claude-haiku-4-5", "high", False)  # just the default → silent
+    warn_effort_ignored("viability", "claude-sonnet-5", "high", True)    # applies → silent
+    assert capsys.readouterr().err == ""
 
 
 # ── Pricing table ─────────────────────────────────────────────────────────────
