@@ -49,11 +49,17 @@ _SYSTEM_BOILERPLATE = (
     "contract/staffing/outsourced arrangement ONLY from the Company line's "
     "'(posted via <agent>)' note or from an EXPLICIT statement of contract terms in the "
     "description (e.g. 'contract role', 'W2 contract', 'corp-to-corp', a fixed engagement "
-    "length). Generic listing or marketing boilerplate — references to serving 'clients' or "
-    "'our client', vertical/industry mentions, or templated wording — is common on aggregated "
-    "postings and is NOT by itself evidence of such an arrangement; treat it as neutral. Absent "
-    "a 'posted via' note or explicit contract terms, treat the posting as a direct hire at the "
-    "named employer.\n\n"
+    "length). Everything else is neutral and must NOT lower the rating or become the reason. "
+    "In particular, treat as neutral: generic 'clients'/'our client' references, vertical/"
+    "industry mentions, and templated wording; the recruiter-style framing common to aggregated "
+    "postings ('For our client, we are seeking …', 'Our client is an equal-opportunity employer', "
+    "an unnamed employer described only by industry) — this means the posting was distributed "
+    "through an intermediary, NOT that the role is a contract/staffing engagement; and a Company "
+    "line that is itself a job board or aggregator (e.g. Ladders, LinkedIn, Indeed) with the "
+    "underlying employer unnamed — a distribution artifact, not a hiring structure. In all these "
+    "cases judge the ROLE on its stated scope, seniority, compensation, and industry, exactly as "
+    "you would a direct posting; do not dock it or headline it for how it was distributed or for "
+    "the employer not being named.\n\n"
     "Company-preference note: apply the candidate's company-specific preferences literally and "
     "precisely. A company exclusion lowers a rating ONLY when the posting's EMPLOYER is exactly "
     "that named company. It never applies to a DIFFERENT company for being a competitor, similar "
@@ -114,7 +120,16 @@ _SYSTEM_BOILERPLATE = (
 # reasoning model too (was always thinking-disabled). The *effective* effort (None on a
 # non-reasoning model) is now folded into prompt_hash, so changing it re-scores only when it
 # actually changes behavior; the bump re-runs everything once under the new machinery.
-_SCORING_INPUT_VERSION = "14"
+# 15 = strengthened the employment-relationship note so the "our client"/aggregator signal is
+# fully neutral. v11 dropped the "(posted via <board>)" note and told the model generic "client"
+# body text was neutral, but a job whose *Company line is itself a bare job board* (e.g. Company:
+# Ladders, no real employer named) with a recruiter-style description ("For our client, we are
+# seeking …") still got docked as staffing — the old note's "treat as a direct hire at the named
+# employer" didn't compute when the named employer was a distribution channel. The note now
+# explicitly treats recruiter framing and a bare-job-board employer as distribution artifacts, not
+# a hiring structure, and says to judge the role on its stated merits regardless. Verified live:
+# the Ladders "Product Program Manager" went medium→high with a role-focused reason.
+_SCORING_INPUT_VERSION = "15"
 
 # Cap on locations included in the scoring message — bounds token cost for the rare job
 # posted across dozens of sites, while staying generous enough to almost never truncate

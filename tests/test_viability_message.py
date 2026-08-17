@@ -138,6 +138,16 @@ def test_boilerplate_defers_contract_judgment_to_the_via_note():
     assert "client" in bp and "neutral" in bp    # generic client boilerplate = neutral
 
 
+def test_boilerplate_neutralizes_recruiter_framing_and_bare_job_board_employer():
+    """v15: a bare job-board Company line (Company: Ladders, no real employer named) plus
+    recruiter framing ('For our client, we are seeking …') must be treated as a distribution
+    artifact, not a staffing arrangement — the case that still got docked after v11. Anchors on
+    the stable concepts (job board as distribution, our-client framing) rather than exact wording."""
+    bp = viability._SYSTEM_BOILERPLATE.lower()
+    assert "our client" in bp                     # recruiter framing named explicitly
+    assert "job board" in bp and "distribution" in bp  # bare-board employer = distribution, not staffing
+
+
 def test_boilerplate_demands_a_single_plain_reason():
     """The one-sentence rule that keeps a reasoning model from dumping its scratchpad into
     `reason` must stay in the boilerplate."""
