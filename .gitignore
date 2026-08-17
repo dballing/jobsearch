@@ -13,3 +13,8 @@ __pycache__/
 *.log
 .claude/
 .vscode/
+# Emacs autosave (#file#) and lock (.#file) temp copies — stops an editor scratch copy of
+# the secret-bearing config.toml (API key + profile) from being accidentally staged. (*~
+# backup files are already covered above.)
+\#*#
+.#*
