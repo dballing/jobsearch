@@ -74,6 +74,8 @@ Descriptions arrive from feeds with inconsistent layout (hard wrapping, inline b
 
 The preview panel also provides a **Cover Letter Prompt** button. Clicking it copies a ready-to-paste prompt to your clipboard containing the job title, company, location, salary (if known), and full description. Paste it directly into whatever AI chat session you use to generate cover letters — no manual copy-paste of the job description required. The button briefly flashes "✓ Copied!" to confirm the clipboard write succeeded.
 
+The prompt also embeds **today's date** (read from your browser) with an instruction to date the letter with exactly that date — models have no reliable clock and otherwise routinely hallucinate the date on a generated letter.
+
 ### Company name override
 
 When a job is posted by a third party (e.g. a job board or recruiting firm) rather than the actual employer, the ingested company name may reflect the posting agent rather than the hiring organization. To correct this, open the job preview and enter the real employer name in the **Actual company name** field below the meta bar, then press Save or Enter.

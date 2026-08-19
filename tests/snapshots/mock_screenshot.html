@@ -2684,8 +2684,14 @@ Solid fit; re-score pending.">medium</span>
         const clBtn = document.getElementById('coverLetterBtn');
         clBtn.classList.remove('d-none');
         clBtn.onclick = function() {
+          // Inject the real current date (from the user's browser) and tell the model to use it
+          // verbatim — models routinely hallucinate the letter's date otherwise, having no reliable
+          // clock of their own. Long US format, e.g. "August 18, 2026", to match a letter heading.
+          const today = new Date().toLocaleDateString('en-US',
+            { year: 'numeric', month: 'long', day: 'numeric' });
           const parts = [
-            'Please write a cover letter for the following position using our established template and process.\n',
+            'Please write a cover letter for the following position using our established template and process.',
+            `Today's date is ${today}. Date the letter with exactly this date — do not guess, infer, or use any other date.\n`,
             `**Job Title:** ${job.title_actual || job.title || '(no title)'}`,
             job.company_actual
               ? `**Company:** ${job.company_actual} (advertised by ${job.company})`
