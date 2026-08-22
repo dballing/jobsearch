@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     viability             TEXT,
     viability_reason      TEXT,
     viability_prompt_hash TEXT,
+    viability_factors     TEXT,
     applied_at            TEXT,
     history               TEXT NOT NULL DEFAULT '[]',
     company_actual        TEXT,

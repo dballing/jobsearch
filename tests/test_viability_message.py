@@ -162,6 +162,51 @@ def test_boilerplate_keeps_named_company_exclusions_from_generalizing():
     assert "company-preference note" in bp and "adjacent" in bp
 
 
+def test_boilerplate_demands_the_factor_breakdown():
+    """v16: the scorer must self-report a "factors" breakdown over the fixed dimensions, with the
+    '0 = no effect' rule that makes a merely-mentioned factor distinguishable from a real dock.
+    Anchors on the stable concepts, not exact wording."""
+    bp = viability._SYSTEM_BOILERPLATE.lower()
+    assert '"factors"' in bp
+    for dim in viability.FACTOR_DIMENSIONS:
+        assert dim in bp                       # each fixed dimension is named in the contract
+    assert "0 had no effect" in bp             # the crux: 0 means the factor didn't move the rating
+    assert "-2" in bp and "+2" in bp           # the signed scale is specified
+
+
+def test_boilerplate_forbids_invisible_scoring():
+    """The auditability invariant — the rating must be fully explained by the factors, so a
+    consideration can't leak into the rating without a factor (the KPMG-consulting leak)."""
+    bp = viability._SYSTEM_BOILERPLATE.lower()
+    assert "fully accounted for by the factors" in bp
+    assert "invisibl" in bp                    # 'scored invisibly' / 'affect the rating invisibly'
+
+
+def test_boilerplate_role_interest_covers_farmout_from_described_work():
+    """role_interest_fit must key on the DESCRIBED nature of the work (internal vs farmed-out),
+    not the employer's name — the fix that gives consulting-aversion a home."""
+    bp = viability._SYSTEM_BOILERPLATE.lower()
+    assert "role_interest_fit" in bp
+    assert "farmed out" in bp and "internal" in bp
+
+
+def test_boilerplate_weights_seniority_gently():
+    """seniority_fit carries a deliberate thumb — a small level mismatch is mild, only a large one
+    is strong — so a step back/forward doesn't sink an otherwise-strong role."""
+    bp = viability._SYSTEM_BOILERPLATE.lower()
+    assert "seniority_fit" in bp
+    assert "gently" in bp and "step back" in bp
+
+
+def test_boilerplate_defines_a_veto_rule():
+    """A stated absolute dealbreaker (or inability to do the core job) must veto to 'low' regardless
+    of a positive factor total — but a soft preference must NOT (so vetoes don't over-suppress)."""
+    bp = viability._SYSTEM_BOILERPLATE.lower()
+    assert "veto" in bp and "dealbreaker" in bp
+    assert "holistic judgment, not an average" in bp   # rating isn't a sum of the factors
+    assert "soft preference" in bp                      # the carve-out that prevents over-vetoing
+
+
 # ── _scorer_thinking: adaptive for reasoning models, disabled for Haiku/older ──
 def test_scorer_thinking_adaptive_for_reasoning_models():
     for m in ("claude-sonnet-5", "claude-opus-5", "claude-opus-4-8", "claude-fable-5",
@@ -177,10 +222,11 @@ def test_scorer_thinking_disabled_for_haiku_and_older():
 # ── score_job: wiring (parsed rating/reason + per-model thinking) via the fake client ──
 def test_score_job_uses_adaptive_thinking_and_medium_effort_for_sonnet_5():
     client = _FakeClient('{"rating": "high", "reason": "Strong scope and comp match."}')
-    rating, reason, usage = viability.score_job(
+    rating, reason, factors, usage = viability.score_job(
         client, "candidate prompt", {"title": "Staff PM", "company": "Acme"},
         model="claude-sonnet-5")
     assert (rating, reason) == ("high", "Strong scope and comp match.")
+    assert factors is None  # this reply carried no factors → None (back-compat)
     assert client.last_kwargs["thinking"] == {"type": "adaptive"}
     assert client.last_kwargs["output_config"] == {"effort": "medium"}
     assert client.last_kwargs["max_tokens"] >= 2048     # headroom for the thinking tokens
@@ -189,7 +235,7 @@ def test_score_job_uses_adaptive_thinking_and_medium_effort_for_sonnet_5():
 
 def test_score_job_keeps_thinking_disabled_and_tiny_budget_for_haiku():
     client = _FakeClient('{"rating": "medium", "reason": "Decent but comp is light."}')
-    rating, reason, _ = viability.score_job(
+    rating, reason, _factors, _ = viability.score_job(
         client, "p", {"title": "T", "company": "C"}, model="claude-haiku-4-5")
     assert (rating, reason) == ("medium", "Decent but comp is light.")
     assert client.last_kwargs["thinking"] == {"type": "disabled"}
@@ -268,9 +314,93 @@ def test_score_job_reads_the_text_block_past_a_leading_thinking_block():
             m.content = [think, text]
             m.usage = _FakeUsage()
             return m
-    rating, reason, _ = viability.score_job(
+    rating, reason, _factors, _ = viability.score_job(
         _ThinkThenText(), "p", {"title": "T", "company": "C"}, model="claude-opus-5")
     assert (rating, reason) == ("low", "Poor scope fit.")
+
+
+# ── parse_factors: normalize the self-reported breakdown (pure, no client) ──────
+def test_parse_factors_keeps_wellformed_entries_and_preserves_order_and_extras():
+    value = [
+        {"dimension": "work_fit", "score": 2, "note": "Staff TPM match"},
+        {"dimension": "compensation", "score": 0, "note": "No comp listed"},
+        {"dimension": "on_call", "score": -1, "note": "heavy rotation"},   # extra model-chosen axis
+    ]
+    out = viability.parse_factors(value)
+    assert [f["dimension"] for f in out] == ["work_fit", "compensation", "on_call"]  # order preserved
+    assert out[0] == {"dimension": "work_fit", "score": 2.0, "note": "Staff TPM match"}
+    assert out[1]["score"] == 0.0                                  # a 0 (neutral) is kept, not dropped
+    assert out[2]["dimension"] == "on_call"                        # extra axis surfaced as-is
+
+
+def test_parse_factors_lowercases_dimension_and_defaults_note():
+    out = viability.parse_factors([{"dimension": "  Work_Fit ", "score": 1}])
+    assert out == [{"dimension": "work_fit", "score": 1.0, "note": ""}]
+
+
+def test_parse_factors_coerces_numeric_strings_but_drops_nonnumeric_and_bool():
+    out = viability.parse_factors([
+        {"dimension": "compensation", "score": "+2"},     # numeric string → coerced
+        {"dimension": "location", "score": "n/a"},        # non-numeric → dropped
+        {"dimension": "company", "score": True},          # bool → dropped (not read as 1.0)
+        {"dimension": "work_fit", "score": None},         # None → dropped
+    ])
+    assert out == [{"dimension": "compensation", "score": 2.0, "note": ""}]
+
+
+def test_parse_factors_drops_entries_missing_dimension_or_malformed_items():
+    out = viability.parse_factors([
+        {"score": 2, "note": "no dimension"},   # missing dimension → dropped
+        {"dimension": "", "score": 1},          # blank dimension → dropped
+        "not a dict",                           # non-dict → dropped
+        {"dimension": "work_fit", "score": 1},
+    ])
+    assert out == [{"dimension": "work_fit", "score": 1.0, "note": ""}]
+
+
+def test_parse_factors_does_not_clamp_offscale_values():
+    # An off-scale score is exactly the disobedience this feature exists to surface — keep it verbatim.
+    out = viability.parse_factors([{"dimension": "work_fit", "score": 5}])
+    assert out[0]["score"] == 5.0
+
+
+def test_parse_factors_returns_none_for_nonlist_or_empty_or_all_invalid():
+    assert viability.parse_factors(None) is None
+    assert viability.parse_factors("factors") is None
+    assert viability.parse_factors({"dimension": "work_fit"}) is None   # a dict, not a list
+    assert viability.parse_factors([]) is None
+    assert viability.parse_factors([{"score": 1}, "junk"]) is None      # nothing valid survives
+
+
+# ── score_job returns the parsed factors as its 3rd element ─────────────────────
+def test_score_job_returns_parsed_factors_when_present():
+    reply = ('{"rating": "high", "reason": "Strong fit.", "factors": ['
+             '{"dimension": "work_fit", "score": 2, "note": "great scope"},'
+             '{"dimension": "compensation", "score": 0, "note": "no comp listed"}]}')
+    client = _FakeClient(reply)
+    rating, reason, factors, usage = viability.score_job(
+        client, "p", {"title": "T", "company": "C"}, model="claude-haiku-4-5")
+    assert (rating, reason) == ("high", "Strong fit.")
+    assert factors == [
+        {"dimension": "work_fit", "score": 2.0, "note": "great scope"},
+        {"dimension": "compensation", "score": 0.0, "note": "no comp listed"},
+    ]
+    assert usage is not None
+
+
+def test_score_job_survives_a_malformed_factors_block():
+    # A bad breakdown must NOT sink an otherwise-valid rating — factors just come back None.
+    client = _FakeClient('{"rating": "medium", "reason": "OK.", "factors": "oops not a list"}')
+    rating, reason, factors, _ = viability.score_job(
+        client, "p", {"title": "T", "company": "C"}, model="claude-haiku-4-5")
+    assert (rating, reason, factors) == ("medium", "OK.", None)
+
+
+def test_score_job_failure_is_a_four_tuple():
+    # An unparseable reply returns the 4-tuple of Nones the callers unpack.
+    client = _FakeClient("I cannot produce JSON.")
+    assert viability.score_job(client, "p", {"title": "T", "company": "C"},
+                               model="claude-haiku-4-5") == (None, None, None, None)
 
 
 def test_title_override_wins_in_score_message():

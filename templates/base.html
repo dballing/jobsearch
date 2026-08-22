@@ -450,6 +450,21 @@
             metaHtml += ` <span class="fst-italic">${escHtml(job.viability_reason)}</span>`;
           }
           metaHtml += '</div>';
+          // Self-reported factor breakdown: how much each dimension actually moved the rating.
+          // A score of 0 means "considered but no effect" — the whole point is to disambiguate a
+          // factor merely mentioned in the reason from one that was silently held against the job.
+          if (Array.isArray(job.viability_factors) && job.viability_factors.length) {
+            const fmtScore  = s => (s > 0 ? '+' : '') + (Number.isInteger(s) ? s : s.toFixed(1));
+            const scoreCls  = s => s > 0 ? 'text-success' : (s < 0 ? 'text-danger' : 'text-muted');
+            const humanize  = d => d.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            const factorRows = job.viability_factors.map(f => {
+              const note = f.note ? ` <span class="text-muted">${escHtml(f.note)}</span>` : '';
+              return `<div class="d-flex gap-2 small">`
+                   + `<span class="${scoreCls(f.score)} fw-semibold text-end" style="min-width:2.4em">${escHtml(fmtScore(f.score))}</span>`
+                   + `<span><strong>${escHtml(humanize(f.dimension))}</strong>${note}</span></div>`;
+            }).join('');
+            metaHtml += `<div class="mt-1"><div class="text-muted small fst-italic">How the model weighed it (−2…+2; 0 = no effect):</div>${factorRows}</div>`;
+          }
         }
         if (job.applied_at) {
           metaHtml += `<div class="mt-1 text-muted small">Applied: ${escHtml(job.applied_at)}</div>`;

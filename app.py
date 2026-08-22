@@ -24,8 +24,8 @@ from flask import Flask, abort, g, render_template, request, send_file, url_for
 from werkzeug.utils import secure_filename
 from ingest import append_history, bootstrap_history
 from viability import (
-    _work_arrangement, GEO_UNSUPPORTED_ARRANGEMENT, MANUAL_GEO_FIT_CHOICES,
-    assess_location_fit, clamp_viability_for_geo, geo_note, manual_geo_verdict,
+    _work_arrangement, FACTOR_DIMENSIONS, GEO_UNSUPPORTED_ARRANGEMENT, MANUAL_GEO_FIT_CHOICES,
+    assess_location_fit, clamp_viability_for_geo, geo_note, manual_geo_verdict, parse_factors,
     score_job, scoring_hash_for_config,
 )
 
@@ -373,6 +373,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE jobs ADD COLUMN viability_reason TEXT")
     if "viability_prompt_hash" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN viability_prompt_hash TEXT")
+    # The scorer's self-reported factor breakdown (JSON array of {dimension, score, note}); NULL
+    # for unscored jobs, older scores, and reject-list denials (no AI call). See viability.parse_factors.
+    if "viability_factors" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN viability_factors TEXT")
     cols = [row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()]
     if "applied_at" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN applied_at TEXT")
@@ -639,6 +643,29 @@ def _company_key(company_actual: object, company: object) -> str:
 def get_hotlist(db: sqlite3.Connection) -> set[str]:
     """Set of hotlisted company keys (lower-cased effective names)."""
     return {r["name_key"] for r in db.execute("SELECT name_key FROM company_hotlist")}
+
+
+def _viability_factors(raw: object) -> "list[dict] | None":
+    """Parse a stored ``viability_factors`` JSON string into an ordered list for the preview panel.
+
+    Reuses viability.parse_factors for defensive normalization, then orders the four fixed
+    FACTOR_DIMENSIONS first (in their canonical order) followed by any extra model-surfaced axes in
+    the order the model reported them — so the panel always shows the comparable dimensions first.
+    Returns None when there's nothing to show (unscored, reject-listed, an older score, or malformed
+    JSON) so the panel simply omits the breakdown section."""
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    factors = parse_factors(data)
+    if not factors:
+        return None
+    order = {dim: i for i, dim in enumerate(FACTOR_DIMENSIONS)}
+    # sorted() is stable: fixed dims sort into canonical order by their index; every extra maps to
+    # the same trailing key, so extras keep the model's reported order, placed after the fixed set.
+    return sorted(factors, key=lambda f: order.get(f["dimension"], len(order)))
 
 
 def process_job_row(row: sqlite3.Row | dict, hotlist: "set[str] | frozenset" = frozenset()) -> dict:
@@ -1661,6 +1688,9 @@ def get_job(job_id: str):
         "job_description_html": format_description_html(job.get("job_description_formatted")),
         "viability":        job.get("viability"),
         "viability_reason": job.get("viability_reason"),
+        # The scorer's self-reported factor breakdown, parsed to a list for the preview panel to
+        # render under the reason. None (no breakdown / unscored / reject-listed) → the panel omits it.
+        "viability_factors": _viability_factors(job.get("viability_factors")),
         "viability_stale":  process_job_row(job).get("viability_stale", False),
         "applied_at":       (job.get("applied_at") or "")[:10] or None,
         "notes":            job.get("notes"),
@@ -2055,8 +2085,10 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
         rating = "low"
         reason = reject_reason(row["company"])
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # No AI call on the reject path → no factor breakdown; NULL it so a job newly caught by the
+        # reject-list doesn't keep a stale breakdown from an earlier real score (mirrors rescore).
         db.execute(
-            "UPDATE jobs SET viability = ?, viability_reason = ?, "
+            "UPDATE jobs SET viability = ?, viability_reason = ?, viability_factors = NULL, "
             "viability_prompt_hash = ?, needs_rescored = 0 WHERE job_id = ?",
             (rating, reason, scoring_hash_for_config(cfg), job_id),
         )
@@ -2083,18 +2115,20 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
                 client, location_prompt, dict(row), model=geo_model,
                 include_description=geo_uses_description, effort=geo_effort)
             gnote = geo_note(fit, match)
-        rating, reason, _usage = score_job(client, prompt, dict(row), model=model,
-                                           geo_note=gnote, effort=effort)
+        rating, reason, factors, _usage = score_job(client, prompt, dict(row), model=model,
+                                                     geo_note=gnote, effort=effort)
         # A POOR geographic fit is disqualifying — clamp to low (the main scorer discounts it).
+        # The clamp rewrites only rating/reason; factors stay as the model reported them.
         rating, reason = clamp_viability_for_geo(fit, rating, reason, manual=manual_geo_poor)
     except Exception as e:  # network/SDK/config errors — stay fail-soft
         return False, f"scoring call failed: {e}"
     if rating is None:
         return False, "model returned no valid rating"
     db.execute(
-        "UPDATE jobs SET viability = ?, viability_reason = ?, "
+        "UPDATE jobs SET viability = ?, viability_reason = ?, viability_factors = ?, "
         "viability_prompt_hash = ?, needs_rescored = 0 WHERE job_id = ?",
-        (rating, reason, scoring_hash_for_config(cfg), job_id),
+        (rating, reason, json.dumps(factors) if factors else None,
+         scoring_hash_for_config(cfg), job_id),
     )
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     append_history(db, job_id, {"ts": ts, "event": "viability", "rating": rating, "reason": reason})

@@ -35,6 +35,7 @@ All `.sh` wrappers activate `.venv` and `cd` into the repo first, so they work f
 ./ingest.sh                  # fetch new Apify run results into jobs.db
 ./ingest.sh --dry-run        # show pending run counts without fetching or writing
 ./rescore_viability.sh       # AI-score jobs needing it (--dry-run, --force, --all, --early-stage, --autoskipped, --status, --current-viability, --since, --previous-days)
+./compare_scoring.sh         # read-only before/after check: score a recent sample with the HEAD prompt vs the working-tree prompt (--n, --previous-days, --since). Run before committing a prompt edit.
 ./import_linkedin.sh --status applied <url-or-id>...   # bulk-import known applications
 ./run_tests.sh               # pytest suite (hermetic except one cached live-pricing check; run before committing). Passes args through, e.g. -k config
 UPDATE_SNAPSHOTS=1 ./run_tests.sh  # regenerate HTML goldens incl. tests/snapshots/mock_screenshot.html
@@ -56,6 +57,7 @@ Typical cron line chains ingest then rescore:
 | `ingest.py` | Apify ingestion: fetch runs, extract fields (linkedin + careersite extractors), fuzzy dedup, company-alias normalization, auto-ghost/close/reset, run summary. `DescriptionFormatter` wraps AI reformatting. |
 | `viability.py` | Shared scoring helpers: `prompt_hash`, `score_job`. |
 | `rescore_viability.py` | Batch AI viability scoring driver (selection logic, auto-skip, progress output). |
+| `compare_scoring.py` | Read-only validation harness: scores a recent sample with the committed (`git HEAD`) prompt vs the working-tree prompt and reports rating drift (confusion matrix + nondeterminism baseline). Writes nothing. |
 | `reformat.py` | AI description→Markdown reformatting + `content_preserved` integrity check. |
 | `ai_config.py` | Shared `[ai]`/per-feature settings resolution + token-cost accounting (`MODEL_PRICING`). |
 | `pricing_check.py` | Fetches Anthropic's public pricing page (24h disk cache) and diffs it against `MODEL_PRICING`; drives the network-tolerant drift test. |

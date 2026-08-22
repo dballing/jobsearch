@@ -51,6 +51,7 @@ Flags:
 """
 
 import argparse
+import json
 import sqlite3
 import sys
 import tomllib
@@ -172,6 +173,9 @@ def open_db(path: str) -> sqlite3.Connection:
         conn.commit()
     if "viability_prompt_hash" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN viability_prompt_hash TEXT")
+        conn.commit()
+    if "viability_factors" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN viability_factors TEXT")
         conn.commit()
     if "salary_min_actual" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN salary_min_actual INTEGER")
@@ -695,8 +699,10 @@ def main() -> None:
             reason = reject_reason(company)
             old_rating = row["viability"]
             ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            # No AI call here, so there's no factor breakdown — NULL it so a job newly caught by
+            # the reject-list doesn't keep a stale breakdown from an earlier real score.
             conn.execute(
-                "UPDATE jobs SET viability = ?, viability_reason = ?, "
+                "UPDATE jobs SET viability = ?, viability_reason = ?, viability_factors = NULL, "
                 "viability_prompt_hash = ?, needs_rescored = 0 WHERE job_id = ?",
                 (rating, reason, current_hash, row["job_id"]),
             )
@@ -758,10 +764,12 @@ def main() -> None:
                     geo_read   += getattr(gusage, "cache_read_input_tokens",     0) or 0
             gnote = geo_note(fit, match)
 
-        rating, reason, usage = score_job(client, viability_prompt, job, model=model,
-                                          geo_note=gnote, effort=effort)
+        rating, reason, factors, usage = score_job(client, viability_prompt, job, model=model,
+                                                    geo_note=gnote, effort=effort)
         # A POOR geographic fit is disqualifying; clamp the (billed) score down to low rather
         # than trust the main model, which discounts the pre-assessed verdict (see the helper).
+        # The clamp only rewrites rating/reason; the self-reported factors are left as the model
+        # returned them (its location factor already reflects the POOR verdict it was handed).
         rating, reason = clamp_viability_for_geo(fit, rating, reason, manual=manual_geo_poor)
 
         if rating is None:
@@ -778,9 +786,10 @@ def main() -> None:
                 tok_write  += getattr(usage, "cache_creation_input_tokens", 0) or 0
                 tok_read   += getattr(usage, "cache_read_input_tokens",     0) or 0
             conn.execute(
-                "UPDATE jobs SET viability = ?, viability_reason = ?, "
+                "UPDATE jobs SET viability = ?, viability_reason = ?, viability_factors = ?, "
                 "viability_prompt_hash = ?, needs_rescored = 0 WHERE job_id = ?",
-                (rating, reason, current_hash, row["job_id"]),
+                (rating, reason, json.dumps(factors) if factors else None,
+                 current_hash, row["job_id"]),
             )
             old_rating   = row["viability"]
             current_status = row["status"]

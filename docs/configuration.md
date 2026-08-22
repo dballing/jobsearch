@@ -123,6 +123,8 @@ scoring, and is a no-op on a Haiku config.
 
 ## Viability scoring (`[viability]`)
 
+Each score is a `high`/`medium`/`low` rating plus a one-sentence reason and a self-reported **factor breakdown** (a signed −2…+2 contribution, where 0 = no effect, for six fixed dimensions — *role requirements fit*, *role interest fit*, *seniority fit*, *company fit*, *compensation*, *location* — plus any extra axes the model surfaces). The breakdown is always produced when scoring runs — there's no config key for it — and is shown in the job preview panel. Note that *role interest fit* and *seniority fit* read your candidate `prompt` for intangibles (e.g. "I don't want to be farmed out as a consultant") and level tolerance ("open to a small step down"), so state those preferences there. Wording matters: an **absolute** dealbreaker ("won't", "not interested in", "refuse") acts as a **veto** that forces the rating to `low` regardless of other factors, whereas a soft preference ("prefer to avoid", "ideally") is weighted as a strong negative but won't by itself disqualify. See [Features → Viability scoring](features.md#viability-scoring) and, before adopting a prompt edit, the `compare_scoring.sh` stability check described there.
+
 ```toml
 [viability]
 enabled = true

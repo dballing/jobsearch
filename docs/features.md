@@ -299,6 +299,7 @@ Or chain after ingestion in cron:
 ### How it works
 
 - Each job is scored in one Anthropic API call. Your candidate `prompt` is sent as a cached system prompt, so repeated calls within a session only pay full token cost on the first.
+- Alongside the rating and one-sentence reason, the scorer self-reports a **factor breakdown**: for six fixed dimensions — *role requirements fit* (can I do it?), *role interest fit* (do I want it? — captures intangibles like consulting/farm-out or industry aversion), *seniority fit* (is the level right? — weighted gently, since a small step up/down is normal), *company fit* (size, stage, viability, exclusions), *compensation*, and *location* — plus any extra axes it finds relevant, it gives a signed contribution from **−2 to +2** (where **0 = no effect on the rating**) and a terse note. This makes the verdict auditable: a factor merely *mentioned* in the reason (score 0) is now distinguishable from one that actually **lowered** the rating (a negative score) — e.g. a job with no listed salary should show `compensation: 0`, not a silent dock. The scorer is required to explain the rating *entirely* through the factors, so nothing is scored invisibly. It's a model self-report of *how it weighed each factor*, not internal arithmetic — the rating itself is a single holistic judgment, with no numeric formula under the hood (the rating is deliberately **not** a threshold on the sum of the factor scores: some negatives are near-vetoes a sum can't model). In particular, an **absolute dealbreaker** stated in your profile (e.g. "won't", "not interested in") or an inability to do the core job acts as a **veto** — it forces the rating to `low` regardless of how positive everything else is; a softer preference ("prefer to avoid") is weighted as a strong negative but won't by itself disqualify. The breakdown shows in the job **preview panel** under the reason.
 - A SHA-256 hash of the prompt is stored with each score. On subsequent runs, only jobs with a missing or stale hash are re-scored.
 - Jobs with `NULL` viability are always scored regardless of status (they may have inherited a status from a canonical without ever being evaluated).
 - Jobs are also flagged for re-scoring when a viability-relevant field changes independently of the prompt — a manual [salary override](#salary-override), [company override](#company-name-override), [job title override](#job-title-override), [work arrangement override](#work-arrangement-override), or [location viability override](#location-viability-override). Such a flagged job is re-scored on the next run even if its prompt hash is current and even if it is `skipped`/`closed` (so a correction that improves it can resurface it). The flag clears once the job is successfully re-scored.
@@ -316,11 +317,27 @@ auto_skip_confidence = "low"   # "low" or "medium"
 
 Any `new` or `reviewing` job that scores at or below the threshold is automatically set to `autoskipped` after rescoring. The `autoskipped` status is functionally identical to `skipped` but is historically distinguishable from a manually-set skip. The rescore summary line reports how many were auto-skipped.
 
+### Validating a prompt change
+
+The scoring prompt is tuned over time, and the premise is that the *current* prompt is scoring correctly — so `compare_scoring.sh` checks that a prompt edit doesn't unintentionally shift ratings before you adopt it. It samples recent jobs (10 per stored tier by default) and scores each one **twice** on identical inputs — once with the committed (`git HEAD`) prompt and once with your working-tree prompt — then reports how often the two agree, a confusion matrix, and (as a model-nondeterminism baseline) how often re-scoring with the *same* prompt disagrees with the stored score. It writes nothing to the database.
+
+```bash
+./compare_scoring.sh --previous-days 30       # 10 jobs per tier from the last 30 days
+./compare_scoring.sh --n 15 --since 2026-07-01
+./compare_scoring.sh --tier medium --n 25     # focus on one band (where churn usually is)
+./compare_scoring.sh --reasons                # also print reasons/factors for unchanged jobs
+```
+
+Because the harness writes nothing, the reasons and factor breakdowns it computes never reach the database — so it prints the old/new reason and the **new factor breakdown** inline for every job whose rating *changed* (add `--reasons` to see them for all jobs). That's where you judge whether a move is an *improvement*: the harness only measures drift, not correctness.
+
+Run it **while HEAD still holds the old prompt** — i.e. before committing the change. If new-vs-old drift is materially larger than the nondeterminism baseline (or skews consistently up/down), revisit the prompt before committing.
+
 ### UI
 
 Once any jobs are scored:
 
 - A **Viability** column shows color-coded badges (green/yellow/red). Hover for the one-sentence reason.
+- The **preview panel** shows the full factor breakdown under the reason — each dimension's signed contribution (−2…+2; 0 = no effect) and note.
 - A **Viability** filter appears in the filter bar.
 - Stale scores (prompt changed since last score) are shown at 50% opacity with a tooltip.
 

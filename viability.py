@@ -4,7 +4,8 @@
 Rates a job posting 'low'/'medium'/'high' for one specific candidate by asking
 Anthropic to compare the posting against a candidate-profile prompt. A fixed
 boilerplate plus the candidate profile form the (cached) system prompt; each job is
-a single user message. ``score_job()`` returns (rating, reason, usage);
+a single user message. ``score_job()`` returns (rating, reason, factors, usage) — where
+``factors`` is the model's self-reported per-dimension breakdown (see parse_factors);
 ``prompt_hash()`` lets the caller detect when a stored score predates the current
 prompt and therefore needs re-running.
 """
@@ -18,6 +19,21 @@ from ai_config import (DEFAULT_EFFORT, effective_effort, is_reasoning_model,
 
 # The valid rating values; anything else from the model is treated as a failure.
 VIABILITY_RATINGS = {"low", "medium", "high"}
+
+# The fixed factor-breakdown dimensions the scorer must always self-report (see
+# _SYSTEM_BOILERPLATE and parse_factors). Kept as a constant — not inlined — so the prompt text,
+# the UI render order, and the tests all agree on the canonical set and its order. The model may
+# append extra model-chosen axes beyond these; those are surfaced as-is so we can normalize and
+# enumerate them later as patterns emerge.
+#
+# These six deliberately split what a single "work_fit" axis used to conflate — CAN I do it
+# (role_requirements_fit), do I WANT it (role_interest_fit), and is the LEVEL right (seniority_fit)
+# — which were three independent judgments hidden in one number, so a consideration like
+# "farmed-out consulting" had no clean home and leaked into the rating invisibly.
+FACTOR_DIMENSIONS = (
+    "role_requirements_fit", "role_interest_fit", "seniority_fit",
+    "company_fit", "compensation", "location",
+)
 
 # Boilerplate prepended to every system prompt before the candidate description.
 # The single-line-JSON instruction keeps the reply tiny and trivially parseable; the
@@ -37,10 +53,80 @@ VIABILITY_RATINGS = {"low", "medium", "high"}
 _SYSTEM_BOILERPLATE = (
     "You evaluate job postings for a specific candidate. "
     "Respond ONLY with a JSON object on a single line — no markdown, no explanation:\n"
-    '{"rating": "low|medium|high", "reason": "one sentence"}\n'
+    '{"rating": "low|medium|high", "reason": "one sentence", '
+    '"factors": [{"dimension": "work_fit", "score": 0, "note": "short phrase"}]}\n'
     'The "reason" is a single plain sentence a person can read at a glance — the one biggest '
     "factor behind the rating. State the conclusion, not your reasoning process: no step-by-step "
     "analysis, no self-questions, no parenthetical asides, no scratchpad.\n\n"
+    # The factors array is a self-report that makes the rating auditable: for each consideration it
+    # states how much it ACTUALLY moved this rating, so a reader can tell a factor merely mentioned
+    # (score 0) from one silently held against the job (negative). The six fixed dimensions split
+    # what a single "work_fit" used to conflate — capability, desire, and level — so a consideration
+    # like "farmed-out consulting" has an explicit home (role_interest_fit) instead of leaking into
+    # the rating with no factor. The "rating must be fully accounted for by the factors" rule is the
+    # crux: it forbids invisible up/down-scoring, which is the entire point of the breakdown.
+    'The "factors" array reports how much each consideration ACTUALLY moved THIS rating, so the '
+    "verdict is auditable and nothing is scored invisibly. ALWAYS include all six of the following "
+    "dimensions, by these exact names — they are the required MINIMUM, never a maximum; add extra "
+    "axes on top of them whenever a real consideration doesn't fit one of the six (see the rule "
+    "below the list):\n"
+    "- role_requirements_fit: CAN the candidate do this job as described? Skills, experience, "
+    "technical scope, required domain expertise, judged against the candidate profile. Capability "
+    "only — not whether they'd want it, not whether the level is right.\n"
+    "- role_interest_fit: does the candidate WANT this kind of role? Judge from the DESCRIBED "
+    "NATURE of the work, not the employer's name. A role at a consulting/professional-services firm "
+    "that is INTERNAL (running the firm's own projects) is neutral; one where the candidate would "
+    "be FARMED OUT to client engagements (staff-augmentation / client-delivery) is negative when "
+    "they've said they avoid that. Likewise industry/domain/values distaste (e.g. defense "
+    "contractors), heavy customer-facing work, or a mission mismatch. Judge farm-out from the "
+    "role's genuine described scope, NOT from generic recruiter/aggregator 'our client' boilerplate "
+    "(see the employment-relationship note). Desire, not capability.\n"
+    "- seniority_fit: is the role's LEVEL (title/scope seniority) right for how the candidate "
+    "describes themselves? Weight this GENTLY: a role about one level below or above target is a "
+    "MILD signal at most (-1 to +1) — candidates often take a small step back to re-enter or a "
+    "small step forward to grow, so a minor level mismatch must NOT sink an otherwise-strong role. "
+    "Reserve -2/+2 for a LARGE mismatch (far junior or far senior). Defer to any explicit seniority "
+    "tolerance stated in the candidate profile.\n"
+    "- company_fit: is the EMPLOYER itself a good match/bet? Size, stage, financial viability, "
+    "reputation, growth — plus the candidate's hard company preferences: a named-company exclusion "
+    "matching THIS employer is strongly negative (apply it precisely — see the company-preference "
+    "note).\n"
+    "- compensation: pay versus the candidate's stated target (apply the compensation note above "
+    "to normalize hourly/annual first).\n"
+    "- location: geographic and work-arrangement fit — reflect the pre-assessed 'Geographic fit' "
+    "verdict when one is provided above.\n"
+    "Each entry's \"score\" is a signed number from -2 to +2 for that dimension's effect ON THE "
+    "RATING: +2 strongly raised it, +1 mildly raised it, 0 had NO effect, -1 mildly lowered it, "
+    "-2 strongly lowered it. A score of 0 is required and correct whenever a dimension is neutral "
+    "or simply absent — e.g. when no compensation is listed and that neither helps nor hurts, "
+    "compensation MUST be 0, never negative; likewise never lower a score for anything the notes "
+    "above tell you to treat as neutral. The \"note\" is a terse phrase of a few words, not a "
+    "sentence and not a scratchpad.\n"
+    "The rating MUST be fully accounted for by the factors: every consideration that raised or "
+    "lowered it has to appear as a factor. If something moved the rating that none of the six "
+    "dimensions genuinely captures, you MUST add an extra entry for it — coining a short, "
+    "descriptive snake_case name for that specific consideration — rather than stretch a fixed "
+    "dimension to cover it or let it affect the rating invisibly. These extra axes are OPEN-ENDED: "
+    "name whatever the posting actually raises and do NOT restrict yourself to a fixed menu "
+    "(things like travel_burden or security_clearance are only illustrations of the KIND of factor "
+    "— invent whatever fits, e.g. relocation_required, visa_sponsorship, on_call, night_shift), "
+    "adding one only when it genuinely applies and moved the rating. Never return a rating the "
+    "scores don't explain (e.g. an overall 'low' whose factors are all 0 or positive). The "
+    "factors, the reason, and the rating must all agree.\n"
+    # Veto rule: the rating is a holistic judgment, NOT a sum of the factors. Some negatives are
+    # disqualifying — a stated absolute dealbreaker, or an inability to do the core job — and must
+    # sink the job to 'low' no matter how strong everything else is. Without this the model dilutes
+    # a dealbreaker into the average and returns 'medium' (observed: a term-limited role the
+    # candidate rejects, and the inconsistency where "can't do the job" vetoed but "won't take it"
+    # did not). Soft preferences are deliberately NOT vetoes, so this doesn't over-suppress.
+    "The rating is a holistic judgment, not an average of the scores. Some factors are VETOES: when "
+    "the candidate's profile states an ABSOLUTE dealbreaker (wording like 'won't', 'will not', "
+    "'not interested in', 'refuse', 'avoid entirely') and this posting has that trait, OR the "
+    "candidate cannot do the core job as described, that factor is disqualifying — rate the job "
+    "'low' regardless of how positive everything else is (a strongly positive factor total does "
+    "NOT rescue a vetoed job), and name the veto in the reason. Distinguish a veto from a mere soft "
+    "preference ('prefer to avoid', 'ideally', 'less interested in'): a soft preference is a strong "
+    "negative (down to -2) but NOT an automatic veto.\n\n"
     "Compensation note: dollar amounts with cents (e.g. $51.45, $62.99) are hourly "
     "wages, not annual salaries. Convert hourly rates to annual (multiply by ~2,080) "
     "before comparing against the candidate's expectations. Round numbers "
@@ -129,7 +215,20 @@ _SYSTEM_BOILERPLATE = (
 # explicitly treats recruiter framing and a bare-job-board employer as distribution artifacts, not
 # a hiring structure, and says to judge the role on its stated merits regardless. Verified live:
 # the Ladders "Product Program Manager" went medium→high with a role-focused reason.
-_SCORING_INPUT_VERSION = "15"
+# 16 = the scorer now also self-reports a factor breakdown: alongside rating+reason it returns a
+# "factors" array giving each fixed dimension a signed -2..+2 contribution + terse note, where 0
+# means "no effect on the rating", plus any extra model-chosen axes. This makes the verdict
+# auditable — a factor merely mentioned (0) is now distinguishable from one silently held against
+# the job (negative), the exact ambiguity the old one-sentence reason couldn't resolve. The six
+# fixed dimensions (role_requirements_fit / role_interest_fit / seniority_fit / company_fit /
+# compensation / location) deliberately split what a single "work_fit" conflated — CAN I do it /
+# do I WANT it / is the LEVEL right — after an early four-axis version (work_fit/compensation/
+# location/company) let a real consideration (farmed-out consulting at KPMG) leak into the rating
+# with no factor; the paired invariant "the rating must be fully accounted for by the factors"
+# forbids such invisible scoring. It's a boilerplate change (already hashed), but the version bump
+# follows the discipline and re-runs every score once under the new contract. Rating stability vs.
+# the prior prompt was validated with compare_scoring.py before this bump.
+_SCORING_INPUT_VERSION = "16"
 
 # Cap on locations included in the scoring message — bounds token cost for the rare job
 # posted across dozens of sites, while staying generous enough to almost never truncate
@@ -675,6 +774,41 @@ def _thinking_call_config(model: str, effort: str, *, disabled_max_tokens: int,
     return {"max_tokens": disabled_max_tokens, "thinking": thinking}
 
 
+def parse_factors(value: object) -> "list[dict] | None":
+    """Normalize the model's self-reported factor breakdown into a clean list, or None.
+
+    The breakdown is supplementary transparency (see _SYSTEM_BOILERPLATE): each entry states how
+    much one dimension moved the rating, so a reader can tell a factor merely mentioned (score 0)
+    from one silently held against the job (negative). We accept it defensively — a malformed
+    breakdown must never sink an otherwise-valid rating — keeping only well-formed entries:
+    a non-empty ``dimension`` and a numeric ``score`` (bool rejected — Python's bool-is-int would
+    otherwise turn true into 1.0; numeric strings like "+2" are coerced); ``note`` is optional and
+    defaults to "". Order (and any extra model-chosen dimensions beyond FACTOR_DIMENSIONS) is
+    preserved so we can surface and later enumerate them. Scores are stored VERBATIM, never clamped
+    to [-2, 2] — an off-scale value is exactly the kind of prompt disobedience this feature exists
+    to make visible. Returns None for a non-list, or when nothing valid survives, so the caller
+    stores SQL NULL rather than an empty array. Pure, so it's unit-testable without an API call."""
+    if not isinstance(value, list):
+        return None
+    out: list[dict] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        dimension = str(item.get("dimension", "")).strip().lower()
+        if not dimension:
+            continue
+        raw_score = item.get("score")
+        if isinstance(raw_score, bool):
+            continue  # bool is an int subclass in Python — don't read True/False as 1.0/0.0
+        try:
+            score = float(raw_score)
+        except (TypeError, ValueError):
+            continue  # None, non-numeric string, etc. — drop this entry
+        note = str(item.get("note", "")).strip()
+        out.append({"dimension": dimension, "score": score, "note": note})
+    return out or None
+
+
 def score_job(
     client,
     viability_prompt: str,
@@ -682,13 +816,16 @@ def score_job(
     model: str = "claude-haiku-4-5",
     geo_note: str | None = None,
     effort: str = DEFAULT_EFFORT,
-) -> tuple[str, str, object] | tuple[None, None, None]:
+) -> "tuple[str, str, list[dict] | None, object] | tuple[None, None, None, None]":
     """Score a job posting for viability against the candidate description.
 
-    Returns (rating, reason, usage): rating is 'low'/'medium'/'high', reason is a
-    one-sentence justification, and usage is the Anthropic token-usage object (for
-    cost tallying). Returns (None, None, None) on any failure — unparseable response,
-    invalid rating, or API error — so the caller can skip the job and move on.
+    Returns (rating, reason, factors, usage): rating is 'low'/'medium'/'high', reason is a
+    one-sentence justification, factors is the parsed self-reported factor breakdown (a list of
+    {dimension, score, note} dicts, or None when the model omitted/mangled it), and usage is the
+    Anthropic token-usage object (for cost tallying). Returns (None, None, None, None) on any
+    failure — unparseable response, invalid rating, or API error — so the caller can skip the job
+    and move on. Note that factors are supplementary: a valid rating+reason with a missing/bad
+    breakdown still succeeds (factors=None), since the breakdown must never sink the core score.
 
     geo_note, when provided (from geo_note(*assess_location_fit(...))), is a pre-assessed
     geographic-fit verdict that replaces the raw location list in the message so the model
@@ -724,14 +861,17 @@ def score_job(
         # backticks or stray prose — grab the first {...} block.
         m = re.search(r'\{.*\}', raw, re.DOTALL)
         if not m:
-            return None, None, None  # must be a 3-tuple: caller unpacks (rating, reason, usage)
+            return None, None, None, None  # 4-tuple: caller unpacks (rating, reason, factors, usage)
         data = json.loads(m.group())
         rating = str(data.get("rating", "")).lower().strip()
         reason = str(data.get("reason", "")).strip()
         # Reject anything that isn't a recognized rating with a non-empty reason.
         if rating not in VIABILITY_RATINGS or not reason:
-            return None, None, None
-        return rating, reason, message.usage
+            return None, None, None, None
+        # Factors are supplementary transparency — a bad/absent breakdown yields None but never
+        # invalidates an otherwise-good rating (see parse_factors).
+        factors = parse_factors(data.get("factors"))
+        return rating, reason, factors, message.usage
     except Exception:
         # Any failure (API error, malformed JSON, missing content) → skip this job.
-        return None, None, None
+        return None, None, None, None
