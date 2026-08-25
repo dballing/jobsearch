@@ -22,7 +22,7 @@ from pathlib import Path
 
 from flask import Flask, abort, g, render_template, request, send_file, url_for
 from werkzeug.utils import secure_filename
-from ingest import append_history, bootstrap_history
+from ingest import append_history, backfill_description_truncated, bootstrap_history
 from viability import (
     _work_arrangement, FACTOR_DIMENSIONS, GEO_UNSUPPORTED_ARRANGEMENT, MANUAL_GEO_FIT_CHOICES,
     assess_location_fit, clamp_viability_for_geo, geo_note, manual_geo_verdict, parse_factors,
@@ -417,6 +417,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # asserts the location is workable (ACCEPTABLE), skipping the billed location
         # sub-call and sparing the job the POOR→low clamp.
         conn.execute("ALTER TABLE jobs ADD COLUMN geo_fit_actual TEXT")
+    if "description_truncated" not in cols:
+        # Teaser-only careersite feed description (see ingest.feed_description_truncated).
+        # Backfilled from stored raw JSON the one time it's added; whichever of app/ingest/
+        # rescore migrates first both adds and populates it (needs a commit before the
+        # backfill reads the new column).
+        conn.execute("ALTER TABLE jobs ADD COLUMN description_truncated INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
+        backfill_description_truncated(conn)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_jobs_description_hash ON jobs(description_hash)"
     )
@@ -953,6 +961,7 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
             "viability_reason": s.get("viability_reason"),
             "viability_color":  s.get("viability_color", ""),
             "viability_stale":  s.get("viability_stale", False),
+            "description_truncated": s.get("description_truncated", 0),
             "company":          s.get("company", ""),
             "company_actual":   s.get("company_actual"),
             "company_display":  s.get("company_display", ""),

@@ -29,7 +29,7 @@ OUT="$SCRIPT_DIR/docs/screenshot.png"
 # --force-device-scale-factor=1 keeps the output at exactly the window size (no retina 2x).
 "$CHROME" \
   --headless --disable-gpu --hide-scrollbars --no-sandbox \
-  --force-device-scale-factor=1 --window-size=1400,1120 \
+  --force-device-scale-factor=1 --window-size=1400,1200 \
   --virtual-time-budget=10000 --default-background-color=FFFFFFFF \
   --screenshot="$OUT" "file://$MOCK" >/dev/null 2>&1
 

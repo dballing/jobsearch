@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     work_arrangement_actual TEXT,
     geo_fit_actual        TEXT,
     needs_rescored        INTEGER NOT NULL DEFAULT 0,
+    description_truncated  INTEGER NOT NULL DEFAULT 0,
     job_description_formatted TEXT,
     description_hash          TEXT,
     first_seen      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -227,6 +228,15 @@ def open_db(path: str) -> sqlite3.Connection:
     if "work_arrangement_actual" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN work_arrangement_actual TEXT")
         conn.commit()
+    # Flags a careersite posting whose feed description looks truncated to a teaser (see
+    # feed_description_truncated). Backfilled from the stored raw feed JSON the one time the
+    # column is added — done inside the guard so whichever module (ingest/app/rescore) first
+    # migrates an existing DB both adds AND populates it; the others then see it present and
+    # skip. A fresh DB gets the column from SCHEMA (no rows to backfill).
+    if "description_truncated" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN description_truncated INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
+        backfill_description_truncated(conn)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_jobs_description_hash ON jobs(description_hash)"
     )
@@ -698,6 +708,60 @@ def extract_company_url(item: dict) -> str | None:
     return None
 
 
+# careersite (ATS) feeds — Oracle HCM, Workable, ADP, Paycom, Greenhouse, … — sometimes
+# expose only a short teaser in `description_text` while the full body (responsibilities,
+# qualifications, benefits) is rendered client-side and never reaches the feed. The actor
+# still AI-extracts a requirements summary from the fuller content it scraped, so a short
+# `description_text` paired with a populated `ai_requirements_summary` is our signal that the
+# stored description is partial. LinkedIn's `description_text` carries the whole body, so this
+# never applies there. Tuned from real data (see the truncation blast-radius analysis): genuine
+# full careersite descriptions run ~5.7k chars median, and the truncated tail sits well under
+# this cap, so the bound is deliberately generous — a false positive only costs a manual review
+# (the row is surfaced, not hidden), which is the safe direction to err.
+_TRUNCATED_DESC_MAXLEN = 2000
+
+
+def feed_description_truncated(item: dict, description: "str | None", actor_type: str) -> bool:
+    """True when a careersite feed item's `description_text` looks truncated to a teaser.
+
+    Only careersite/ATS feeds are affected (LinkedIn carries the full body). The heuristic:
+    a short stored description AND the actor populated `ai_requirements_summary` — evidence it
+    saw a fuller posting than the feed exposed. Used to flag the row so viability scoring won't
+    silently auto-skip a possibly-good role judged on half a posting, and the UI can badge it.
+    """
+    if actor_type != "careersite":
+        return False
+    if len(description or "") >= _TRUNCATED_DESC_MAXLEN:
+        return False
+    return bool(_scalar(item.get("ai_requirements_summary")))
+
+
+def backfill_description_truncated(conn: sqlite3.Connection) -> int:
+    """Populate `description_truncated` for careersite rows predating the column, from each
+    row's stored raw feed JSON. Returns the number of rows flagged.
+
+    Runs once, right after the column is added (see open_db) — every other row already defaults
+    to 0, so we only need to flip the careersite postings that the heuristic catches. A row whose
+    raw JSON won't parse is left at its default (unflagged). Kept a standalone helper so app.py
+    and rescore_viability.py can call it from their own migrations, and so it's unit-testable."""
+    flagged = 0
+    rows = conn.execute(
+        "SELECT job_id, job_description, raw FROM jobs WHERE source = 'careersite'"
+    ).fetchall()
+    for r in rows:
+        try:
+            item = json.loads(r["raw"])
+        except (ValueError, TypeError):
+            continue
+        if feed_description_truncated(item, r["job_description"], "careersite"):
+            conn.execute(
+                "UPDATE jobs SET description_truncated = 1 WHERE job_id = ?", (r["job_id"],)
+            )
+            flagged += 1
+    conn.commit()
+    return flagged
+
+
 def extract_fields_linkedin(item: dict) -> dict:
     """Map one fantastic-jobs LinkedIn actor item to our jobs-table field dict."""
     # Field names from fantastic-jobs/advanced-linkedin-job-search-api.
@@ -725,6 +789,8 @@ def extract_fields_linkedin(item: dict) -> dict:
         "salary_max": salary_max,
         "salary_currency": _scalar(item.get("ai_salary_currency")) or None,
         "job_description": _scalar(item.get("description_text")),
+        # LinkedIn feeds carry the full body, so never truncated (see feed_description_truncated).
+        "description_truncated": 0,
     }
 
 
@@ -738,6 +804,7 @@ def extract_fields_careersite(item: dict) -> dict:
     salary_min, salary_max = extract_salary(item)
     raw_id  = str(_scalar(item.get("id")) or "").strip()
     job_url = _scalar(item.get("url")) or None
+    description = _scalar(item.get("description_text"))
     return {
         "job_id": f"cs_{raw_id}" if raw_id else "",
         "title": _scalar(item.get("title")),
@@ -752,7 +819,10 @@ def extract_fields_careersite(item: dict) -> dict:
         "salary_min": salary_min,
         "salary_max": salary_max,
         "salary_currency": _scalar(item.get("ai_salary_currency")) or None,
-        "job_description": _scalar(item.get("description_text")),
+        "job_description": description,
+        # Flag a teaser-only ATS feed description so it isn't silently auto-skipped or scored
+        # as if complete (see feed_description_truncated).
+        "description_truncated": 1 if feed_description_truncated(item, description, "careersite") else 0,
     }
 
 
@@ -969,12 +1039,12 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                     (job_id, title, company, company_actual, location, posted_date,
                      job_url, apply_url, company_url, easy_apply, salary_min, salary_max, salary_currency,
                      labels, source, status, applied_at, job_description, canonical_id, raw,
-                     description_hash, job_description_formatted)
+                     description_hash, job_description_formatted, description_truncated)
                 VALUES
                     (:job_id, :title, :company, :company_actual, :location, :posted_date,
                      :job_url, :apply_url, :company_url, :easy_apply, :salary_min, :salary_max, :salary_currency,
                      :labels, :source, :status, :applied_at, :job_description, :canonical_id, :raw,
-                     :description_hash, :job_description_formatted)
+                     :description_hash, :job_description_formatted, :description_truncated)
                 """,
                 {**fields, "labels": json.dumps([label]), "status": initial_status,
                  "applied_at": initial_applied_at, "company_actual": initial_company_actual,
@@ -1098,7 +1168,8 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                     labels = :labels, source = :source, status = :status,
                     refreshed_at = :refreshed_at, canonical_id = :canonical_id, raw = :raw,
                     description_hash = :description_hash,
-                    job_description_formatted = :job_description_formatted
+                    job_description_formatted = :job_description_formatted,
+                    description_truncated = :description_truncated
                 WHERE job_id = :job_id
                 """,
                 {**fields, "labels": json.dumps(new_labels), "status": new_status,

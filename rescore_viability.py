@@ -62,7 +62,7 @@ import anthropic
 
 from ai_config import (format_token_summary, resolve_ai_settings, resolve_effort,
                        resolve_geo_effort, resolve_geo_model, warn_effort_ignored)
-from ingest import append_history
+from ingest import append_history, backfill_description_truncated
 from runlock import acquire_run_lock
 from viability import (
     REJECT_DENYABLE_STATUSES, _job_locations, _work_arrangement, assess_location_fit,
@@ -192,6 +192,13 @@ def open_db(path: str) -> sqlite3.Connection:
     if "description_hash" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN description_hash TEXT")
         conn.commit()
+    if "description_truncated" not in cols:
+        # Teaser-only careersite feed description (see ingest.feed_description_truncated) — the
+        # auto-skip exemption below reads it. Backfilled from stored raw JSON the one time it's
+        # added; whichever of app/ingest/rescore migrates first both adds and populates it.
+        conn.execute("ALTER TABLE jobs ADD COLUMN description_truncated INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
+        backfill_description_truncated(conn)
     return conn
 
 
@@ -267,6 +274,23 @@ def should_unskip(rating: str, auto_skip_threshold: int) -> bool:
     threshold and should be surfaced back to 'new'. Drives --autoskipped re-evaluation:
     after a prompt change, a job the old prompt auto-skipped may now clear the bar."""
     return VIABILITY_RANK.get(rating, -1) > auto_skip_threshold
+
+
+def should_autoskip(*, auto_skip: bool, status: str, rating: str,
+                    auto_skip_threshold: int, truncated: bool) -> bool:
+    """Whether a freshly-scored new/reviewing job should be auto-skipped for scoring at/below
+    the threshold.
+
+    Returns False when the description is truncated (a careersite teaser — see
+    ingest.feed_description_truncated): a possibly-good role must not be silently buried on
+    half a posting, so it stays surfaced for manual review even at a low score. Pure and
+    caller-agnostic so the whole decision (incl. the truncation exemption) is unit-testable;
+    the batch loop reports the exempted case separately."""
+    if not auto_skip or status not in ("new", "reviewing"):
+        return False
+    if truncated:
+        return False
+    return VIABILITY_RANK.get(rating, -1) <= auto_skip_threshold
 
 
 def canonical_promotion_applies(
@@ -653,6 +677,7 @@ def main() -> None:
     auto_skipped = 0
     rejected     = 0   # jobs forced low/autoskipped by the company reject-list (no AI call)
     promoted     = 0   # autoskipped jobs surfaced back to 'new' by --autoskipped re-evaluation
+    trunc_exempt = 0   # at/below-threshold jobs left surfaced because their feed desc is truncated
     tally: dict[str, int] = {"high": 0, "medium": 0, "low": 0}
     tok_input   = 0
     tok_output  = 0
@@ -780,6 +805,7 @@ def main() -> None:
             tally[rating] = tally.get(rating, 0) + 1
             did_autoskip = False
             did_promote  = False
+            did_trunc_exempt = False
             if usage is not None:
                 tok_input  += getattr(usage, "input_tokens",                0) or 0
                 tok_output += getattr(usage, "output_tokens",               0) or 0
@@ -834,11 +860,14 @@ def main() -> None:
                     if not args.verbose:
                         print(f"\r\033[K{note}" if interactive else note, flush=True)
 
-            # Auto-skip: if enabled and job is new/reviewing and score is at or below
-            # the configured threshold, move it to autoskipped.
-            elif (auto_skip
-                    and current_status in ("new", "reviewing")
-                    and VIABILITY_RANK.get(rating, -1) <= auto_skip_threshold):
+            # Auto-skip: if enabled and job is new/reviewing and score is at or below the
+            # configured threshold, move it to autoskipped — UNLESS its feed description is
+            # truncated (a careersite teaser), in which case should_autoskip returns False so
+            # the role stays surfaced for a manual look rather than being buried on partial text.
+            elif should_autoskip(
+                    auto_skip=auto_skip, status=current_status, rating=rating,
+                    auto_skip_threshold=auto_skip_threshold,
+                    truncated=bool(row["description_truncated"])):
                 conn.execute(
                     "UPDATE jobs SET status = 'autoskipped' WHERE job_id = ?",
                     (row["job_id"],),
@@ -850,6 +879,19 @@ def main() -> None:
                 })
                 auto_skipped += 1
                 did_autoskip  = True
+
+            # The auto-skip exemption for a truncated feed description: it scored at/below the
+            # threshold and would have been auto-skipped, but we leave it 'new' and log the
+            # decision so a tailed viability.log shows why it wasn't buried.
+            elif (auto_skip and current_status in ("new", "reviewing")
+                    and VIABILITY_RANK.get(rating, -1) <= auto_skip_threshold
+                    and row["description_truncated"]):
+                trunc_exempt += 1
+                did_trunc_exempt = True
+                note = (f"  Partial feed description, not auto-skipped: {label} "
+                        f"(viability: {rating})")
+                if not args.verbose:
+                    print(f"\r\033[K{note}" if interactive else note, flush=True)
 
             # Canonical promotion. A manually 'skipped' duplicate normally stays hidden, but if a
             # rescore makes it score strictly better than BOTH its canonical and its own prior
@@ -907,6 +949,8 @@ def main() -> None:
                     print(f"{shown} → autoskipped")
                 elif did_promote:
                     print(f"{shown} → promoted to new")
+                elif did_trunc_exempt:
+                    print(f"{shown} (partial description, not auto-skipped)")
                 else:
                     print(shown)
             conn.commit()
@@ -921,11 +965,12 @@ def main() -> None:
     autoskip_note  = f", {auto_skipped} auto-skipped" if auto_skipped else ""
     reject_note    = f", {rejected} reject-listed" if rejected else ""
     promoted_note  = f", {promoted} promoted to new" if promoted else ""
+    trunc_note     = f", {trunc_exempt} kept (partial description)" if trunc_exempt else ""
     # Per-job average over the whole selection (count = jobs processed), for spotting a
     # slow model/API at a glance in a tailed log.
     avg_note       = f" (avg {elapsed / count:.2f}s/job)" if count else ""
     # Lead with walltime (like ingest) so a tailed log surfaces slow runs at a glance.
-    print(f"Done in {elapsed:.1f}s{avg_note}. {scored} job(s) scored{fail_note}{autoskip_note}{reject_note}{promoted_note}." + (f" ({breakdown})" if breakdown else ""))
+    print(f"Done in {elapsed:.1f}s{avg_note}. {scored} job(s) scored{fail_note}{autoskip_note}{reject_note}{promoted_note}{trunc_note}." + (f" ({breakdown})" if breakdown else ""))
     summary = format_token_summary(
         model, input=tok_input, output=tok_output,
         cache_write=tok_write, cache_read=tok_read,

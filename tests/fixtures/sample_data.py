@@ -64,7 +64,9 @@ _JOBS = [
     dict(job_id="cs_review", title="Photocopier Repair Technician", company="Initech",
          location="Raleigh, NC", source="careersite", status="reviewing", viability="medium",
          salary_max=180000, labels='["nc"]', posted_date="2026-06-12",
-         first_seen=_SEEN.format(13, 12)),
+         first_seen=_SEEN.format(13, 12),
+         # Teaser-only ATS feed → the "⚠ partial" badge and the auto-skip exemption.
+         description_truncated=1),
     dict(job_id="ln_deferred", title="Sr. Virologist", company="Umbrella",
          location="Columbia, SC", status="deferred", viability="low",
          viability_reason="Below target scope and comp.", salary_min=120000,
@@ -126,6 +128,7 @@ _DEFAULTS = dict(
     viability_factors=None,
     applied_at=None, history="[]", company_actual=None, salary_min_actual=None,
     salary_max_actual=None, work_arrangement_actual=None, needs_rescored=0,
+    description_truncated=0,
     job_description_formatted=None, description_hash=None, first_seen=None, raw="{}",
 )
 
