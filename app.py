@@ -25,7 +25,8 @@ from werkzeug.utils import secure_filename
 from ingest import append_history, backfill_description_truncated, bootstrap_history
 from viability import (
     _work_arrangement, FACTOR_DIMENSIONS, GEO_UNSUPPORTED_ARRANGEMENT, MANUAL_GEO_FIT_CHOICES,
-    assess_location_fit, clamp_viability_for_geo, geo_note, manual_geo_verdict, parse_factors,
+    assess_location_fit, clamp_viability_for_geo, description_is_truncated, effective_description,
+    geo_note, has_description_override, manual_geo_verdict, parse_factors,
     score_job, scoring_hash_for_config,
 )
 
@@ -417,6 +418,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # asserts the location is workable (ACCEPTABLE), skipping the billed location
         # sub-call and sparing the job the POOR→low clamp.
         conn.execute("ALTER TABLE jobs ADD COLUMN geo_fit_actual TEXT")
+    if "description_actual" not in cols:
+        # Manual paste-in full job description that supersedes a wrong/partial feed one
+        # (see viability.effective_description). NULL = no override.
+        conn.execute("ALTER TABLE jobs ADD COLUMN description_actual TEXT")
     if "description_truncated" not in cols:
         # Teaser-only careersite feed description (see ingest.feed_description_truncated).
         # Backfilled from stored raw JSON the one time it's added; whichever of app/ingest/
@@ -712,6 +717,14 @@ def process_job_row(row: sqlite3.Row | dict, hotlist: "set[str] | frozenset" = f
     j["salary_display"]   = format_salary(j)
     j["salary_min"], j["salary_max"] = effective_salary(j)
     j["source_display"]   = SOURCE_NAMES.get(j.get("source", "linkedin"), j.get("source", ""))
+    # Effective description: a manual paste-in override (description_actual) wins over the feed
+    # text, and it clears the "partial feed" state for badge/auto-skip purposes (we now have the
+    # full posting). Compute the effective-truncated flag BEFORE overwriting job_description —
+    # description_is_truncated keys off the flag + the override, not the text itself.
+    j["has_description_override"] = has_description_override(j)
+    j["description_original"]     = j.get("job_description")
+    j["description_truncated"]    = 1 if description_is_truncated(j) else 0
+    j["job_description"]          = effective_description(j)
     j["applied_at"]       = (j.get("applied_at") or "")[:10] or None
     j["viability_color"]  = VIABILITY_COLORS.get(j.get("viability") or "", "")
     _cur_hash = _current_viability_hash()
@@ -1693,8 +1706,19 @@ def get_job(job_id: str):
         "salary_min_actual": job.get("salary_min_actual"),
         "salary_max_actual": job.get("salary_max_actual"),
         "posted_date":      (job["posted_date"] or "")[:10],
-        "job_description":  job["job_description"],
-        "job_description_html": format_description_html(job.get("job_description_formatted")),
+        # Effective description (override wins). When overridden, suppress the AI-formatted HTML —
+        # it was rendered from the now-superseded feed text — so the panel renders the pasted text.
+        "job_description":  effective_description(job),
+        "job_description_html": (None if has_description_override(job)
+                                 else format_description_html(job.get("job_description_formatted"))),
+        # Override provenance for the panel: whether one is set, the raw override, and the feed's
+        # original text (so the user can review or revert to what the feed delivered).
+        "has_description_override": has_description_override(job),
+        "description_actual":      job.get("description_actual"),
+        "description_feed":        job.get("job_description"),
+        # Whether the (effective) description is a partial career-site teaser — drives the panel's
+        # "paste the full text" nudge. Cleared once an override supersedes the feed text.
+        "description_truncated":   description_is_truncated(job),
         "viability":        job.get("viability"),
         "viability_reason": job.get("viability_reason"),
         # The scorer's self-reported factor breakdown, parsed to a list for the preview panel to
@@ -1816,6 +1840,42 @@ def set_title_actual(job_id: str):
     )
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     append_history(db, job_id, {"ts": ts, "event": "title_actual", "from": old, "to": value})
+    db.commit()
+    return "", 204
+
+
+@app.route("/job/<job_id>/description_actual", methods=["POST"])
+def set_description_actual(job_id: str):
+    """Override a posting's job description with full text pasted from the employer's site.
+
+    The common case is repairing a career-site feed that delivered only a teaser (see
+    ingest.feed_description_truncated): the override supersedes the feed text everywhere the
+    description is consumed — viability scoring (build_score_message), the preview panel, and the
+    cover-letter prompt — while the feed's original stays in job_description for posterity and
+    revert. Empty clears the override. Per-job (not fanned out across a matched group — a pasted
+    full posting is specific to the source it came from; group members carry their own prose).
+    The override changes what the scorer sees, so flag the job for rescoring; the badge/auto-skip
+    'partial description' state also clears once an override is present (we now have the full text).
+    """
+    value = request.form.get("description_actual", "").strip() or None
+    db = get_db()
+    row = db.execute("SELECT description_actual FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    if not row:
+        return "Not found", 404
+    had = bool((row["description_actual"] or "").strip())
+    db.execute(
+        "UPDATE jobs SET description_actual = ?, needs_rescored = 1 WHERE job_id = ?",
+        (value, job_id),
+    )
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # The full text is bulky and lives in the column; history records only that the override was
+    # set/cleared (+ length) so the timeline stays legible.
+    append_history(db, job_id, {
+        "ts": ts, "event": "description_actual",
+        "action": "set" if value else "cleared",
+        "length": len(value) if value else 0,
+        "replaced": had,
+    })
     db.commit()
     return "", 204
 

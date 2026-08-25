@@ -127,8 +127,8 @@ _DEFAULTS = dict(
     canonical_id=None, viability=None, viability_reason=None, viability_prompt_hash="fixturehash",
     viability_factors=None,
     applied_at=None, history="[]", company_actual=None, salary_min_actual=None,
-    salary_max_actual=None, work_arrangement_actual=None, needs_rescored=0,
-    description_truncated=0,
+    salary_max_actual=None, work_arrangement_actual=None, description_actual=None,
+    needs_rescored=0, description_truncated=0,
     job_description_formatted=None, description_hash=None, first_seen=None, raw="{}",
 )
 

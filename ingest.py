@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     salary_max_actual     INTEGER,
     work_arrangement_actual TEXT,
     geo_fit_actual        TEXT,
+    description_actual    TEXT,
     needs_rescored        INTEGER NOT NULL DEFAULT 0,
     description_truncated  INTEGER NOT NULL DEFAULT 0,
     job_description_formatted TEXT,
@@ -227,6 +228,11 @@ def open_db(path: str) -> sqlite3.Connection:
         conn.commit()
     if "work_arrangement_actual" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN work_arrangement_actual TEXT")
+        conn.commit()
+    if "description_actual" not in cols:
+        # Manual paste-in full job description that supersedes a wrong/partial feed one (see
+        # viability.effective_description). NULL = no override, use the feed's job_description.
+        conn.execute("ALTER TABLE jobs ADD COLUMN description_actual TEXT")
         conn.commit()
     # Flags a careersite posting whose feed description looks truncated to a teaser (see
     # feed_description_truncated). Backfilled from the stored raw feed JSON the one time the

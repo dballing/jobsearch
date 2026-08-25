@@ -98,6 +98,15 @@ When a feed's title is mangled or generic (e.g. an aggregator's "Program Manager
 - It's **per-job**, not fanned out across a matched group — postings in a group legitimately carry different titles, so each is overridden on its own. (Group headers still show one representative title with "(varies)".)
 - Changing it flags the job for rescoring (the title feeds the AI prompt). Clear it by emptying the field and saving; the original scraped title is always preserved.
 
+### Job description override
+
+When a feed delivers the wrong or a partial description — most often a career-site (ATS) feed that ships only a short teaser while the full posting is rendered client-side (see [the partial-description flag](#auto-skip)) — you can paste the real, complete description from the employer's site. In the preview panel, under the description, click **Paste full text** (labelled **Edit pasted text** once an override exists) to open a dialog, paste the posting, and Save.
+
+- The override replaces the feed's description **everywhere the description is consumed**: viability scoring (the scorer reads the pasted text, not the teaser), the preview panel, and the cover-letter prompt. The feed's original text is kept in the database and can be viewed ("Show the feed's original") or restored ("Revert to feed description").
+- Saving it flags the job for rescoring, so the next run re-scores it on the full text. It also **clears the ⚠ partial badge and the auto-skip exemption** for that job — once you've supplied the complete posting, it's no longer judged on partial data and auto-skip applies normally.
+- It's **per-job**, not fanned out across a matched group — a pasted posting is specific to the source it came from.
+- Because the override is entered by hand (not AI-reformatted), the panel renders it with the heuristic formatter rather than the AI-cleaned Markdown (which was derived from the now-superseded feed text).
+
 ### Company website link
 
 Ingest records the employer's own site in a `company_url` column, taken from the feed (preferring the real domain — LinkedIn's `linkedin_org_url` / careersite's `domain_derived` — and falling back to the source's `organization_url`, i.e. a LinkedIn/ATS company page). It's surfaced in three places:

@@ -66,8 +66,8 @@ from ingest import append_history, backfill_description_truncated
 from runlock import acquire_run_lock
 from viability import (
     REJECT_DENYABLE_STATUSES, _job_locations, _work_arrangement, assess_location_fit,
-    build_reject_set, clamp_viability_for_geo, geo_note, is_rejected_company, manual_geo_verdict,
-    reject_reason, score_job, scoring_hash_for_config,
+    build_reject_set, clamp_viability_for_geo, description_is_truncated, geo_note,
+    is_rejected_company, manual_geo_verdict, reject_reason, score_job, scoring_hash_for_config,
 )
 
 # Numeric ranking of ratings. Used two ways: to compare a score against the auto-skip
@@ -191,6 +191,11 @@ def open_db(path: str) -> sqlite3.Connection:
         conn.commit()
     if "description_hash" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN description_hash TEXT")
+        conn.commit()
+    if "description_actual" not in cols:
+        # Manual paste-in description override (see viability.effective_description) — the scorer
+        # reads it via build_score_message, and it clears the truncation exemption below.
+        conn.execute("ALTER TABLE jobs ADD COLUMN description_actual TEXT")
         conn.commit()
     if "description_truncated" not in cols:
         # Teaser-only careersite feed description (see ingest.feed_description_truncated) — the
@@ -867,7 +872,7 @@ def main() -> None:
             elif should_autoskip(
                     auto_skip=auto_skip, status=current_status, rating=rating,
                     auto_skip_threshold=auto_skip_threshold,
-                    truncated=bool(row["description_truncated"])):
+                    truncated=description_is_truncated(job)):
                 conn.execute(
                     "UPDATE jobs SET status = 'autoskipped' WHERE job_id = ?",
                     (row["job_id"],),
@@ -885,7 +890,7 @@ def main() -> None:
             # decision so a tailed viability.log shows why it wasn't buried.
             elif (auto_skip and current_status in ("new", "reviewing")
                     and VIABILITY_RANK.get(rating, -1) <= auto_skip_threshold
-                    and row["description_truncated"]):
+                    and description_is_truncated(job)):
                 trunc_exempt += 1
                 did_trunc_exempt = True
                 note = (f"  Partial feed description, not auto-skipped: {label} "

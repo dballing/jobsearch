@@ -228,6 +228,14 @@ _SYSTEM_BOILERPLATE = (
 # forbids such invisible scoring. It's a boilerplate change (already hashed), but the version bump
 # follows the discipline and re-runs every score once under the new contract. Rating stability vs.
 # the prior prompt was validated with compare_scoring.py before this bump.
+#
+# NOT a version bump: build_score_message now prefers a manual description override
+# (description_actual) over the feed's job_description, via effective_description. Like the other
+# per-job overrides it already reads (title_actual/company_actual/salary_*_actual/
+# work_arrangement_actual/geo_fit_actual), this changes what the model sees ONLY for a job that
+# has the override set — and setting the override always flags that job needs_rescored, so it
+# re-scores on its own. A global bump would needlessly re-score the whole DB for jobs whose
+# effective description is unchanged, so — consistent with those existing overrides — it holds.
 _SCORING_INPUT_VERSION = "16"
 
 # Cap on locations included in the scoring message — bounds token cost for the rare job
@@ -436,6 +444,34 @@ def is_job_board(name: str) -> bool:
     return _normalize_org(name) in _KNOWN_JOB_BOARDS
 
 
+def effective_description(job: dict) -> str:
+    """The job description to score/display/reformat: a manual paste-in override
+    (description_actual) wins over the feed's job_description.
+
+    The override exists to repair a description the feed delivered wrong or partial — most
+    often a career-site teaser (see ingest.feed_description_truncated) — so once set it is
+    the authoritative text everywhere the description is consumed. A blank/whitespace-only
+    override is treated as absent so it never blanks out a real feed description. Pure, so
+    it's unit-testable without the DB."""
+    override = (job.get("description_actual") or "").strip()
+    return override if override else (job.get("job_description") or "")
+
+
+def has_description_override(job: dict) -> bool:
+    """True when a non-blank manual description override (description_actual) is set."""
+    return bool((job.get("description_actual") or "").strip())
+
+
+def description_is_truncated(job: dict) -> bool:
+    """Whether the EFFECTIVE description is a partial career-site teaser: the feed's
+    description_truncated flag is set AND no manual full-text override supersedes it.
+
+    A pasted-in override is the full posting, so it clears the practical truncation regardless
+    of the (feed-derived) flag — which is why the auto-skip exemption and the UI badge both key
+    off this, not the raw column. Pure, so it's unit-testable without the DB."""
+    return bool(job.get("description_truncated")) and not has_description_override(job)
+
+
 def build_score_message(job: dict, geo_note: str | None = None) -> str:
     """Build the per-job user message the scorer sends (title/company/location/salary +
     description). Pure and self-contained so it can be unit-tested without an API call.
@@ -469,8 +505,10 @@ def build_score_message(job: dict, geo_note: str | None = None) -> str:
     else:
         company = company_raw
     # Cap the description for scoring: the model only needs the gist to rate fit, and this
-    # bounds token cost per job. (Reformatting, by contrast, sends the full text.)
-    description = (job.get("job_description") or "").strip()[:4000]
+    # bounds token cost per job. (Reformatting, by contrast, sends the full text.) A manual
+    # paste-in override wins over the feed text (effective_description) — the whole point of the
+    # override is to score against the real, complete posting.
+    description = effective_description(job).strip()[:4000]
     # Manual salary override (salary_*_actual) wins over the feed value. The override is an
     # all-or-nothing pair: if either bound is set, use the override pair (a blank bound
     # stays open-ended) rather than mixing an overridden bound with a feed bound.
@@ -712,7 +750,7 @@ def assess_location_fit(
     # skippable via the location_use_description toggle (a cost/coverage trade-off: without
     # it the sub-call dedups hard by location set; with it, per description). When skipped,
     # the description-handling clause is dropped too so the prompt stays coherent.
-    description = (job.get("job_description") or "").strip()[:_MAX_GEO_DESC_CHARS] if include_description else ""
+    description = effective_description(job).strip()[:_MAX_GEO_DESC_CHARS] if include_description else ""
     user_text = (
         f"Job locations: {loc_text}\n"
         + (f"Work arrangement: {wa}\n" if wa else "")

@@ -1968,6 +1968,35 @@ Solid fit; re-score pending.">medium</span>
     </div>
   </div>
 
+  
+  <div class="modal fade" id="descOverrideModal" tabindex="-1" aria-labelledby="descOverrideModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h6 class="modal-title fw-semibold" id="descOverrideModalLabel">Override job description</h6>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <p class="small text-body-secondary mb-2">
+            Paste the full job description from the employer's site. It replaces the feed's
+            description for viability scoring, the preview, and the cover-letter prompt; the feed's
+            original text is kept and can be restored. The job is re-scored on the next run.
+          </p>
+          <textarea id="descOverrideText" class="form-control form-control-sm" rows="16"
+                    placeholder="Paste the full job description here…"></textarea>
+        </div>
+        <div class="modal-footer justify-content-between">
+          <button type="button" id="descOverrideRevert" class="btn btn-sm btn-outline-danger">Revert to feed description</button>
+          <div class="d-flex align-items-center gap-2">
+            <span id="descOverrideFeedback" class="small"></span>
+            <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" id="descOverrideSave" class="btn btn-sm btn-primary">Save override</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
   
@@ -2194,6 +2223,39 @@ Solid fit; re-score pending.">medium</span>
     }
   }
 
+  // The job the description-override dialog currently targets (set when it's opened from a
+  // preview). The dialog's Save/Revert handlers are wired once (below) and read this.
+  let descOverrideJob = null;
+
+  // Persist the description override (or clear it on revert), then reload the preview so the
+  // panel, badge, and scoring-pending state all reflect the change. Wired once at load.
+  async function submitDescOverride(value) {
+    if (!descOverrideJob) return;
+    const fb = document.getElementById('descOverrideFeedback');
+    fb.className = 'small text-body-secondary'; fb.textContent = 'Saving…';
+    try {
+      const resp = await fetch(`/job/${encodeURIComponent(descOverrideJob.job_id)}/description_actual`,
+        {method: 'POST', body: new URLSearchParams({description_actual: value})});
+      if (resp.ok) {
+        const jobId = descOverrideJob.job_id;
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('descOverrideModal')).hide();
+        showPreview(jobId);   // re-fetch so effective description / override note / badge refresh
+      } else {
+        fb.className = 'small text-danger';
+        fb.textContent = resp.status === 503 ? 'Database busy — try again in a moment.' : 'Save failed.';
+      }
+    } catch (e) {
+      fb.className = 'small text-danger';
+      fb.textContent = 'Save failed (network error).';
+    }
+  }
+  document.getElementById('descOverrideSave')?.addEventListener('click', () => {
+    submitDescOverride(document.getElementById('descOverrideText').value.trim());
+  });
+  document.getElementById('descOverrideRevert')?.addEventListener('click', () => {
+    submitDescOverride('');   // empty clears the override, restoring the feed description
+  });
+
   // Open the slide-in preview for one job: fetch GET /job/<id>, then build the meta bar
   // (title/company/location/salary, viability badge, applied date, history), inject the
   // company/salary override editors, notes box, attachments list, and the description
@@ -2301,6 +2363,9 @@ Solid fit; re-score pending.">medium</span>
             else if (e.event === 'title_actual')    desc = e.to ? `Title override set: <strong>${escHtml(e.to)}</strong>` : 'Title override cleared';
             else if (e.event === 'geo_fit_actual')  desc = e.to ? `Location viability override: <strong>${escHtml(e.to)}</strong>` : 'Location viability override cleared';
             else if (e.event === 'work_arrangement') desc = e.to ? `Work arrangement override: <strong>${escHtml(e.to)}</strong>` : 'Work arrangement override cleared';
+            else if (e.event === 'description_actual') desc = e.action === 'set'
+              ? `Description overridden <span class="text-muted fst-italic">(pasted ${escHtml(String(e.length||0))} chars${e.replaced ? ', replaced a prior override' : ''})</span>`
+              : 'Description override cleared';
             else if (e.event === 'company_normalized') desc = `Company normalized: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong> <span class="text-muted fst-italic">(auto)</span>`;
             else if (e.event === 'company_renamed') desc = `Company renamed: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong> <span class="text-muted fst-italic">(manual — canonical + alias)</span>`;
             else if (e.event === 'salary_actual') {
@@ -2644,11 +2709,41 @@ Solid fit; re-score pending.">medium</span>
           + '<button type="button" id="jobAttachUpload" class="btn btn-sm btn-outline-primary">Upload</button>'
           + '<span id="jobAttachFeedback" class="small"></span>'
           + '</div></div>'
+          // Description header + override control. The full-text paste-in lives behind a button
+          // (it's large and rarely needed); a note flags an active override or a partial feed.
+          + '<div class="d-flex align-items-center justify-content-between mb-1">'
+          + '<label class="form-label small fw-semibold mb-0">Job description</label>'
+          + `<button type="button" id="descOverrideOpen" class="btn btn-sm btn-outline-secondary py-0">${job.has_description_override ? 'Edit pasted text' : 'Paste full text'}</button>`
+          + '</div>'
+          + (job.has_description_override
+              ? '<div class="small text-body-secondary fst-italic mb-2">Description manually overridden — showing pasted text. <a href="#" id="descShowFeed">Show the feed\'s original</a></div>'
+              : (job.description_truncated
+                  ? '<div class="small text-warning mb-2">⚠ Partial feed description — the source delivered only a teaser. Paste the full text from the employer\'s site for accurate scoring.</div>'
+                  : ''))
           // Prefer the AI-formatted version (server-rendered + sanitized) when present;
           // otherwise fall back to the client-side heuristic renderer.
-          + '<div class="job-description-text">'
+          + '<div class="job-description-text" id="jobDescriptionText">'
           + (job.job_description_html || renderDescription(job.job_description))
           + '</div>';
+
+        // Wire the description-override control: open the paste-in dialog seeded with this job,
+        // and (when overridden) let the user peek at the feed's original text in place.
+        document.getElementById('descOverrideOpen').addEventListener('click', () => {
+          descOverrideJob = job;
+          const ta = document.getElementById('descOverrideText');
+          ta.value = job.description_actual || '';
+          document.getElementById('descOverrideFeedback').textContent = '';
+          document.getElementById('descOverrideRevert').classList.toggle('d-none', !job.has_description_override);
+          bootstrap.Modal.getOrCreateInstance(document.getElementById('descOverrideModal')).show();
+        });
+        const showFeedLink = document.getElementById('descShowFeed');
+        if (showFeedLink) {
+          showFeedLink.addEventListener('click', (e) => {
+            e.preventDefault();
+            document.getElementById('jobDescriptionText').innerHTML = renderDescription(job.description_feed || '');
+            showFeedLink.parentElement.innerHTML = '<span class="text-body-secondary">Showing the feed\'s original (superseded by your override).</span>';
+          });
+        }
 
         // Notes editor — value set via property (no HTML injection). Notes are
         // propagated server-side to every current group member.
