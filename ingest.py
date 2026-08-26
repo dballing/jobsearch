@@ -13,6 +13,7 @@ Flags:
 
 import argparse
 import json
+import re
 import sqlite3
 import sys
 import tomllib
@@ -511,6 +512,27 @@ _REVERSE_MARGIN = 0.15
 _SHINGLE_K = 3
 _JACCARD_GATE = 0.2
 
+# Title word-overlap floor: a token-level gate layered on top of the char-ratio pre-filter.
+# Character similarity rewards a shared tail ("... Project Manager"), so distinct roles that
+# differ only by a leading qualifier — "Engineering Project Manager" vs "Technical Project
+# Manager" — score 0.73 char-wise and merge even when their descriptions are near-identical
+# boilerplate. Comparing the *word sets* instead (Jaccard on lowercased alnum tokens) makes the
+# distinguishing word count: that pair shares 2 of 4 distinct words (0.5) and is now kept
+# separate, while a same-role suffix variant an aggregator produces ("Software Engineer" vs
+# "Software Engineer - Remote", 0.67) still clears it. This is a stricter AND on top of the
+# char-ratio pre-filter — it can only reject more, never rescue a pair that pre-filter already
+# dropped (a heavy word *reorder* fails the char ratio first and never reaches this gate).
+# The cost is that pure abbreviation reworites ("Sr." vs "Senior") no longer merge; that's rare
+# and the safe direction (a spurious duplicate row beats hiding a genuinely different opening).
+_TITLE_WORD_GATE = 0.6
+
+
+def _title_words(title: str) -> set[str]:
+    """Lowercased alphanumeric word tokens of a job title (punctuation split out and dropped),
+    used for the word-overlap gate. Empty set for a title with no alnum tokens — the caller then
+    skips the gate rather than blocking, since Jaccard is undefined without any words to compare."""
+    return {w for w in re.split(r"[^0-9a-z]+", title.lower()) if w}
+
 
 def _word_shingles(text: str, k: int = _SHINGLE_K) -> set | None:
     """Set of contiguous word k-grams in `text`, or None when it has fewer than k words
@@ -529,6 +551,7 @@ def find_canonical(
     description: str | None,
     threshold: float,
     title_threshold: float = 0.6,
+    title_word_threshold: float = _TITLE_WORD_GATE,
 ) -> list[sqlite3.Row]:
     """Return the canonical-root jobs that are near-duplicates, sorted oldest-first.
 
@@ -541,8 +564,11 @@ def find_canonical(
     already in the group — which is always a member.  Resolving to the root
     keeps the no-chain invariant (roots have canonical_id IS NULL).  No company
     filter is applied — the same job appears under different aggregator names.
-    A title similarity >= title_threshold pre-filter keeps the search efficient;
-    description similarity >= threshold is the final gate.
+    A title similarity >= title_threshold char-ratio pre-filter keeps the search
+    efficient; a title word-overlap (Jaccard) >= title_word_threshold gate then
+    rejects distinct roles that merely share a tail phrase (e.g. "Engineering
+    Project Manager" vs "Technical Project Manager"); description similarity >=
+    threshold is the final gate.
 
     The caller should treat matches[0] as the canonical (oldest first_seen) and
     link all remaining matches to it, preventing future fragmentation.
@@ -569,6 +595,7 @@ def find_canonical(
     new_sm = SequenceMatcher(None)
     new_sm.set_seq2(description)
     new_shingles = _word_shingles(description)  # None if the new desc is too short to gate
+    new_words = _title_words(title)  # word set for the title-overlap gate (loop-invariant)
     for candidate in candidates:
         if not candidate["title"] or not candidate["job_description"]:
             continue
@@ -578,6 +605,15 @@ def find_canonical(
             continue
         if title_m.ratio() < title_threshold:
             continue
+        # Title word-overlap gate: char-ratio rewards a shared tail phrase, so distinct roles
+        # with the same suffix ("… Project Manager") slip through it. Require the word sets to
+        # overlap too, which makes the differing qualifier count. Skip when either title has no
+        # alnum tokens (Jaccard undefined) — the char check already vetted those.
+        cand_words = _title_words(candidate["title"])
+        if new_words and cand_words:
+            union = len(new_words | cand_words)
+            if len(new_words & cand_words) / union < title_word_threshold:
+                continue
         cand_desc = candidate["job_description"]
         # Cheap length-ratio pre-gate before the O(n*m) description compare. ratio() = 2*M/
         # (la+lb) with M (matched chars) <= min(la, lb), so 2*min/(la+lb) is a hard upper
@@ -934,6 +970,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
            reset_on_change: bool = True,
            fuzzy_dedup: bool = True, fuzzy_desc_threshold: float = 0.85,
            fuzzy_title_threshold: float = 0.6,
+           fuzzy_title_word_threshold: float = _TITLE_WORD_GATE,
            inherit_canonical_status: bool = True,
            company_aliases: "dict | None" = None,
            formatter: "DescriptionFormatter | None" = None) -> Counter:
@@ -991,6 +1028,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                 matches = find_canonical(
                     conn, fields["job_id"], fields["title"], fields["company"],
                     fields["job_description"], fuzzy_desc_threshold, fuzzy_title_threshold,
+                    fuzzy_title_word_threshold,
                 )
                 if matches:
                     canonical = matches[0]
@@ -1115,6 +1153,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                 matches = find_canonical(
                     conn, fields["job_id"], fields["title"], fields["company"],
                     fields["job_description"], fuzzy_desc_threshold, fuzzy_title_threshold,
+                    fuzzy_title_word_threshold,
                 )
                 if matches:
                     canonical = matches[0]
@@ -1374,6 +1413,7 @@ def main() -> None:
     fuzzy_dedup_global: bool     = config.get("fuzzy_dedup", True)
     fuzzy_desc_threshold: float = config.get("fuzzy_desc_threshold", 0.85)
     fuzzy_title_threshold: float = config.get("fuzzy_title_threshold", 0.6)
+    fuzzy_title_word_threshold: float = config.get("fuzzy_title_word_threshold", _TITLE_WORD_GATE)
     inherit_canonical_status: bool = config.get("inherit_canonical_status", True)
     # Case-insensitive variant→canonical company-name map (empty if [company_aliases] unset).
     company_alias_map = build_company_alias_map(config.get("company_aliases"))
@@ -1461,7 +1501,8 @@ def main() -> None:
                 print(f"  Run {run_time} [{label}]: {len(items)} items retrieved")
                 result = ingest(
                     conn, items, label, actor_type, exclude_ats_dups, reset_on_change,
-                    fuzzy_dedup, fuzzy_desc_threshold, fuzzy_title_threshold, inherit_canonical_status,
+                    fuzzy_dedup, fuzzy_desc_threshold, fuzzy_title_threshold,
+                    fuzzy_title_word_threshold, inherit_canonical_status,
                     company_aliases=company_alias_map,
                     formatter=formatter,
                 )

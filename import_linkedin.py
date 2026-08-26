@@ -33,7 +33,10 @@ from pathlib import Path
 
 import requests
 
-from ingest import APIFY_BASE, _scalar, _now_iso, append_history, find_canonical, open_db
+from ingest import (
+    APIFY_BASE, _TITLE_WORD_GATE, _scalar, _now_iso, append_history,
+    find_canonical, open_db,
+)
 
 ACTOR_ID = "apimaestro~linkedin-job-detail"
 JOB_URL_RE = re.compile(r"linkedin\.com/jobs/view/(\d+)", re.IGNORECASE)
@@ -332,6 +335,7 @@ def main() -> None:
     # Fuzzy dedup settings from config
     desc_threshold:  float = config.get("fuzzy_desc_threshold",  0.85)
     title_threshold: float = config.get("fuzzy_title_threshold", 0.6)
+    title_word_threshold: float = config.get("fuzzy_title_word_threshold", _TITLE_WORD_GATE)
 
     conn = open_db(db_path)
     inserted = updated = stubbed = failed = 0
@@ -389,7 +393,7 @@ def main() -> None:
             matches = find_canonical(
                 conn, job_id,
                 fields["title"], fields["company"], fields["job_description"],
-                desc_threshold, title_threshold,
+                desc_threshold, title_threshold, title_word_threshold,
             )
             if matches:
                 canon_id     = matches[0]["job_id"]

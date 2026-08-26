@@ -84,3 +84,46 @@ def test_word_shingles():
     assert ingest._word_shingles("a b c", k=3) == {("a", "b", "c")}
     assert ingest._word_shingles("a b", k=3) is None      # fewer than k words → no gate
     assert ingest._word_shingles("", k=3) is None
+
+
+# ── Title word-overlap gate ──
+def test_title_words():
+    # Lowercased, punctuation split out and dropped, deduplicated to a set.
+    assert ingest._title_words("Engineering Project Manager") == {"engineering", "project", "manager"}
+    assert ingest._title_words("Software Engineer - Remote") == {"software", "engineer", "remote"}
+    assert ingest._title_words("Sr. Staff SWE, Backend") == {"sr", "staff", "swe", "backend"}
+    assert ingest._title_words("---") == set()             # no alnum tokens → gate skipped
+
+
+def test_word_gate_rejects_peer_qualifier(jobs_db):
+    # Identical description, titles share the "Project Manager" tail but differ by a leading
+    # qualifier. Char-ratio (0.73) clears the pre-filter, but word-overlap is 2/4 = 0.5 < 0.6,
+    # so these distinct roles must NOT merge — the Cisco "Technical vs Engineering PM" case.
+    _insert(jobs_db, "A", "Engineering Project Manager", DESC_A)
+    matches = ingest.find_canonical(jobs_db, "P", "Technical Project Manager", "Acme", DESC_A, 0.85)
+    assert matches == []
+
+
+def test_word_gate_allows_suffix_variant(jobs_db):
+    # Same role with an added suffix: word-overlap 2/3 = 0.67 >= 0.6, so an aggregator's
+    # "… - Remote" repost still merges with the identical-description canonical.
+    _insert(jobs_db, "A", "Software Engineer", DESC_A)
+    matches = ingest.find_canonical(jobs_db, "P", "Software Engineer - Remote", "Acme", DESC_A, 0.85)
+    assert [m["job_id"] for m in matches] == ["A"]
+
+
+def test_word_gate_skipped_for_titleless_tokens(jobs_db):
+    # A title with no alnum tokens yields an empty word set → Jaccard is undefined, so the gate
+    # is skipped and the char pre-filter alone governs (here both titles are "---", char 1.0).
+    _insert(jobs_db, "A", "---", DESC_A)
+    matches = ingest.find_canonical(jobs_db, "P", "---", "Acme", DESC_A, 0.85)
+    assert [m["job_id"] for m in matches] == ["A"]
+
+
+def test_word_gate_threshold_configurable(jobs_db):
+    # Lowering title_word_threshold below the pair's 0.5 overlap lets the peer-qualifier
+    # pair merge again — confirms the gate is driven by the passed-in threshold, not hardcoded.
+    _insert(jobs_db, "A", "Engineering Project Manager", DESC_A)
+    matches = ingest.find_canonical(jobs_db, "P", "Technical Project Manager", "Acme", DESC_A,
+                                    0.85, title_word_threshold=0.4)
+    assert [m["job_id"] for m in matches] == ["A"]

@@ -232,9 +232,10 @@ When the same job appears on multiple platforms or under slightly different titl
 
 On each new job ingested, the script:
 
-1. Pre-filters existing canonical jobs by title similarity > 60 % (fast upper-bound check).
-2. Computes a full `SequenceMatcher` ratio on the job description.
-3. If the ratio meets `fuzzy_desc_threshold` (default 0.85), the new job is recorded as a duplicate (`canonical_id` set to the canonical's `job_id`).
+1. Pre-filters existing canonical jobs by title *character* similarity > 60 % (fast upper-bound check).
+2. Applies a title *word-overlap* gate (`fuzzy_title_word_threshold`, default 0.6): the titles' word sets must share at least that Jaccard fraction. Character similarity rewards a shared tail phrase, so two distinct roles with the same suffix — "Engineering Project Manager" vs "Technical Project Manager" (0.5 word-overlap) — are kept apart even when their descriptions are near-identical boilerplate, while suffix/reorder variants an aggregator produces ("Software Engineer" vs "Software Engineer - Remote", 0.67) still pass.
+3. Computes a full `SequenceMatcher` ratio on the job description.
+4. If the ratio meets `fuzzy_desc_threshold` (default 0.85), the new job is recorded as a duplicate (`canonical_id` set to the canonical's `job_id`).
 
 No company filter is applied — the same job often appears under different company names when posted by recruiters. Detection is cross-task.
 

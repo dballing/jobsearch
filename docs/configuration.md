@@ -86,7 +86,8 @@ These sit at the top level of `config.toml` (not inside `[[tasks]]`).
 | `auto_ghost_days` | `180` | Number of days since `applied_at` before auto-ghosting. |
 | `fuzzy_dedup` | `true` | Master switch for near-duplicate detection. Per-task `fuzzy_dedup` overrides this. |
 | `fuzzy_desc_threshold` | `0.85` | Minimum description similarity (0–1) to consider two jobs near-duplicates. |
-| `fuzzy_title_threshold` | `0.6` | Minimum title similarity used as a fast pre-filter before the description check. |
+| `fuzzy_title_threshold` | `0.6` | Minimum title *character* similarity used as a fast pre-filter before the description check. |
+| `fuzzy_title_word_threshold` | `0.6` | Minimum title *word-overlap* (Jaccard on lowercased alnum tokens) required for a near-duplicate. Rejects distinct roles that share a tail phrase but differ by a qualifier — e.g. "Engineering Project Manager" vs "Technical Project Manager" (0.5) — even when their descriptions are near-identical. Suffix/reorder variants ("Software Engineer" vs "Software Engineer - Remote", 0.67) still merge. |
 | `inherit_canonical_status` | `true` | When a new job is linked as a duplicate, inherit the canonical's current status. Set `false` to always start duplicates as `new`. |
 
 ## AI engine settings (`[ai]`)
