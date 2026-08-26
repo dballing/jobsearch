@@ -118,6 +118,7 @@ uploads_dir = "uploads"
 # fuzzy_desc_threshold = 0.85      # min description similarity to consider a near-duplicate (0–1, default: 0.85)
 # fuzzy_title_threshold = 0.6      # min title char-similarity pre-filter before description check (0–1, default: 0.6)
 # fuzzy_title_word_threshold = 0.6 # min title word-overlap (Jaccard); keeps distinct roles sharing a tail phrase apart (0–1, default: 0.6)
+# fuzzy_title_id_gate = true       # differing req/posting IDs in titles ([AQ-14258] vs [AQ-15000]) never merge (default: true)
 # inherit_canonical_status = true  # new duplicate inherits the canonical job's status (default: true)
 
 # Map label keys to display names shown in the UI filter bar.

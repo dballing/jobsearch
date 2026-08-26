@@ -336,6 +336,7 @@ def main() -> None:
     desc_threshold:  float = config.get("fuzzy_desc_threshold",  0.85)
     title_threshold: float = config.get("fuzzy_title_threshold", 0.6)
     title_word_threshold: float = config.get("fuzzy_title_word_threshold", _TITLE_WORD_GATE)
+    title_id_gate: bool = config.get("fuzzy_title_id_gate", True)
 
     conn = open_db(db_path)
     inserted = updated = stubbed = failed = 0
@@ -393,7 +394,7 @@ def main() -> None:
             matches = find_canonical(
                 conn, job_id,
                 fields["title"], fields["company"], fields["job_description"],
-                desc_threshold, title_threshold, title_word_threshold,
+                desc_threshold, title_threshold, title_word_threshold, title_id_gate,
             )
             if matches:
                 canon_id     = matches[0]["job_id"]

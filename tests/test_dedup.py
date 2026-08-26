@@ -127,3 +127,46 @@ def test_word_gate_threshold_configurable(jobs_db):
     matches = ingest.find_canonical(jobs_db, "P", "Technical Project Manager", "Acme", DESC_A,
                                     0.85, title_word_threshold=0.4)
     assert [m["job_id"] for m in matches] == ["A"]
+
+
+# ── Req/posting-ID gate ──
+def test_title_id_codes():
+    # Bracketed req IDs, bare years, and level tags qualify; role words and bare short numbers don't.
+    assert ingest._title_id_codes("Sr Project Manager [AQ-14258]") == {"aq-14258"}
+    assert ingest._title_id_codes("Data Engineer Req 14258") == {"14258"}
+    assert ingest._title_id_codes("Software Engineer L5") == {"l5"}
+    assert ingest._title_id_codes("2024 Summer Intern") == {"2024"}
+    assert ingest._title_id_codes("Staff Engineer, Level 3") == set()   # bare single digit ignored
+    assert ingest._title_id_codes("Senior Product Manager") == set()
+
+
+def test_id_gate_rejects_differing_req_id(jobs_db):
+    # Same Aquent template (identical description) reused across two requisitions. Word-overlap
+    # is 0.67 (would merge), but the differing [AQ-…] codes disqualify them — the real bug case.
+    _insert(jobs_db, "A", "Sr Project Manager [AQ-14258]", DESC_A)
+    matches = ingest.find_canonical(jobs_db, "P", "Sr Project Manager [AQ-15000]", "Acme", DESC_A, 0.85)
+    assert matches == []
+
+
+def test_id_gate_allows_matching_req_id(jobs_db):
+    # Identical req ID in both titles → same requisition → still merges (description also matches).
+    _insert(jobs_db, "A", "Sr Project Manager [AQ-14258]", DESC_A)
+    matches = ingest.find_canonical(jobs_db, "P", "Sr Project Manager [AQ-14258]", "Acme", DESC_A, 0.85)
+    assert [m["job_id"] for m in matches] == ["A"]
+
+
+def test_id_gate_ignored_when_one_side_lacks_code(jobs_db):
+    # An aggregator stripped the req ID from one title. We can't infer a difference from a
+    # missing code, so the ID gate stays out of the way and normal matching applies.
+    _insert(jobs_db, "A", "Sr Project Manager [AQ-14258]", DESC_A)
+    matches = ingest.find_canonical(jobs_db, "P", "Sr Project Manager", "Acme", DESC_A, 0.85)
+    assert [m["job_id"] for m in matches] == ["A"]
+
+
+def test_id_gate_can_be_disabled(jobs_db):
+    # With title_id_gate=False the differing req IDs no longer disqualify; word-overlap (0.67)
+    # and the identical description carry the match — confirms the gate is toggleable.
+    _insert(jobs_db, "A", "Sr Project Manager [AQ-14258]", DESC_A)
+    matches = ingest.find_canonical(jobs_db, "P", "Sr Project Manager [AQ-15000]", "Acme", DESC_A,
+                                    0.85, title_id_gate=False)
+    assert [m["job_id"] for m in matches] == ["A"]

@@ -534,6 +534,32 @@ def _title_words(title: str) -> set[str]:
     return {w for w in re.split(r"[^0-9a-z]+", title.lower()) if w}
 
 
+# Candidate identifier tokens: alphanumeric runs optionally joined by - or / (so a req code like
+# "AQ-14258" or "2024-1234" stays one token instead of splitting on the hyphen), plus a 4+-digit
+# run test for bare numeric IDs.
+_ID_TOKEN_RE = re.compile(r"[a-z0-9]+(?:[-/][a-z0-9]+)*")
+_LONG_DIGIT_RE = re.compile(r"\d{4,}")
+
+
+def _title_id_codes(title: str) -> set[str]:
+    """Identifier codes embedded in a job title — req/posting IDs like "AQ-14258", a bare "2024",
+    or a level tag like "L5". A token qualifies only when it carries a real code signal: it mixes
+    letters and digits, or it contains a 4+-digit run. Bare short numbers ("Level 3") are excluded
+    because they're rarely IDs and single digits are noisy. The word-overlap gate can't catch a
+    differing req ID — "[AQ-14258]" vs "[AQ-15000]" share the "aq" prefix and all the role words,
+    so they score 0.67 and merge — but two postings whose titles carry *different* codes are
+    different requisitions, so the caller refuses to merge them even when everything else (often a
+    byte-identical ATS template) is identical. Missing an occasional same-req repost that reworded
+    its code is the safe direction: a visible duplicate row beats hiding a distinct opening."""
+    codes = set()
+    for tok in _ID_TOKEN_RE.findall(title.lower()):
+        if not any(c.isdigit() for c in tok):
+            continue
+        if any(c.isalpha() for c in tok) or _LONG_DIGIT_RE.search(tok):
+            codes.add(tok)
+    return codes
+
+
 def _word_shingles(text: str, k: int = _SHINGLE_K) -> set | None:
     """Set of contiguous word k-grams in `text`, or None when it has fewer than k words
     (too short for a meaningful shingle overlap — the caller then skips the gate)."""
@@ -552,6 +578,7 @@ def find_canonical(
     threshold: float,
     title_threshold: float = 0.6,
     title_word_threshold: float = _TITLE_WORD_GATE,
+    title_id_gate: bool = True,
 ) -> list[sqlite3.Row]:
     """Return the canonical-root jobs that are near-duplicates, sorted oldest-first.
 
@@ -567,7 +594,10 @@ def find_canonical(
     A title similarity >= title_threshold char-ratio pre-filter keeps the search
     efficient; a title word-overlap (Jaccard) >= title_word_threshold gate then
     rejects distinct roles that merely share a tail phrase (e.g. "Engineering
-    Project Manager" vs "Technical Project Manager"); description similarity >=
+    Project Manager" vs "Technical Project Manager").  When title_id_gate is set,
+    a differing req/posting ID baked into the two titles (e.g. "[AQ-14258]" vs
+    "[AQ-15000]") is an outright disqualifier — different requisitions never
+    merge no matter how identical the rest is.  Description similarity >=
     threshold is the final gate.
 
     The caller should treat matches[0] as the canonical (oldest first_seen) and
@@ -596,6 +626,8 @@ def find_canonical(
     new_sm.set_seq2(description)
     new_shingles = _word_shingles(description)  # None if the new desc is too short to gate
     new_words = _title_words(title)  # word set for the title-overlap gate (loop-invariant)
+    # Req/posting-ID codes in the new title (loop-invariant); empty disables the ID gate for it.
+    new_ids = _title_id_codes(title) if title_id_gate else set()
     for candidate in candidates:
         if not candidate["title"] or not candidate["job_description"]:
             continue
@@ -613,6 +645,15 @@ def find_canonical(
         if new_words and cand_words:
             union = len(new_words | cand_words)
             if len(new_words & cand_words) / union < title_word_threshold:
+                continue
+        # Req/posting-ID gate: when both titles carry identifier codes and they share none, the
+        # postings are different requisitions — disqualify outright, even if descriptions are a
+        # byte-identical ATS template. A shared code (or one side lacking a code) falls through
+        # to the normal gates: an equal req is a match, and we can't infer a difference from a
+        # code an aggregator stripped.
+        if new_ids:
+            cand_ids = _title_id_codes(candidate["title"])
+            if cand_ids and not (new_ids & cand_ids):
                 continue
         cand_desc = candidate["job_description"]
         # Cheap length-ratio pre-gate before the O(n*m) description compare. ratio() = 2*M/
@@ -971,6 +1012,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
            fuzzy_dedup: bool = True, fuzzy_desc_threshold: float = 0.85,
            fuzzy_title_threshold: float = 0.6,
            fuzzy_title_word_threshold: float = _TITLE_WORD_GATE,
+           fuzzy_title_id_gate: bool = True,
            inherit_canonical_status: bool = True,
            company_aliases: "dict | None" = None,
            formatter: "DescriptionFormatter | None" = None) -> Counter:
@@ -1028,7 +1070,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                 matches = find_canonical(
                     conn, fields["job_id"], fields["title"], fields["company"],
                     fields["job_description"], fuzzy_desc_threshold, fuzzy_title_threshold,
-                    fuzzy_title_word_threshold,
+                    fuzzy_title_word_threshold, fuzzy_title_id_gate,
                 )
                 if matches:
                     canonical = matches[0]
@@ -1153,7 +1195,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                 matches = find_canonical(
                     conn, fields["job_id"], fields["title"], fields["company"],
                     fields["job_description"], fuzzy_desc_threshold, fuzzy_title_threshold,
-                    fuzzy_title_word_threshold,
+                    fuzzy_title_word_threshold, fuzzy_title_id_gate,
                 )
                 if matches:
                     canonical = matches[0]
@@ -1414,6 +1456,7 @@ def main() -> None:
     fuzzy_desc_threshold: float = config.get("fuzzy_desc_threshold", 0.85)
     fuzzy_title_threshold: float = config.get("fuzzy_title_threshold", 0.6)
     fuzzy_title_word_threshold: float = config.get("fuzzy_title_word_threshold", _TITLE_WORD_GATE)
+    fuzzy_title_id_gate: bool = config.get("fuzzy_title_id_gate", True)
     inherit_canonical_status: bool = config.get("inherit_canonical_status", True)
     # Case-insensitive variant→canonical company-name map (empty if [company_aliases] unset).
     company_alias_map = build_company_alias_map(config.get("company_aliases"))
@@ -1502,7 +1545,7 @@ def main() -> None:
                 result = ingest(
                     conn, items, label, actor_type, exclude_ats_dups, reset_on_change,
                     fuzzy_dedup, fuzzy_desc_threshold, fuzzy_title_threshold,
-                    fuzzy_title_word_threshold, inherit_canonical_status,
+                    fuzzy_title_word_threshold, fuzzy_title_id_gate, inherit_canonical_status,
                     company_aliases=company_alias_map,
                     formatter=formatter,
                 )
