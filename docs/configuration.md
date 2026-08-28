@@ -139,10 +139,17 @@ Describe yourself as a candidate…
 # Optional geographic preferences (see below):
 location_prompt = """
 I currently reside in Alexandria, Virginia.
-PREFERRED: DC Metro / Northern Virginia; also fully remote.
+PREFERRED: DC Metro / Northern Virginia; also fully remote with no state restriction that
+bars my current residence (Virginia) — i.e. I can work it without moving.
 GOOD: Raleigh/RTP and elsewhere in North Carolina.
 ACCEPTABLE: South Carolina.
 POOR: on-site/hybrid whose only locations are outside VA/DC/NC/SC, unless fully remote.
+State-restricted remote: some "remote" roles restrict eligibility to (or exclude) residents
+of certain states. I presently reside in Virginia but am willing to establish residence in
+DC, NC, or SC for a role I want. So do NOT treat such a role as closed just because VA is
+excluded — it is workable as long as its eligible-state list includes any of DC, NC, or SC.
+Rate it by the best eligible state among those: DC → PREFERRED (my metro; no real move);
+NC → GOOD; only SC → ACCEPTABLE; none of DC/NC/SC eligible → POOR.
 If a posting's ONLY location is an entire country ("United States") with no state or city,
 assume it falls within my target areas (my searches are already geographically pre-filtered)
 and treat it as at least ACCEPTABLE.
@@ -181,6 +188,20 @@ reject_companies = [
 >    gain far outweighs the few extra cents. (If you'd rather keep scoring on Haiku, set
 >    `location_model` to a capable model instead, so at least the description-aware geo call is
 >    accurate.)
+
+> **State-restricted remote roles.** A common trap: a posting says "remote" but its description
+> excludes your home state (e.g. *"remote, but not eligible to be hired in … VA …"*). With the
+> description on (the default), the geo sub-call honors that condition — it drops the remote
+> option for you and rates by whatever's left, which is often just an out-of-area office → `POOR`
+> → forced to `low`. That's correct **only if you truly can't take the job.** If you'd relocate to
+> an *eligible* state you otherwise like, say so in `location_prompt` — the sub-call judges by the
+> residence/constraints you state, not just where you live now. Name the states you'd move to and
+> the tier each earns, and tell it a role stays workable when its eligible list includes any of
+> them (see the example above). Value judgments live entirely in `location_prompt`, so this is the
+> place to encode it — no code change. Because your current state (the one being excluded) is
+> baked into the wording, **revisit this rule if you actually relocate.** Per job, the manual
+> **geo-fit `ACCEPTABLE` override** is the quick escape hatch — it skips the sub-call entirely and
+> suppresses the `low`-clamp for that one posting.
 
 | Key | Default | Description |
 |-----|---------|-------------|
