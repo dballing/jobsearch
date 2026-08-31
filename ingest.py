@@ -48,7 +48,10 @@ APIFY_BASE = "https://api.apify.com/v2"
 #   first_seen vs applied_at  first_seen = when WE ingested it; applied_at = when the
 #                             user applied (drives auto-ghost).
 #   raw                       full Apify item JSON, kept for reprocessing/debugging.
-# ingest_state tracks the last-processed run per task; ingest_history feeds the stats
+# ingest_state records the last-processed run per task (feeds the run summary/stats). The
+# per-run rows in ingest_history are the source of truth for "already ingested": run-selection
+# filters on run_id membership within a search (see runs_to_process), not the ingest_state
+# pointer, which makes ingest robust to Apify task renames. ingest_history also feeds the stats
 # charts; job_attachments links one uploaded file to N jobs (refcounted on delete).
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -468,40 +471,54 @@ def fetch_dataset_items(dataset_id: str, api_token: str) -> list[dict]:
     return items
 
 
+def search_history_run_ids(conn: sqlite3.Connection, search_id: str) -> set[str]:
+    """The Apify run IDs this SEARCH has already ingested, read from ingest_history.
+
+    History rows are keyed by ``state_key(search_id, task_name)`` — bare task names for the
+    default search, ``"<search_id>:<task_name>"`` otherwise — so a search's rows are exactly
+    those whose key carries its prefix. The prefix is matched with LIKE, and LIKE
+    metacharacters in the search_id are escaped: ``_`` is a single-char wildcard and is
+    plausible in a slug (e.g. ``mid_atlantic``), so an unescaped prefix could over-match a
+    sibling search. Scope is the whole search, not one task, on purpose — see runs_to_process.
+    """
+    if search_id == DEFAULT_SEARCH_ID:
+        # Default-search keys are bare (no colon); this mirrors the namespace-migration guard.
+        cur = conn.execute("SELECT run_id FROM ingest_history WHERE task_name NOT LIKE '%:%'")
+    else:
+        like = search_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + ":%"
+        cur = conn.execute(
+            "SELECT run_id FROM ingest_history WHERE task_name LIKE ? ESCAPE '\\'", (like,)
+        )
+    return {row[0] for row in cur}
+
+
 def runs_to_process(
     conn: sqlite3.Connection,
-    task_name: str,
+    search_id: str,
     all_runs: list[dict],
 ) -> list[dict]:
-    """Return the subset of runs not yet ingested, in chronological order.
+    """Return the runs this SEARCH hasn't ingested yet, in chronological order.
 
-    On first ever run (no state) all available runs are returned so that a
-    newly configured task picks up its full backlog.  Use --dry-run first to
-    preview what will be ingested.
+    "Already ingested" is decided by run_id membership in this search's ingest_history —
+    NOT by the task name. Apify run IDs are globally unique and survive a task rename
+    (renaming a task on Apify re-labels its runs but keeps their IDs), so keying off the
+    run_id makes ingest rename-proof: a task renamed A→B, renamed back to A, or replaced by
+    a brand-new task reusing the name A all resolve correctly, because the only question ever
+    asked is "has this search already processed this run_id?" Keying off the mutable task
+    name instead would treat every historical run as new the first time a renamed task is
+    fetched and reprocess the entire backlog (churning triaged status via reset_on_change /
+    auto-close replay, and re-billing AI reformatting).
+
+    Scope is the *search*, not the individual task, so the old task's already-seen run IDs
+    still count after a rename. It stays per-search (via the history-key prefix) so two
+    searches sharing one Apify task track it independently — search B still ingests a shared
+    run after search A has.
+
+    With no history for this search yet, nothing is filtered, so a new search/task picks up
+    its full backlog. Use --dry-run first to preview what will be ingested.
     """
-    state = conn.execute(
-        "SELECT last_run_id FROM ingest_state WHERE task_name = ?",
-        (task_name,),
-    ).fetchone()
-
-    if state is None:
-        # No prior state — process all available runs.
-        return list(all_runs)
-
-    last_run_id = state["last_run_id"]
-    seen = False
-    pending = []
-    for run in all_runs:
-        if seen:
-            pending.append(run)
-        if run["id"] == last_run_id:
-            seen = True
-
-    if not seen:
-        # Last known run has aged off (unlikely) — fall back to latest only.
-        return all_runs[-1:] if all_runs else []
-
-    return pending
+    seen = search_history_run_ids(conn, search_id)
+    return [run for run in all_runs if run["id"] not in seen]
 
 
 def _scalar(val: object) -> object:
@@ -1738,7 +1755,9 @@ def main() -> None:
         print(f"Fetching runs for '{task_name}' ({label_desc}, actor: {actor_type}) ...")
         try:
             all_runs = fetch_task_runs(username, task_name, api_token)
-            pending = runs_to_process(conn, skey, all_runs)
+            # Rename-proof: selection is keyed on run_id within this search, not the task
+            # name (see runs_to_process). skey is still what record_state writes below.
+            pending = runs_to_process(conn, search_id, all_runs)
 
             if not pending:
                 print(f"  No new runs since last ingestion.")

@@ -28,7 +28,7 @@ db_path = "jobs.db"
 "Sirius XM" = "SiriusXM"
 
 [[searches]]
-search_id          = "tpm"                 # stable key stored in the DB — don't rename lightly
+search_id          = "tpm"                 # PERMANENT primary key — never rename (see note below)
 search_name        = "TPM / Program Mgmt"  # shown in the UI's search selector
 search_config_file = "searches/tpm.toml"   # holds [viability], [[tasks]], [labels]
 adopts_legacy      = true                  # one-time: this search absorbs the pre-split jobs
@@ -57,6 +57,8 @@ Behavior:
 - **Scoring:** `./rescore_viability.sh` scores **every** search (each under its own criteria, in its own child process — the writer lock is process-scoped, so it fans out rather than looping in-process). `--search <id>` narrows to one. `./ingest.sh` already ingests all searches in one run.
 - **Dedup:** automatic near-duplicate grouping never crosses searches; a manual merge/promote in the UI may.
 - **Going from one search to many:** set `adopts_legacy = true` on the search that should inherit your existing (pre-split) jobs; the next ingest/rescore/app start folds them in automatically (idempotent).
+- **`search_id` is permanent; never rename it.** It's the primary key stored in every `job_search_state` row and prefixed onto every run-tracking key. Renaming it in config does **not** migrate those rows — it orphans them: the search then shows up empty (its status, viability, overrides, and history all gone) and every task re-ingests its full backlog. If you truly must change one, it's a manual DB migration (`UPDATE`ing `job_search_state.search_id` plus the `ingest_state`/`ingest_history` key prefixes), not a config edit. `search_name` (the display label) is free to change anytime.
+- **Task `name`s, by contrast, are safe to rename** — including renaming on the Apify side, renaming back, or reusing an old name for a new task. Run-tracking keys off the immutable Apify run_id, not the task name, so an already-processed run is never re-ingested and a genuinely new run always is. (One consequence: within a single search, the same run is processed once regardless of which task name it arrived under.)
 
 ## Labels
 

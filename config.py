@@ -61,7 +61,16 @@ class Search:
     """One job search: a stable id (stored in every per-lens DB row), a display name,
     its fully-merged effective config (canonical globals + the search's own stanzas), and
     its ingest tasks. ``adopts_legacy`` marks the one search that absorbs pre-split
-    ``__default__`` rows on first migration."""
+    ``__default__`` rows on first migration.
+
+    The ``id`` is the search's permanent primary key across the DB and MUST NOT be renamed.
+    It's stored in every ``job_search_state`` row (membership, status, viability, overrides,
+    per-lens history) and is the prefix on every ``ingest_state``/``ingest_history`` key.
+    Renaming it in config doesn't migrate those rows — it orphans them: the app then queries
+    the new id, finds nothing, so the search shows up empty (all triage/scores/history gone),
+    and every task re-ingests its full backlog from scratch. Treat a rename as a destructive
+    migration, not a config tweak. (Task names, by contrast, are safe to rename — run-tracking
+    keys off the immutable Apify run_id, not the task name; see ingest.runs_to_process.)"""
     id: str
     name: str
     config: dict

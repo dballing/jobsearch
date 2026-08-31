@@ -38,6 +38,77 @@ def test_state_key_bare_for_default_namespaced_otherwise():
     assert state_key("tpm", "my-task") == "tpm:my-task"
 
 
+# ── runs_to_process: rename-proof, per-search run-selection ──────────────────
+
+def _record_run(conn, search_id, task_name, run_id):
+    """Record that `search_id` ingested `run_id` under `task_name` — mirrors record_state's
+    ingest_history write, using the same namespaced key runs_to_process reads back."""
+    conn.execute(
+        "INSERT INTO ingest_history (task_name, run_id, run_at, inserted, updated, unchanged) "
+        "VALUES (?, ?, '2026-01-01T00:00:00Z', 0, 0, 1)",
+        (state_key(search_id, task_name), run_id),
+    )
+
+
+def _runs(*ids):
+    return [{"id": i, "startedAt": "2026-01-01T00:00:00Z"} for i in ids]
+
+
+def test_runs_to_process_new_search_takes_full_backlog(jobs_db):
+    # No history for this search → nothing filtered, whole backlog returned.
+    pending = ingest.runs_to_process(jobs_db, "tpm", _runs("r1", "r2", "r3"))
+    assert [r["id"] for r in pending] == ["r1", "r2", "r3"]
+
+
+def test_runs_to_process_skips_already_ingested_runs(jobs_db):
+    _record_run(jobs_db, "tpm", "task-a", "r1")
+    _record_run(jobs_db, "tpm", "task-a", "r2")
+    pending = ingest.runs_to_process(jobs_db, "tpm", _runs("r1", "r2", "r3"))
+    assert [r["id"] for r in pending] == ["r3"]
+
+
+def test_runs_to_process_is_rename_proof(jobs_db):
+    # Runs first ingested under the OLD task name are recognized when the same run IDs are
+    # later fetched under the NEW name — selection keys on run_id, not task name.
+    _record_run(jobs_db, "tpm", "old-name", "r1")
+    _record_run(jobs_db, "tpm", "old-name", "r2")
+    # Apify task renamed old-name → new-name; same runs come back, plus one new run.
+    pending = ingest.runs_to_process(jobs_db, "tpm", _runs("r1", "r2", "r3"))
+    assert [r["id"] for r in pending] == ["r3"]
+
+
+def test_runs_to_process_new_task_reusing_old_name_processes_its_fresh_runs(jobs_db):
+    # A→B rename, then a brand-new Apify task reuses name A. The new task mints fresh run IDs,
+    # so they're unseen and get ingested; the stale old rows don't false-match (unique IDs).
+    _record_run(jobs_db, "tpm", "shared-name", "old-run")
+    pending = ingest.runs_to_process(jobs_db, "tpm", _runs("new-run-1", "new-run-2"))
+    assert [r["id"] for r in pending] == ["new-run-1", "new-run-2"]
+
+
+def test_runs_to_process_is_per_search_preserving_task_reuse(jobs_db):
+    # Two searches sharing one Apify task track it independently: a run consumed by search A
+    # is still pending for search B.
+    _record_run(jobs_db, "tpm", "shared-task", "r1")
+    assert [r["id"] for r in ingest.runs_to_process(jobs_db, "tpm", _runs("r1"))] == []
+    assert [r["id"] for r in ingest.runs_to_process(jobs_db, "director", _runs("r1"))] == ["r1"]
+
+
+def test_runs_to_process_default_search_scope_excludes_namespaced_rows(jobs_db):
+    # The default search's bare keys must not pick up a named search's namespaced runs.
+    _record_run(jobs_db, "tpm", "task", "r1")                 # -> "tpm:task"
+    _record_run(jobs_db, DEFAULT_SEARCH_ID, "task", "r2")     # -> bare "task"
+    pending = ingest.runs_to_process(jobs_db, DEFAULT_SEARCH_ID, _runs("r1", "r2"))
+    assert [r["id"] for r in pending] == ["r1"]               # r2 seen, r1 belongs to tpm
+
+
+def test_runs_to_process_underscore_search_id_does_not_overmatch(jobs_db):
+    # '_' is a LIKE single-char wildcard; an unescaped prefix for "mid_atlantic" would match
+    # a sibling like "midXatlantic:...". Escaping keeps the sibling's run out of scope.
+    _record_run(jobs_db, "midXatlantic", "task", "r1")
+    pending = ingest.runs_to_process(jobs_db, "mid_atlantic", _runs("r1"))
+    assert [r["id"] for r in pending] == ["r1"]               # not falsely marked seen
+
+
 # ── ensure_job_search_state backfill ─────────────────────────────────────────
 
 def test_backfill_seeds_default_rows_from_dormant_columns(jobs_db):
