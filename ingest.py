@@ -16,13 +16,14 @@ import json
 import re
 import sqlite3
 import sys
-import tomllib
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 
 import requests
+
+from config import ConfigError, load_config, migrate_config_to_basics
 
 from ai_config import (DEFAULT_EFFORT, format_token_summary, resolve_ai_settings,
                        resolve_effort, warn_effort_ignored)
@@ -127,7 +128,45 @@ CREATE TABLE IF NOT EXISTS job_attachments (
     PRIMARY KEY (job_id, attachment_id)
 );
 CREATE INDEX IF NOT EXISTS idx_attach_aid ON job_attachments(attachment_id);
+
+-- Per-(job, search) state for multi-search support. A row's existence IS the job's
+-- membership in that search; the row carries ALL per-lens state — status, viability,
+-- the manual salary/geo overrides that feed that lens's scorer, and the per-lens event
+-- history. The matching columns on `jobs` are dormant (kept for rollback; migrated here
+-- once). See config.py for the search model and __default__ (the single/legacy search id).
+CREATE TABLE IF NOT EXISTS job_search_state (
+    job_id                TEXT NOT NULL,
+    search_id             TEXT NOT NULL,
+    status                TEXT NOT NULL DEFAULT 'new',
+    viability             TEXT,
+    viability_reason      TEXT,
+    viability_factors     TEXT,
+    viability_prompt_hash TEXT,
+    needs_rescored        INTEGER NOT NULL DEFAULT 0,
+    salary_min_actual     INTEGER,
+    salary_max_actual     INTEGER,
+    geo_fit_actual        TEXT,
+    applied_at            TEXT,
+    history               TEXT NOT NULL DEFAULT '[]',
+    first_seen            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at            TIMESTAMP,
+    PRIMARY KEY (job_id, search_id)
+);
+CREATE INDEX IF NOT EXISTS idx_jss_search ON job_search_state(search_id, status);
 """
+
+# Legacy/default search id — the single implicit search (Path A) and the id every
+# pre-multi-search row is backfilled under. Mirrors config.DEFAULT_SEARCH_ID (kept here
+# too so the DB layer needn't import config).
+DEFAULT_SEARCH_ID = "__default__"
+
+
+def state_key(search_id: str, task_name: str) -> str:
+    """Run-tracking key for ingest_state/ingest_history. The default search keys tasks bare
+    (preserving single-search history labels exactly); named searches namespace as
+    ``<search_id>:<task_name>`` so two searches referencing the same Apify task can't clobber
+    each other's last-run bookmark."""
+    return task_name if search_id == DEFAULT_SEARCH_ID else f"{search_id}:{task_name}"
 
 
 def open_db(path: str) -> sqlite3.Connection:
@@ -248,7 +287,109 @@ def open_db(path: str) -> sqlite3.Connection:
         "CREATE INDEX IF NOT EXISTS idx_jobs_description_hash ON jobs(description_hash)"
     )
     conn.commit()
+    ensure_job_search_state(conn)
     return conn
+
+
+# Columns that live on both `jobs` (dormant after migration) and job_search_state — the
+# per-lens state carried into the __default__ backfill. Kept as one list so the CREATE, the
+# backfill SELECT, and any future reader stay in lockstep.
+_JSS_MIGRATED_COLS = (
+    "status", "viability", "viability_reason", "viability_factors", "viability_prompt_hash",
+    "needs_rescored", "salary_min_actual", "salary_max_actual", "geo_fit_actual",
+    "applied_at", "history", "first_seen",
+)
+
+
+def ensure_job_search_state(conn: sqlite3.Connection) -> None:
+    """Create job_search_state (idempotent) and, the first time, seed one __default__ row per
+    existing job from the (now dormant) per-lens columns on `jobs`. Gated on a read so it takes
+    no write lock once seeded. Shared by every migration site (ingest open_db, app._migrate,
+    rescore open_db) so the table + backfill can't drift between entry points."""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS job_search_state (
+               job_id                TEXT NOT NULL,
+               search_id             TEXT NOT NULL,
+               status                TEXT NOT NULL DEFAULT 'new',
+               viability             TEXT,
+               viability_reason      TEXT,
+               viability_factors     TEXT,
+               viability_prompt_hash TEXT,
+               needs_rescored        INTEGER NOT NULL DEFAULT 0,
+               salary_min_actual     INTEGER,
+               salary_max_actual     INTEGER,
+               geo_fit_actual        TEXT,
+               applied_at            TEXT,
+               history               TEXT NOT NULL DEFAULT '[]',
+               first_seen            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+               updated_at            TIMESTAMP,
+               PRIMARY KEY (job_id, search_id)
+           )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jss_search ON job_search_state(search_id, status)")
+    # First-time backfill: one __default__ row per job, copying the dormant per-lens columns.
+    if not conn.execute("SELECT 1 FROM job_search_state LIMIT 1").fetchone():
+        cols = ", ".join(_JSS_MIGRATED_COLS)
+        conn.execute(
+            f"INSERT OR IGNORE INTO job_search_state (job_id, search_id, {cols}) "
+            f"SELECT job_id, ?, {cols} FROM jobs",
+            (DEFAULT_SEARCH_ID,),
+        )
+    conn.commit()
+
+
+def adopt_legacy(conn: sqlite3.Connection, adopter_id: str | None) -> int:
+    """One-time single→multi transition: re-point every pre-split __default__ row (state +
+    history + membership, all one row) and its ingest_state run-tracking key onto the search
+    that declared adopts_legacy. Gated on a read (no-op once done) and idempotent — after the
+    re-point there are no __default__ rows left. Returns the number of state rows moved.
+
+    ``adopter_id`` is the id of the adopting search (config.py enforces at most one). When None
+    and __default__ rows still exist under a Path-B config, warns loudly rather than silently
+    orphaning them under lenses the UI can't show."""
+    has_legacy = conn.execute(
+        "SELECT 1 FROM job_search_state WHERE search_id = ? LIMIT 1", (DEFAULT_SEARCH_ID,)
+    ).fetchone()
+    if not has_legacy:
+        return 0
+    if not adopter_id:
+        print(
+            f"WARNING: {DEFAULT_SEARCH_ID!r} job rows exist but no search sets "
+            "adopts_legacy=true — they are invisible under the named searches. Mark one "
+            "[[searches]] entry `adopts_legacy = true` to adopt them.",
+            file=sys.stderr,
+        )
+        return 0
+    # Refuse to merge onto a search that already has its own rows for the same jobs (would
+    # collide on the (job_id, search_id) PK) — adoption is meant to run before the first
+    # multi-search ingest creates any adopter rows.
+    collision = conn.execute(
+        "SELECT 1 FROM job_search_state a JOIN job_search_state b "
+        "ON a.job_id = b.job_id WHERE a.search_id = ? AND b.search_id = ? LIMIT 1",
+        (DEFAULT_SEARCH_ID, adopter_id),
+    ).fetchone()
+    if collision:
+        raise RuntimeError(
+            f"cannot adopt {DEFAULT_SEARCH_ID!r} into {adopter_id!r}: the adopter already has "
+            "state rows for some of those jobs. Run adoption before the first multi-search ingest."
+        )
+    cur = conn.execute(
+        "UPDATE job_search_state SET search_id = ? WHERE search_id = ?",
+        (adopter_id, DEFAULT_SEARCH_ID),
+    )
+    moved = cur.rowcount
+    # Re-point run-tracking keys. The default search keys them bare (state_key), so at the
+    # single→multi transition every existing (un-namespaced) key belongs to the default and
+    # gets the adopter's prefix. Run-tracking is low-stakes (a miss just re-scans idempotently),
+    # so the bare-vs-namespaced test (no ':') is deliberately simple.
+    for tbl in ("ingest_state", "ingest_history"):
+        conn.execute(
+            f"UPDATE OR IGNORE {tbl} SET task_name = ? || task_name WHERE task_name NOT LIKE '%:%'",
+            (adopter_id + ":",),
+        )
+    conn.commit()
+    print(f"Adopted {moved} {DEFAULT_SEARCH_ID!r} job state row(s) into search {adopter_id!r}.")
+    return moved
 
 
 def fetch_task_runs(username: str, task_name: str, api_token: str) -> list[dict]:
@@ -373,12 +514,17 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def append_history(conn: sqlite3.Connection, job_id: str, entry: dict) -> None:
-    """Append one event dict to a job's history JSON array (atomic, no read-modify-write)."""
+def append_history(conn: sqlite3.Connection, job_id: str, entry: dict,
+                   search_id: str = DEFAULT_SEARCH_ID) -> None:
+    """Append one event dict to a job's per-lens history JSON array (atomic, no
+    read-modify-write). History is per-(job, search): it lives on job_search_state, so a
+    status change under one lens doesn't interleave with another's. Defaults to the single
+    ``__default__`` search, so single-search callers need no change. Requires the (job,
+    search) membership row to exist (ingest creates it before its first append)."""
     conn.execute(
-        "UPDATE jobs SET history = json_insert(COALESCE(history, '[]'), '$[#]', json(?)) "
-        "WHERE job_id = ?",
-        (json.dumps(entry, ensure_ascii=False), job_id),
+        "UPDATE job_search_state SET history = json_insert(COALESCE(history, '[]'), '$[#]', json(?)) "
+        "WHERE job_id = ? AND search_id = ?",
+        (json.dumps(entry, ensure_ascii=False), job_id, search_id),
     )
 
 
@@ -579,6 +725,7 @@ def find_canonical(
     title_threshold: float = 0.6,
     title_word_threshold: float = _TITLE_WORD_GATE,
     title_id_gate: bool = True,
+    search_id: str | None = None,
 ) -> list[sqlite3.Row]:
     """Return the canonical-root jobs that are near-duplicates, sorted oldest-first.
 
@@ -609,11 +756,26 @@ def find_canonical(
     # marshal the large per-row blobs (raw JSON, history, formatted description) for all
     # ~thousands of postings on every new job. The caller reads job_id/title/company/
     # company_actual/status/applied_at off the returned canonical; the rest are for matching.
-    candidates = conn.execute(
-        "SELECT job_id, title, company, company_actual, status, applied_at, "
-        "job_description, canonical_id, first_seen FROM jobs WHERE job_id != ?",
-        (job_id,),
-    ).fetchall()
+    # When search_id is given, restrict candidates to that search's members (automatic dedup
+    # never crosses searches) and source status/applied_at from that lens's job_search_state
+    # row so an inherited status reflects the search being ingested. search_id=None keeps the
+    # legacy unrestricted behavior (reads the dormant jobs.status) for callers/tests that pass none.
+    if search_id is None:
+        candidates = conn.execute(
+            "SELECT job_id, title, company, company_actual, status, applied_at, "
+            "job_description, canonical_id, first_seen FROM jobs WHERE job_id != ?",
+            (job_id,),
+        ).fetchall()
+    else:
+        candidates = conn.execute(
+            "SELECT jobs.job_id, jobs.title, jobs.company, jobs.company_actual, "
+            "jss.status AS status, jss.applied_at AS applied_at, jobs.job_description, "
+            "jobs.canonical_id, jobs.first_seen "
+            "FROM jobs JOIN job_search_state jss "
+            "ON jss.job_id = jobs.job_id AND jss.search_id = ? "
+            "WHERE jobs.job_id != ?",
+            (search_id, job_id),
+        ).fetchall()
     desc_len = len(description)
     # Distinct canonical roots we matched, keyed by root job_id. A member match
     # contributes its root; the first time we see a root we resolve and cache its row.
@@ -701,11 +863,23 @@ def find_canonical(
         # Resolve a matched member to its canonical root so we return roots, not members.
         root_id = candidate["canonical_id"] or candidate["job_id"]
         if root_id not in roots:
-            # The root row is normally in this run's candidate set; fall back to a
-            # lookup if a member's root wasn't itself a candidate (shouldn't happen).
-            roots[root_id] = row_by_id.get(root_id) or conn.execute(
-                "SELECT * FROM jobs WHERE job_id = ?", (root_id,)
-            ).fetchone()
+            # The root row is normally in this run's candidate set; fall back to a lookup if a
+            # member's root wasn't itself a candidate. With search restriction that happens for
+            # a manually cross-search-merged group whose root lives in another search — the
+            # exact-job_id lookup still resolves it (preserving the one-hop invariant); source
+            # status/applied_at from this lens's state row (NULL if the root isn't a member here).
+            fallback = row_by_id.get(root_id)
+            if fallback is None:
+                if search_id is None:
+                    fallback = conn.execute(
+                        "SELECT * FROM jobs WHERE job_id = ?", (root_id,)).fetchone()
+                else:
+                    fallback = conn.execute(
+                        "SELECT jss.status AS status, jss.applied_at AS applied_at, jobs.* "
+                        "FROM jobs LEFT JOIN job_search_state jss "
+                        "ON jss.job_id = jobs.job_id AND jss.search_id = ? "
+                        "WHERE jobs.job_id = ?", (search_id, root_id)).fetchone()
+            roots[root_id] = fallback
     matches = [r for r in roots.values() if r is not None]
     # Sort oldest-first so matches[0] is the most-canonical candidate.
     matches.sort(key=lambda r: r["first_seen"] or "")
@@ -1015,11 +1189,17 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
            fuzzy_title_id_gate: bool = True,
            inherit_canonical_status: bool = True,
            company_aliases: "dict | None" = None,
-           formatter: "DescriptionFormatter | None" = None) -> Counter:
-    """Process one run's items. Returns a Counter with these keys:
+           formatter: "DescriptionFormatter | None" = None,
+           search_id: str = DEFAULT_SEARCH_ID) -> Counter:
+    """Process one run's items for one search. Returns a Counter with these keys:
         inserted_clean / inserted_grouped / inserted_expired  — new postings, by kind
         updated / unchanged / skipped_ats                     — existing / skipped
         relinked / orphan_merges / reset_new / auto_closed    — side-ops on existing rows
+
+    Per-lens: the shared posting fields go on `jobs` (one physical row per external id), while
+    status/applied_at/history live in this ``search_id``'s ``job_search_state`` row (created on
+    first membership). The same posting seen under two searches is one `jobs` row with two state
+    rows. Automatic fuzzy dedup is restricted to this search's members.
     """
     c: Counter = Counter()
 
@@ -1070,7 +1250,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                 matches = find_canonical(
                     conn, fields["job_id"], fields["title"], fields["company"],
                     fields["job_description"], fuzzy_desc_threshold, fuzzy_title_threshold,
-                    fuzzy_title_word_threshold, fuzzy_title_id_gate,
+                    fuzzy_title_word_threshold, fuzzy_title_id_gate, search_id=search_id,
                 )
                 if matches:
                     canonical = matches[0]
@@ -1137,6 +1317,14 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                  "canonical_id": canonical_id, "raw": raw,
                  "description_hash": desc_hash, "job_description_formatted": formatted},
             )
+            # Per-lens state row (membership + authoritative status/applied_at). Created before
+            # any append_history below, which targets this search's history. jobs.status/applied_at
+            # above are the dormant rollback copy; this row is what the app reads.
+            conn.execute(
+                "INSERT OR IGNORE INTO job_search_state "
+                "(job_id, search_id, status, applied_at) VALUES (?, ?, ?, ?)",
+                (fields["job_id"], search_id, initial_status, initial_applied_at),
+            )
             if initial_status == "closed":
                 c["inserted_expired"] += 1
             elif canonical_id:
@@ -1146,31 +1334,48 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
             ts = _now_iso()
             append_history(conn, fields["job_id"], {
                 "ts": ts, "event": "ingested", "label": label, "source": actor_type,
-            })
+            }, search_id)
             # Record the inherited status so the paper trail shows when it became e.g.
             # 'applied', matching the UI link route's behaviour.
             if initial_status != default_status:
                 append_history(conn, fields["job_id"], {
                     "ts": ts, "event": "status", "from": default_status,
                     "to": initial_status, "note": "inherited from canonical on ingest",
-                })
+                }, search_id)
             # Record the inherited company-name override, mirroring the UI link route's
             # "company_actual" event so the override's provenance is visible in history.
             if initial_company_actual:
                 append_history(conn, fields["job_id"], {
                     "ts": ts, "event": "company_actual", "from": None,
                     "to": initial_company_actual, "note": "inherited from canonical on ingest",
-                })
+                }, search_id)
             if initial_status == "closed":
                 append_history(conn, fields["job_id"], {
                     "ts": ts, "event": "status", "from": "new", "to": "closed",
-                })
+                }, search_id)
             elif canonical_id:
                 append_history(conn, fields["job_id"], {
                     "ts": ts, "event": "linked", "canonical_id": canonical_id,
-                })
+                }, search_id)
         else:
-            current_status = row["status"]
+            # jobs row exists. Read this search's per-lens state; if the posting is new to THIS
+            # search (same external id already present via another search), create a fresh 'new'
+            # membership row rather than updating a nonexistent one.
+            jss_row = conn.execute(
+                "SELECT status, applied_at FROM job_search_state WHERE job_id = ? AND search_id = ?",
+                (fields["job_id"], search_id),
+            ).fetchone()
+            new_membership = jss_row is None
+            if new_membership:
+                conn.execute(
+                    "INSERT OR IGNORE INTO job_search_state (job_id, search_id, status) "
+                    "VALUES (?, ?, 'new')",
+                    (fields["job_id"], search_id),
+                )
+                append_history(conn, fields["job_id"], {
+                    "ts": _now_iso(), "event": "ingested", "label": label, "source": actor_type,
+                }, search_id)
+            current_status = jss_row["status"] if jss_row else "new"
             existing_labels: list[str] = json.loads(row["labels"])
             new_labels = existing_labels if label in existing_labels else existing_labels + [label]
 
@@ -1195,7 +1400,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                 matches = find_canonical(
                     conn, fields["job_id"], fields["title"], fields["company"],
                     fields["job_description"], fuzzy_desc_threshold, fuzzy_title_threshold,
-                    fuzzy_title_word_threshold, fuzzy_title_id_gate,
+                    fuzzy_title_word_threshold, fuzzy_title_id_gate, search_id=search_id,
                 )
                 if matches:
                     canonical = matches[0]
@@ -1263,21 +1468,27 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                  "refreshed_at": refreshed_at, "canonical_id": canonical_id, "raw": raw,
                  "description_hash": desc_hash, "job_description_formatted": formatted},
             )
+            # Per-lens status write (authoritative). refreshed_at stays a shared jobs column.
+            if new_status != current_status:
+                conn.execute(
+                    "UPDATE job_search_state SET status = ? WHERE job_id = ? AND search_id = ?",
+                    (new_status, fields["job_id"], search_id),
+                )
             if something_changed:
                 c["updated"] += 1
                 ts = _now_iso()
                 if new_status != current_status:
                     append_history(conn, fields["job_id"], {
                         "ts": ts, "event": "status", "from": current_status, "to": new_status,
-                    })
+                    }, search_id)
                     if desc_changed and new_status == "new":
-                        append_history(conn, fields["job_id"], {"ts": ts, "event": "refreshed"})
+                        append_history(conn, fields["job_id"], {"ts": ts, "event": "refreshed"}, search_id)
                 elif desc_changed:
-                    append_history(conn, fields["job_id"], {"ts": ts, "event": "refreshed"})
+                    append_history(conn, fields["job_id"], {"ts": ts, "event": "refreshed"}, search_id)
                 if canonical_id != row["canonical_id"] and canonical_id is not None:
                     append_history(conn, fields["job_id"], {
                         "ts": ts, "event": "linked", "canonical_id": canonical_id,
-                    })
+                    }, search_id)
             else:
                 c["unchanged"] += 1
 
@@ -1290,7 +1501,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
             append_history(conn, fields["job_id"], {
                 "ts": _now_iso(), "event": "company_normalized",
                 "from": original_company, "to": fields["company"], "auto": True,
-            })
+            }, search_id)
 
         # Commit after each item rather than once per run. SQLite holds the write lock
         # from a row's INSERT/UPDATE until commit; a single per-run commit kept that lock
@@ -1362,28 +1573,32 @@ def summary_detailed(c: Counter, ghosted: int, elapsed: float, dry_run: bool) ->
 
 
 def auto_ghost_applied(conn: sqlite3.Connection, days: int) -> int:
-    """Move stale 'applied' jobs to 'ghosted' based on applied_at age.
+    """Move stale 'applied' jobs to 'ghosted' based on applied_at age — per lens.
 
-    Only affects jobs with status = 'applied' — interviewing/offered are
-    intentionally excluded since those warrant a deliberate human decision.
+    Only affects (job, search) state rows with status = 'applied' — interviewing/offered are
+    intentionally excluded since those warrant a deliberate human decision. Ghosting is
+    per-lens: a job applied-to under one search ghosts only that search's state row.
     """
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
     rows = conn.execute(
-        "SELECT job_id FROM jobs "
+        "SELECT job_id, search_id FROM job_search_state "
         "WHERE status = 'applied' AND applied_at IS NOT NULL "
         "AND substr(applied_at, 1, 10) <= ?",
         (cutoff,),
     ).fetchall()
     now_iso = _now_iso()
     for row in rows:
-        conn.execute("UPDATE jobs SET status = 'ghosted' WHERE job_id = ?", (row["job_id"],))
+        conn.execute(
+            "UPDATE job_search_state SET status = 'ghosted' WHERE job_id = ? AND search_id = ?",
+            (row["job_id"], row["search_id"]),
+        )
         append_history(conn, row["job_id"], {
             "ts":    now_iso,
             "event": "status",
             "from":  "applied",
             "to":    "ghosted",
             "note":  f"auto-ghosted after {days} days without response",
-        })
+        }, row["search_id"])
     if rows:
         conn.commit()
     return len(rows)
@@ -1428,7 +1643,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Ingest Apify LinkedIn job results into SQLite.")
     parser.add_argument("--config", default="config.toml", help="Path to TOML config file (default: config.toml)")
     parser.add_argument("--dry-run", action="store_true", help="Show pending run counts without fetching items or writing to the database")
+    parser.add_argument("--fixbasics", action="store_true",
+                        help="Migrate the config's bare top-level settings under a [basics] table and exit")
     args = parser.parse_args()
+
+    # One-shot config maintenance: nest deprecated bare top-level keys under [basics]. Runs
+    # before anything else touches the DB or network; exits immediately after.
+    if args.fixbasics:
+        _changed, msg = migrate_config_to_basics(args.config)
+        print(msg)
+        sys.exit(0)
 
     # Line-buffer stdout so each line is flushed on its newline. When output is
     # redirected to a file (e.g. cron `>> ingest.log`), Python block-buffers stdout,
@@ -1439,36 +1663,36 @@ def main() -> None:
         pass
 
     config_path = Path(args.config)
-    if not config_path.exists():
-        sys.exit(f"Config file not found: {config_path}")
+    try:
+        app_cfg = load_config(config_path)
+    except ConfigError as exc:
+        sys.exit(str(exc))
 
-    with open(config_path, "rb") as f:
-        config = tomllib.load(f)
-
-    api_token: str = config["api_token"]
-    username: str = config["username"]
-    db_path: str = config.get("db_path", "jobs.db")
-    tasks: list[dict] = config["tasks"]
-    reset_on_change_global: bool = config.get("reset_on_change", True)
-    auto_ghost: bool             = config.get("auto_ghost", False)
-    auto_ghost_days: int         = config.get("auto_ghost_days", 180)
-    fuzzy_dedup_global: bool     = config.get("fuzzy_dedup", True)
-    fuzzy_desc_threshold: float = config.get("fuzzy_desc_threshold", 0.85)
-    fuzzy_title_threshold: float = config.get("fuzzy_title_threshold", 0.6)
-    fuzzy_title_word_threshold: float = config.get("fuzzy_title_word_threshold", _TITLE_WORD_GATE)
-    fuzzy_title_id_gate: bool = config.get("fuzzy_title_id_gate", True)
-    inherit_canonical_status: bool = config.get("inherit_canonical_status", True)
+    # Globals are shared across all searches (one DB, one alias namespace, one API key).
+    shared = app_cfg.shared
+    api_token: str = shared["api_token"]
+    username: str = shared["username"]
+    db_path: str = app_cfg.db_path
+    reset_on_change_global: bool = shared.get("reset_on_change", True)
+    auto_ghost: bool             = shared.get("auto_ghost", False)
+    auto_ghost_days: int         = shared.get("auto_ghost_days", 180)
+    fuzzy_dedup_global: bool     = shared.get("fuzzy_dedup", True)
+    fuzzy_desc_threshold: float = shared.get("fuzzy_desc_threshold", 0.85)
+    fuzzy_title_threshold: float = shared.get("fuzzy_title_threshold", 0.6)
+    fuzzy_title_word_threshold: float = shared.get("fuzzy_title_word_threshold", _TITLE_WORD_GATE)
+    fuzzy_title_id_gate: bool = shared.get("fuzzy_title_id_gate", True)
+    inherit_canonical_status: bool = shared.get("inherit_canonical_status", True)
     # Case-insensitive variant→canonical company-name map (empty if [company_aliases] unset).
-    company_alias_map = build_company_alias_map(config.get("company_aliases"))
+    company_alias_map = build_company_alias_map(shared.get("company_aliases"))
     if company_alias_map:
         print(f"Company-name normalization: {len(company_alias_map)} alias(es) configured.")
 
     # Optional AI description reformatting (engine settings shared via [ai]).
-    descriptions_cfg = config.get("descriptions", {})
+    descriptions_cfg = shared.get("descriptions", {})
     formatter = DescriptionFormatter()  # disabled by default → heuristic renderer
     if descriptions_cfg.get("use_ai_on_descriptions", False) and not args.dry_run:
-        api_key, model = resolve_ai_settings(config, "descriptions")
-        effort, effort_explicit = resolve_effort(config, "descriptions")
+        api_key, model = resolve_ai_settings(shared, "descriptions")
+        effort, effort_explicit = resolve_effort(shared, "descriptions")
         if api_key:
             import anthropic
             warn_effort_ignored("descriptions", model, effort, effort_explicit)
@@ -1487,12 +1711,19 @@ def main() -> None:
         _run_lock = acquire_run_lock(db_path, label="ingest")  # noqa: F841 (held for lifetime)
 
     conn = open_db(db_path)
+    # One-time single→multi transition: fold pre-split __default__ state into the search that
+    # declared adopts_legacy. Path B only (a single __default__ search needs no adoption).
+    if not args.dry_run and app_cfg.is_multi_search:
+        adopt_legacy(conn, app_cfg.adopter.id if app_cfg.adopter else None)
     grand_total: Counter = Counter()
     start_time = datetime.now(timezone.utc)
     dry_run_note = " (DRY RUN)" if args.dry_run else ""
     print(f"Starting ingestion at {start_time.strftime('%Y-%m-%d %H:%M:%S %Z')}{dry_run_note}")
 
-    for task in tasks:
+    # One (search_id, task) per feed across all configured searches. Iterating tuples keeps the
+    # loop body flat while tagging every ingest + run-tracking key with its owning search.
+    task_specs: list[tuple[str, dict]] = [(s.id, t) for s in app_cfg.searches for t in s.tasks]
+    for search_id, task in task_specs:
         task_name:        str       = task["name"]
         default_label:    str       = task.get("label", "unknown")
         label_from_input: str | None = task.get("label_from_input")
@@ -1500,16 +1731,19 @@ def main() -> None:
         exclude_ats_dups: bool      = task.get("exclude_ats_duplicates", False)
         reset_on_change:  bool      = task.get("reset_on_change", reset_on_change_global)
         fuzzy_dedup:      bool      = task.get("fuzzy_dedup", fuzzy_dedup_global)
+        # Run-tracking key: bare for the default search (preserves single-search history labels),
+        # namespaced <search_id>:<task> otherwise so two searches can share an Apify task name.
+        skey = state_key(search_id, task_name)
         label_desc = f"label_from_input={label_from_input!r}" if label_from_input else f"label: {default_label}"
         print(f"Fetching runs for '{task_name}' ({label_desc}, actor: {actor_type}) ...")
         try:
             all_runs = fetch_task_runs(username, task_name, api_token)
-            pending = runs_to_process(conn, task_name, all_runs)
+            pending = runs_to_process(conn, skey, all_runs)
 
             if not pending:
                 print(f"  No new runs since last ingestion.")
                 if not args.dry_run:
-                    touch_synced(conn, task_name)
+                    touch_synced(conn, skey)
                 continue
 
             if args.dry_run:
@@ -1547,11 +1781,11 @@ def main() -> None:
                     fuzzy_dedup, fuzzy_desc_threshold, fuzzy_title_threshold,
                     fuzzy_title_word_threshold, fuzzy_title_id_gate, inherit_canonical_status,
                     company_aliases=company_alias_map,
-                    formatter=formatter,
+                    formatter=formatter, search_id=search_id,
                 )
                 print(f"    {summary_compact(result, reset_on_change)}")
                 task_total += result
-                record_state(conn, task_name, run,
+                record_state(conn, skey, run,
                              _new_total(result), result["updated"], result["unchanged"])
 
             if len(pending) > 1:

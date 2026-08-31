@@ -20,9 +20,12 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from flask import Flask, abort, g, render_template, request, send_file, url_for
+from flask import (Flask, abort, g, has_request_context, make_response, render_template,
+                   request, send_file, url_for)
 from werkzeug.utils import secure_filename
-from ingest import append_history, backfill_description_truncated, bootstrap_history
+from config import ConfigError, DEFAULT_SEARCH_ID, load_config
+from ingest import (adopt_legacy, append_history, backfill_description_truncated,
+                    bootstrap_history, ensure_job_search_state)
 from viability import (
     _work_arrangement, FACTOR_DIMENSIONS, GEO_UNSUPPORTED_ARRANGEMENT, MANUAL_GEO_FIT_CHOICES,
     assess_location_fit, clamp_viability_for_geo, description_is_truncated, effective_description,
@@ -34,54 +37,48 @@ app = Flask(__name__)
 PER_PAGE = 25                                  # default page size
 PER_PAGE_OPTIONS = ["25", "50", "100", "200", "all"]  # user-selectable page sizes
 
-# Load config once at startup. The config and DB paths can be overridden via env vars
-# (JOBSEARCH_CONFIG / JOBSEARCH_DB) — used by the test suite to point at throwaway files
-# so importing this module never migrates the real jobs.db; also handy for an alt config.
+# Load config once at startup via the shared loader. The config and DB paths can be
+# overridden via env vars (JOBSEARCH_CONFIG / JOBSEARCH_DB) — used by the test suite to point
+# at throwaway files so importing this module never migrates the real jobs.db.
 _config_path = Path(os.environ.get("JOBSEARCH_CONFIG", "config.toml"))
-with open(_config_path, "rb") as _f:
-    _cfg = tomllib.load(_f)
+APP_CONFIG = load_config(_config_path)
 
-DB_PATH: str = os.environ.get("JOBSEARCH_DB") or _cfg.get("db_path", "jobs.db")
+DB_PATH: str = os.environ.get("JOBSEARCH_DB") or APP_CONFIG.db_path
 
 # Where uploaded attachments live on disk (UUID filenames; real names in the DB).
-UPLOADS_DIR: str = _cfg.get("uploads_dir", "uploads")
+UPLOADS_DIR: str = APP_CONFIG.uploads_dir
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024  # 25 MB per upload
 
-# Viability prompt hash — recomputed whenever config.toml changes on disk.
-# Stored as a module-level mtime cache so a page refresh picks up edits
-# without requiring an app restart.
+# Per-search viability prompt hash — recomputed whenever any config source file changes on
+# disk, so a live prompt edit shows up without an app restart. Keyed by search_id (each lens
+# scores under its own criteria), invalidated on the newest mtime across all config files.
 _cfg_mtime: float = 0.0
-_viability_hash_cache: str | None = None
+_viability_hash_cache: dict[str, str | None] = {}
 
 
-def _current_viability_hash() -> str | None:
-    """Return the viability prompt hash, refreshing if config.toml has changed."""
+def _current_viability_hash(search_id: str | None = None) -> str | None:
+    """The viability prompt hash for a search ("lens"), refreshing if any config file changed.
+
+    Defaults to the request's current lens. Kept per-search so the web-UI staleness check matches
+    exactly the hash the batch/on-demand rescore stamps for that search. None when the search has
+    no viability prompt configured."""
     global _cfg_mtime, _viability_hash_cache
+    sid = search_id or _current_search_id()
     try:
-        mtime = _config_path.stat().st_mtime
+        mtime = max((p.stat().st_mtime for p in APP_CONFIG.source_files), default=0.0)
         if mtime != _cfg_mtime:
             _cfg_mtime = mtime
-            with open(_config_path, "rb") as _rf:
-                _live_cfg = tomllib.load(_rf)
-            # Centralized so this staleness hash matches the one the batch/on-demand rescore
-            # stamps exactly (prompt + location_prompt + the description toggle + effective
-            # scorer/geo effort). None when no viability prompt is configured.
-            _viability_hash_cache = scoring_hash_for_config(_live_cfg)
-    except OSError:
+            live = load_config(_config_path)
+            _viability_hash_cache = {s.id: scoring_hash_for_config(s.config) for s in live.searches}
+    except (OSError, ConfigError):
         pass
-    return _viability_hash_cache
+    return _viability_hash_cache.get(sid)
 
-# Build label → display-name mapping.
-# Preferred source: top-level [labels] table in config.toml.
-# Backward-compat fallback: per-task `display` key (older config format).
-# Any label not covered by either defaults to the label uppercased at use-time.
-_label_names: dict[str, str] = dict(_cfg.get("labels", {}))
-for _t in _cfg.get("tasks", []):
-    _lbl = _t["label"]
-    if _lbl not in _label_names and "display" in _t:
-        _label_names[_lbl] = _t["display"]
-LABEL_NAMES: dict[str, str] = _label_names
+# Label → display-name mapping, unioned across searches by the loader (preferred source:
+# each search's [labels] table; backward-compat fallback: per-task `display` key). Any label
+# not covered defaults to the label uppercased at use-time.
+LABEL_NAMES: dict[str, str] = APP_CONFIG.label_names
 
 SORTABLE_COLS = {
     "title", "company", "location", "salary_min",
@@ -182,23 +179,24 @@ VIABILITY_COLORS = {
     "low":    "danger",
 }
 
+# Status predicates reference the per-lens jss.status (every listing query joins job_search_state).
 STATUS_FILTERS = {
-    "new":       ("New",       "status = 'new'"),
-    "reviewing": ("Reviewing", "status = 'reviewing'"),
+    "new":       ("New",       "jss.status = 'new'"),
+    "reviewing": ("Reviewing", "jss.status = 'reviewing'"),
     # Parked-but-alive: on the radar to mention to recruiters, but not being acted on.
     # Deliberately NOT in the Active exclusion list below, so it also shows in Active.
-    "deferred":  ("Deferred",  "status = 'deferred'"),
-    "active":    ("Active",    "status NOT IN ('skipped', 'autoskipped', 'rejected', 'withdrawn', 'ghosted', 'closed')"),
-    "applied":   ("Applied",   "status IN ('applied', 'interviewing', 'offered', 'ghosted')"),
-    "interview": ("Interview Process", "status IN ('interviewing', 'offered')"),
+    "deferred":  ("Deferred",  "jss.status = 'deferred'"),
+    "active":    ("Active",    "jss.status NOT IN ('skipped', 'autoskipped', 'rejected', 'withdrawn', 'ghosted', 'closed')"),
+    "applied":   ("Applied",   "jss.status IN ('applied', 'interviewing', 'offered', 'ghosted')"),
+    "interview": ("Interview Process", "jss.status IN ('interviewing', 'offered')"),
     # Ghosted counts as a presumptive rejection (applied, no response, auto-aged out), so
     # it's included here alongside explicit rejections. It also still shows under Applied.
-    "rejected":  ("Rejected",  "status IN ('rejected', 'ghosted')"),
+    "rejected":  ("Rejected",  "jss.status IN ('rejected', 'ghosted')"),
     # Manually skipped only (NOT 'autoskipped', which is the low-viability auto-decision) —
     # the point is to revisit *my own* skip decisions, e.g. pair with the High viability
     # filter to reconsider a strong role I passed on. Autoskipped jobs are always low
     # viability, so folding them in would only add noise to that pairing.
-    "skipped":   ("Skipped",   "status = 'skipped'"),
+    "skipped":   ("Skipped",   "jss.status = 'skipped'"),
     "all":       ("All",       None),
 }
 
@@ -230,10 +228,12 @@ CONTACT_LABELS = {
 # Effective salary range. When a manual override (salary_*_actual) is set, that pair
 # IS the salary — a blank bound is open-ended (e.g. "$175k+"). Coalescing each bound
 # independently with the feed would mix an overridden min with a stale feed max (e.g.
-# "$175k – $120k"), so resolve the override as an all-or-nothing pair.
-_SAL_OVERRIDDEN = "(salary_min_actual IS NOT NULL OR salary_max_actual IS NOT NULL)"
-EFF_SALARY_MIN = f"(CASE WHEN {_SAL_OVERRIDDEN} THEN salary_min_actual ELSE salary_min END)"
-EFF_SALARY_MAX = f"(CASE WHEN {_SAL_OVERRIDDEN} THEN salary_max_actual ELSE salary_max END)"
+# "$175k – $120k"), so resolve the override as an all-or-nothing pair. The override is
+# per-lens (jss.salary_*_actual); the feed bounds are shared (jobs.salary_*). Every query
+# using these joins job_search_state as `jss` (see _jss_join).
+_SAL_OVERRIDDEN = "(jss.salary_min_actual IS NOT NULL OR jss.salary_max_actual IS NOT NULL)"
+EFF_SALARY_MIN = f"(CASE WHEN {_SAL_OVERRIDDEN} THEN jss.salary_min_actual ELSE salary_min END)"
+EFF_SALARY_MAX = f"(CASE WHEN {_SAL_OVERRIDDEN} THEN jss.salary_max_actual ELSE salary_max END)"
 
 
 def effective_salary(row: dict) -> tuple[int | None, int | None]:
@@ -250,7 +250,7 @@ def _root_pref(col: str, agg: str = "MIN") -> str:
     The header row's identity columns (title, company, status, salary) are used to SORT the
     grouped view, and their display shows the root's value — so sorting must order by the
     canonical root too, not by an arbitrary member picked by MIN(). Within each
-    COALESCE(canonical_id, job_id) group the root is the row with canonical_id IS NULL, so
+    COALESCE(canonical_id, jobs.job_id) group the root is the row with canonical_id IS NULL, so
     MAX(CASE WHEN canonical_id IS NULL THEN col END) isolates its value (NULL for members,
     which the aggregate skips). Falls back to the plain group aggregate when the root row is
     filtered out of the current view (e.g. a closed root under an active member), mirroring
@@ -264,29 +264,71 @@ def _root_pref(col: str, agg: str = "MIN") -> str:
     return f"COALESCE(MAX(CASE WHEN canonical_id IS NULL THEN {col} END), {agg}({col}))"
 
 
+# ── Per-lens state join ──
+# Every list/count/employer/stats query joins the current search's job_search_state row as
+# `jss`, so status / viability / salary+geo overrides come from the lens rather than the dormant
+# jobs.* columns of the same name. The search id is validated against the configured searches
+# before it reaches here (see _current_search_id), so inlining it as a literal is injection-safe
+# and leaves the existing {where}/params threading untouched.
+def _jss_join(search_id: str) -> str:
+    return (f"JOIN job_search_state jss ON jss.job_id = jobs.job_id "
+            f"AND jss.search_id = '{search_id}'")
+
+
+# Per-lens columns, aliased to their canonical names and placed FIRST in a SELECT so they
+# shadow the dormant jobs.* columns of the same name (sqlite3.Row and dict(row) both take the
+# first match). process_job_row/build_grouped_job then read status/viability/salary_*_actual/
+# geo_fit exactly as before, now sourced from the lens.
+_JSS_COLS = (
+    "jss.status AS status, jss.applied_at AS applied_at, jss.viability AS viability, "
+    "jss.viability_reason AS viability_reason, jss.viability_factors AS viability_factors, "
+    "jss.viability_prompt_hash AS viability_prompt_hash, jss.needs_rescored AS needs_rescored, "
+    "jss.salary_min_actual AS salary_min_actual, jss.salary_max_actual AS salary_max_actual, "
+    "jss.geo_fit_actual AS geo_fit_actual"
+)
+
+_VALID_SEARCH_IDS = {s.id for s in APP_CONFIG.searches}
+
+
+def _current_search_id() -> str:
+    """The search ("lens") the current request operates on: a validated ``search`` param (query
+    string, or form body so POST actions carry it), else the default/first search. The result is
+    always a configured id, so it's safe to inline into _jss_join. Falls back to the default
+    outside a request context (e.g. a unit test calling process_job_row directly)."""
+    if has_request_context():
+        # Precedence: an explicit ?search= / form field wins; else the sticky lens cookie the
+        # index route sets when you switch lenses (so POST actions from the page — which don't
+        # carry the param — still target the lens you're viewing). Always validated.
+        sid = (request.args.get("search") or request.form.get("search")
+               or request.cookies.get("search") or "")
+        if sid in _VALID_SEARCH_IDS:
+            return sid
+    return APP_CONFIG.default_search().id
+
+
 # Grouped header query — one row per canonical group.
 # Jobs linked via canonical_id are grouped together; others are their own group.
 GROUPED_HEADERS = f"""
-    SELECT COALESCE(canonical_id, job_id) AS group_key,
+    SELECT COALESCE(canonical_id, jobs.job_id) AS group_key,
            {_root_pref("COALESCE(title_actual, title)")} AS title,
            {_root_pref("COALESCE(company_actual, company)")} AS company_eff,
            COUNT(*)             AS location_count,
-           MIN(first_seen)      AS first_seen,
+           MIN(jobs.first_seen) AS first_seen,
            MIN(posted_date)     AS posted_date,
            {_root_pref(EFF_SALARY_MIN)} AS salary_min,
            {_root_pref(EFF_SALARY_MAX, "MAX")} AS salary_max,
            MIN(salary_currency) AS salary_currency,
-           {_root_pref("status")}          AS status,
+           {_root_pref("jss.status")}      AS status,
            MIN(source)          AS source,
            MAX(source)          AS source_max
-    FROM jobs {{where}}
-    GROUP BY COALESCE(canonical_id, job_id)
+    FROM jobs {{join}} {{where}}
+    GROUP BY COALESCE(canonical_id, jobs.job_id)
     {{order}}
     LIMIT ? OFFSET ?
 """
-GROUPED_COUNT = "SELECT COUNT(*) FROM (SELECT 1 FROM jobs {where} GROUP BY COALESCE(canonical_id, job_id))"
-FLAT_COUNT    = "SELECT COUNT(*) FROM jobs {where}"
-FLAT_SELECT   = "SELECT * FROM jobs {where} {order} LIMIT ? OFFSET ?"
+GROUPED_COUNT = "SELECT COUNT(*) FROM (SELECT 1 FROM jobs {join} {where} GROUP BY COALESCE(canonical_id, jobs.job_id))"
+FLAT_COUNT    = "SELECT COUNT(*) FROM jobs {join} {where}"
+FLAT_SELECT   = f"SELECT {_JSS_COLS}, jobs.* FROM jobs {{join}} {{where}} {{order}} LIMIT ? OFFSET ?"
 
 # ── Employer grouping ──
 # Effective company name: the override (company_actual) wins over the scraped company.
@@ -299,22 +341,22 @@ EMPLOYER_EXPR = "COALESCE(company_actual, company)"
 #                   so a fuzzy group spanning two company names belongs to exactly one.
 EMPLOYER_PAGE_FLAT = f"""
     SELECT {EMPLOYER_EXPR} AS employer
-    FROM jobs {{where}}
+    FROM jobs {{join}} {{where}}
     GROUP BY {EMPLOYER_EXPR} COLLATE NOCASE
     ORDER BY employer COLLATE NOCASE {{dir}}
     LIMIT ? OFFSET ?
 """
 EMPLOYER_COUNT_FLAT = f"""
     SELECT COUNT(*) FROM (
-        SELECT 1 FROM jobs {{where}}
+        SELECT 1 FROM jobs {{join}} {{where}}
         GROUP BY {EMPLOYER_EXPR} COLLATE NOCASE
     )
 """
 EMPLOYER_PAGE_GROUPED = f"""
     SELECT employer FROM (
         SELECT MIN({EMPLOYER_EXPR}) AS employer
-        FROM jobs {{where}}
-        GROUP BY COALESCE(canonical_id, job_id)
+        FROM jobs {{join}} {{where}}
+        GROUP BY COALESCE(canonical_id, jobs.job_id)
     )
     GROUP BY employer COLLATE NOCASE
     ORDER BY employer COLLATE NOCASE {{dir}}
@@ -324,8 +366,8 @@ EMPLOYER_COUNT_GROUPED = f"""
     SELECT COUNT(*) FROM (
         SELECT 1 FROM (
             SELECT MIN({EMPLOYER_EXPR}) AS employer
-            FROM jobs {{where}}
-            GROUP BY COALESCE(canonical_id, job_id)
+            FROM jobs {{join}} {{where}}
+            GROUP BY COALESCE(canonical_id, jobs.job_id)
         )
         GROUP BY employer COLLATE NOCASE
     )
@@ -335,8 +377,8 @@ EMPLOYER_COUNT_GROUPED = f"""
 # HAVING (on the group's MIN effective company), NOT WHERE — so a fuzzy group
 # spanning two companies appears whole under its assigned employer, never split.
 GROUPED_HEADERS_EMP = GROUPED_HEADERS.replace(
-    "GROUP BY COALESCE(canonical_id, job_id)\n    {order}",
-    "GROUP BY COALESCE(canonical_id, job_id)\n    {having}\n    {order}",
+    "GROUP BY COALESCE(canonical_id, jobs.job_id)\n    {order}",
+    "GROUP BY COALESCE(canonical_id, jobs.job_id)\n    {having}\n    {order}",
 )
 
 
@@ -461,6 +503,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if needs_history_bootstrap:
         bootstrap_history(conn)
         conn.commit()
+    # Per-lens state table (create + one-time backfill of the dormant per-lens jobs columns
+    # into __default__ rows). Shared helper so app/ingest/rescore migrate it identically.
+    ensure_job_search_state(conn)
+    # One-time single→multi adoption (Path B only; no-op/warn-free for the single __default__
+    # search). Writes at startup like the other migrations here — gated + idempotent.
+    if APP_CONFIG.is_multi_search:
+        adopt_legacy(conn, APP_CONFIG.adopter.id if APP_CONFIG.adopter else None)
 
 
 def _init_db() -> None:
@@ -582,9 +631,9 @@ def build_where(label: str, status_filter: str, q: str = "", source: str = "",
         conditions.append("source = ?")
         params.append(source)
     if viability == "unscored":
-        conditions.append("viability IS NULL")
+        conditions.append("jss.viability IS NULL")
     elif viability in VIABILITY_COLORS:
-        conditions.append("viability = ?")
+        conditions.append("jss.viability = ?")
         params.append(viability)
     if q:
         # Tokenized (whitespace-insensitive) so a search built from a displayed,
@@ -833,9 +882,10 @@ def fetch_sub_rows(db: sqlite3.Connection, group_key: str,
       - all fuzzy duplicates that point at it (canonical_id = group_key)
     """
     and_clause = f"{where} AND " if where else "WHERE "
+    join = _jss_join(_current_search_id())
     rows = db.execute(
-        f"SELECT * FROM jobs {and_clause}"
-        "(canonical_id = ? OR (canonical_id IS NULL AND job_id = ?)) ORDER BY location",
+        f"SELECT {_JSS_COLS}, jobs.* FROM jobs {join} {and_clause}"
+        "(canonical_id = ? OR (canonical_id IS NULL AND jobs.job_id = ?)) ORDER BY location",
         params + [group_key, group_key],
     ).fetchall()
     return [process_job_row(r, hotlist) for r in rows]
@@ -1017,9 +1067,9 @@ def available_labels(db: sqlite3.Connection) -> list[dict]:
 
 
 def has_viability_scores(db: sqlite3.Connection) -> bool:
-    """Return True if any jobs have been scored for viability."""
+    """Return True if any jobs have been scored for viability in the current lens."""
     return db.execute(
-        "SELECT COUNT(*) FROM jobs WHERE viability IS NOT NULL"
+        f"SELECT COUNT(*) FROM jobs {_jss_join(_current_search_id())} WHERE jss.viability IS NOT NULL"
     ).fetchone()[0] > 0
 
 
@@ -1133,8 +1183,14 @@ def index():
 
     where, params = build_where(label, status_filter, q, source, viability,
                                 comp_active, comp_min, comp_max)
-    _TEXT_COLS = {"title", "company", "location", "status"}
-    if sort == "company":
+    # Per-lens state join for this request's search (Phase 1: the single/default search).
+    join = _jss_join(_current_search_id())
+    _TEXT_COLS = {"title", "company", "location"}
+    if sort == "status":
+        # Grouped view sorts by the header's status aggregate (alias); flat by the joined
+        # per-lens status. Bare `status` is ambiguous in flat (dormant jobs.status + jss alias).
+        sort_expr = ("status COLLATE NOCASE" if view == "grouped" else "jss.status COLLATE NOCASE")
+    elif sort == "company":
         # Sort by the *effective* (override-aware) company so the order matches what
         # the table shows. A company_actual override otherwise sorts by the hidden
         # original name. Grouped queries expose it as the company_eff aggregate;
@@ -1150,6 +1206,13 @@ def index():
         # Sort by effective (override-aware) salary. The grouped query already
         # aliases salary_min to the effective aggregate; flat rows compute it inline.
         sort_expr = ("salary_min" if view == "grouped" else EFF_SALARY_MIN)
+    elif sort == "first_seen":
+        # first_seen is on both jobs and jss now — grouped exposes the MIN(jobs.first_seen)
+        # alias; flat qualifies to the shared jobs column.
+        sort_expr = ("first_seen" if view == "grouped" else "jobs.first_seen")
+    elif sort == "applied_at":
+        # Per-lens (jss). Qualified so it's unambiguous; in grouped it's a lenient pick.
+        sort_expr = "jss.applied_at"
     elif sort in _TEXT_COLS:
         sort_expr = f"{sort} COLLATE NOCASE"
     else:
@@ -1178,8 +1241,8 @@ def index():
             page_sql, count_sql = EMPLOYER_PAGE_GROUPED, EMPLOYER_COUNT_GROUPED
         else:
             page_sql, count_sql = EMPLOYER_PAGE_FLAT, EMPLOYER_COUNT_FLAT
-        total    = db.execute(count_sql.format(where=where), params).fetchone()[0]
-        emp_rows = db.execute(page_sql.format(where=where, dir=emp_dir.upper()),
+        total    = db.execute(count_sql.format(join=join, where=where), params).fetchone()[0]
+        emp_rows = db.execute(page_sql.format(join=join, where=where, dir=emp_dir.upper()),
                               params + [limit, offset]).fetchall()
         employer_groups = []
         for er in emp_rows:
@@ -1187,7 +1250,7 @@ def index():
             if group_match:
                 having, hparams = employer_having(employer)
                 headers = db.execute(
-                    GROUPED_HEADERS_EMP.format(where=where, having=having, order=order),
+                    GROUPED_HEADERS_EMP.format(join=join, where=where, having=having, order=order),
                     params + hparams + [-1, 0]).fetchall()
                 emp_jobs = [
                     build_grouped_job(h, fetch_sub_rows(db, h["group_key"], where, params, hotlist))
@@ -1196,7 +1259,7 @@ def index():
                 job_count = sum(j["location_count"] for j in emp_jobs)
             else:
                 ewhere, eparams = employer_where(where, params, employer)
-                rows = db.execute(FLAT_SELECT.format(where=ewhere, order=order),
+                rows = db.execute(FLAT_SELECT.format(join=join, where=ewhere, order=order),
                                   eparams + [-1, 0]).fetchall()
                 emp_jobs = [process_job_row(r, hotlist) for r in rows]
                 job_count = len(emp_jobs)
@@ -1206,16 +1269,16 @@ def index():
                 "jobs":          emp_jobs,
             })
     elif group_match:
-        total   = db.execute(GROUPED_COUNT.format(where=where), params).fetchone()[0]
-        headers = db.execute(GROUPED_HEADERS.format(where=where, order=order),
+        total   = db.execute(GROUPED_COUNT.format(join=join, where=where), params).fetchone()[0]
+        headers = db.execute(GROUPED_HEADERS.format(join=join, where=where, order=order),
                              params + [limit, offset]).fetchall()
         jobs = [
             build_grouped_job(h, fetch_sub_rows(db, h["group_key"], where, params, hotlist))
             for h in headers
         ]
     else:
-        total = db.execute(FLAT_COUNT.format(where=where), params).fetchone()[0]
-        rows  = db.execute(FLAT_SELECT.format(where=where, order=order),
+        total = db.execute(FLAT_COUNT.format(join=join, where=where), params).fetchone()[0]
+        rows  = db.execute(FLAT_SELECT.format(join=join, where=where, order=order),
                            params + [limit, offset]).fetchall()
         jobs  = [process_job_row(r, hotlist) for r in rows]
 
@@ -1239,7 +1302,7 @@ def index():
                           return_to=return_to or None, comp=comp or None,
                           per_page=per_page if per_page != str(PER_PAGE) else None, page=1)
 
-    return render_template(
+    resp = make_response(render_template(
         "jobs.html",
         jobs=jobs,
         employer_groups=employer_groups,
@@ -1277,7 +1340,16 @@ def index():
         show_viability_filter=show_viability_filter,
         group_varied=GROUP_VARIED,
         col_urls=col_urls,
-    )
+        # Multi-search lens selector: the configured searches and the active one. A single
+        # (default) search means Path A — the selector is hidden in the template.
+        searches=[{"id": s.id, "name": s.name} for s in APP_CONFIG.searches],
+        current_search=_current_search_id(),
+        is_multi_search=APP_CONFIG.is_multi_search,
+    ))
+    # Sticky lens cookie: POST actions from the page (status/notes/overrides) don't carry the
+    # ?search= param, so persist the viewed lens here for _current_search_id to read back.
+    resp.set_cookie("search", _current_search_id(), samesite="Lax")
+    return resp
 
 
 def _parse_utc(ts: str | None) -> datetime | None:
@@ -1413,12 +1485,15 @@ def report_weekly():
     # status change in its history. The week filter happens in Python (timestamps need
     # local-tz conversion). status/applied_at fan out across a matched group, so we
     # collapse to one entry per canonical group below.
+    # Union per-lens state across ALL searches (the report is search-agnostic — you contacted
+    # the employer regardless of which lens surfaced the job). One row per (job, search) with
+    # activity; the (instant, status) de-dup below collapses a contact seen under two lenses.
     rows = db.execute(
-        """SELECT job_id, COALESCE(canonical_id, job_id) AS group_key, canonical_id,
-                  title, title_actual, company, company_actual, company_url, job_url, apply_url,
-                  applied_at, history
-           FROM jobs
-           WHERE applied_at IS NOT NULL OR history LIKE '%"event":"status"%'"""
+        """SELECT jobs.job_id AS job_id, COALESCE(canonical_id, jobs.job_id) AS group_key,
+                  canonical_id, title, title_actual, company, company_actual, company_url,
+                  job_url, apply_url, jss.applied_at AS applied_at, jss.history AS history
+           FROM jobs JOIN job_search_state jss ON jss.job_id = jobs.job_id
+           WHERE jss.applied_at IS NOT NULL OR jss.history LIKE '%"event":"status"%'"""
     ).fetchall()
 
     groups: dict[str, list[sqlite3.Row]] = {}
@@ -1524,19 +1599,22 @@ def stats():
     """JSON for the stats modal: total jobs, counts by status, new-in-last-7-days,
     counts by label and by viability, and a stale-score count (active jobs only)."""
     db = get_db()
-    total = db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+    # Stats are per-lens: every count scopes to the current search's members via the join.
+    join = _jss_join(_current_search_id())
+    total = db.execute(f"SELECT COUNT(*) FROM jobs {join}").fetchone()[0]
     by_status = {
         r["status"]: r["cnt"]
         for r in db.execute(
-            "SELECT status, COUNT(*) AS cnt FROM jobs GROUP BY status ORDER BY cnt DESC"
+            f"SELECT jss.status AS status, COUNT(*) AS cnt FROM jobs {join} "
+            "GROUP BY jss.status ORDER BY cnt DESC"
         ).fetchall()
     }
     new_7d = db.execute(
-        "SELECT COUNT(*) FROM jobs WHERE first_seen >= datetime('now', '-7 days')"
+        f"SELECT COUNT(*) FROM jobs {join} WHERE jobs.first_seen >= datetime('now', '-7 days')"
     ).fetchone()[0]
     label_rows = db.execute(
-        """SELECT je.value AS lbl, COUNT(*) AS cnt
-           FROM jobs, json_each(jobs.labels) je
+        f"""SELECT je.value AS lbl, COUNT(*) AS cnt
+           FROM jobs {join}, json_each(jobs.labels) je
            GROUP BY je.value ORDER BY cnt DESC"""
     ).fetchall()
     by_label = [
@@ -1544,8 +1622,8 @@ def stats():
         for r in label_rows
     ]
     viability_rows = db.execute(
-        "SELECT COALESCE(viability, 'unscored') AS level, COUNT(*) AS cnt "
-        "FROM jobs GROUP BY level ORDER BY cnt DESC"
+        f"SELECT COALESCE(jss.viability, 'unscored') AS level, COUNT(*) AS cnt "
+        f"FROM jobs {join} GROUP BY level ORDER BY cnt DESC"
     ).fetchall()
     by_viability = {r["level"]: r["cnt"] for r in viability_rows}
     current_hash = _current_viability_hash()
@@ -1553,16 +1631,16 @@ def stats():
     # intentionally not rescored and would make this number misleadingly large.
     _, active_condition = STATUS_FILTERS["active"]
     viability_stale = db.execute(
-        f"SELECT COUNT(*) FROM jobs WHERE viability IS NOT NULL "
-        f"AND (viability_prompt_hash != ? OR needs_rescored = 1) AND {active_condition}",
+        f"SELECT COUNT(*) FROM jobs {join} WHERE jss.viability IS NOT NULL "
+        f"AND (jss.viability_prompt_hash != ? OR jss.needs_rescored = 1) AND {active_condition}",
         (current_hash,),
     ).fetchone()[0] if current_hash else 0
-    # Application-pipeline timing, from status-event histories. Narrow to jobs that reached
-    # applied or interviewing (every measured transition starts at one of those) so we don't
-    # parse history for the thousands of skipped/new postings that can't contribute.
+    # Application-pipeline timing, from status-event histories (per-lens). Narrow to jobs that
+    # reached applied or interviewing (every measured transition starts at one of those) so we
+    # don't parse history for the thousands of skipped/new postings that can't contribute.
     hist_rows = db.execute(
-        "SELECT history FROM jobs "
-        "WHERE history LIKE '%\"to\":\"applied\"%' OR history LIKE '%\"to\":\"interviewing\"%'"
+        f"SELECT jss.history AS history FROM jobs {join} "
+        "WHERE jss.history LIKE '%\"to\":\"applied\"%' OR jss.history LIKE '%\"to\":\"interviewing\"%'"
     ).fetchall()
     transition_times = transition_time_stats(
         json.loads(r["history"] or "[]") for r in hist_rows
@@ -1652,12 +1730,12 @@ def stats_viability_by_day():
         label_clause = "AND labels LIKE ?"
         params.append(f'%"{label}"%')
     rows = db.execute(
-        f"""SELECT DATE(first_seen) AS day, viability, COUNT(*) AS cnt
-            FROM jobs
-            WHERE viability IN ('high', 'medium', 'low')
-              AND first_seen >= datetime('now', '-30 days')
+        f"""SELECT DATE(jobs.first_seen) AS day, jss.viability AS viability, COUNT(*) AS cnt
+            FROM jobs {_jss_join(_current_search_id())}
+            WHERE jss.viability IN ('high', 'medium', 'low')
+              AND jobs.first_seen >= datetime('now', '-30 days')
               {label_clause}
-            GROUP BY DATE(first_seen), viability""",
+            GROUP BY DATE(jobs.first_seen), jss.viability""",
         params,
     ).fetchall()
     return viability_day_series([(r["day"], r["viability"], r["cnt"]) for r in rows])
@@ -1669,7 +1747,13 @@ def get_job(job_id: str):
     fields), the raw description and the sanitized AI-formatted HTML, viability + its
     staleness, notes, attachments, and the history timeline."""
     db = get_db()
-    row = db.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    # Per-lens fetch: jss columns (status/viability/salary+geo overrides/history) first so they
+    # shadow the dormant jobs.* columns; history isn't in _JSS_COLS so add it explicitly.
+    row = db.execute(
+        f"SELECT {_JSS_COLS}, jss.history AS history, jobs.* "
+        f"FROM jobs {_jss_join(_current_search_id())} WHERE jobs.job_id = ?",
+        (job_id,),
+    ).fetchone()
     if not row:
         return "Not found", 404
     job = dict(row)
@@ -1678,6 +1762,20 @@ def get_job(job_id: str):
             "SELECT attachment_id, original_name, size, content_type, uploaded_at "
             "FROM job_attachments WHERE job_id = ? ORDER BY uploaded_at", (job_id,)
         ).fetchall()
+    ]
+    # Cross-lens info: the SAME posting's (viability, status) under every OTHER search it belongs
+    # to, so the panel can surface "also appears in <search> — <viability>/<status>". Empty for a
+    # single-search setup (there are no other lenses).
+    other_searches = [
+        {"search_id":   r["search_id"],
+         "search_name": (APP_CONFIG.get_search(r["search_id"]).name
+                         if APP_CONFIG.get_search(r["search_id"]) else r["search_id"]),
+         "viability":   r["viability"],
+         "status":      r["status"]}
+        for r in db.execute(
+            "SELECT search_id, viability, status FROM job_search_state "
+            "WHERE job_id = ? AND search_id != ? ORDER BY search_id",
+            (job_id, _current_search_id()))
     ]
     return {
         "job_id":           job["job_id"],
@@ -1729,6 +1827,7 @@ def get_job(job_id: str):
         "notes":            job.get("notes"),
         "attachments":      attachments,
         "history":          json.loads(job.get("history") or "[]"),
+        "other_searches":   other_searches,
     }
 
 
@@ -1742,25 +1841,29 @@ def update_jobs_status():
     if new_status not in STATUSES or not job_ids:
         return "Invalid request", 400
     db = get_db()
-    # Capture old statuses before the bulk update so we can log accurate from→to.
+    sid = _current_search_id()
+    # Capture old statuses (per-lens) before the bulk update so we can log accurate from→to.
     placeholders = ",".join("?" * len(job_ids))
     old_statuses = {
         r["job_id"]: r["status"]
         for r in db.execute(
-            f"SELECT job_id, status FROM jobs WHERE job_id IN ({placeholders})", job_ids
+            f"SELECT job_id, status FROM job_search_state "
+            f"WHERE search_id = ? AND job_id IN ({placeholders})", [sid, *job_ids]
         ).fetchall()
     }
+    # Status/applied_at are per-lens (job_search_state); refreshed_at is a shared jobs column.
     db.executemany(
-        f"""UPDATE jobs SET status = ?, refreshed_at = NULL,
-           applied_at = {_APPLIED_AT_CASE_SQL}
-           WHERE job_id = ?""",
-        [(new_status, new_status, new_status, jid) for jid in job_ids],
+        f"""UPDATE job_search_state SET status = ?, applied_at = {_APPLIED_AT_CASE_SQL}
+           WHERE job_id = ? AND search_id = ?""",
+        [(new_status, new_status, new_status, jid, sid) for jid in job_ids],
     )
+    db.executemany("UPDATE jobs SET refreshed_at = NULL WHERE job_id = ?",
+                   [(jid,) for jid in job_ids])
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     for jid in job_ids:
         old = old_statuses.get(jid)
         if old and old != new_status:
-            append_history(db, jid, {"ts": ts, "event": "status", "from": old, "to": new_status})
+            append_history(db, jid, {"ts": ts, "event": "status", "from": old, "to": new_status}, sid)
     db.commit()
     return "", 204
 
@@ -1781,24 +1884,29 @@ def update_status(job_id: str):
     # (and survive a later de-group). applied_at is per-row via the CASE below, so
     # each member transitions from its own previous status correctly.
     members = group_member_ids(db, job_id)
+    sid = _current_search_id()
     placeholders = ",".join("?" * len(members))
+    # Per-lens old statuses (only members that are members of THIS search appear, so the
+    # fan-out stays within the current lens — a group can span searches).
     old_statuses = {
         r["job_id"]: r["status"]
         for r in db.execute(
-            f"SELECT job_id, status FROM jobs WHERE job_id IN ({placeholders})", members
+            f"SELECT job_id, status FROM job_search_state "
+            f"WHERE search_id = ? AND job_id IN ({placeholders})", [sid, *members]
         ).fetchall()
     }
     db.executemany(
-        f"""UPDATE jobs SET status = ?, refreshed_at = NULL,
-           applied_at = {_APPLIED_AT_CASE_SQL}
-           WHERE job_id = ?""",
-        [(new_status, new_status, new_status, mid) for mid in members],
+        f"""UPDATE job_search_state SET status = ?, applied_at = {_APPLIED_AT_CASE_SQL}
+           WHERE job_id = ? AND search_id = ?""",
+        [(new_status, new_status, new_status, mid, sid) for mid in members],
     )
+    db.executemany("UPDATE jobs SET refreshed_at = NULL WHERE job_id = ?",
+                   [(mid,) for mid in members])
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     for mid in members:
         old = old_statuses.get(mid)
         if old and old != new_status:
-            append_history(db, mid, {"ts": ts, "event": "status", "from": old, "to": new_status})
+            append_history(db, mid, {"ts": ts, "event": "status", "from": old, "to": new_status}, sid)
     db.commit()
     return "", 204
 
@@ -1811,13 +1919,13 @@ def set_company_actual(job_id: str):
     if not row:
         return "Not found", 404
     old = row["company_actual"]
-    # Company feeds the viability prompt, so flag for rescoring on change.
-    db.execute(
-        "UPDATE jobs SET company_actual = ?, needs_rescored = 1 WHERE job_id = ?",
-        (value, job_id),
-    )
+    # Company is a shared posting fact; it feeds every lens's scorer, so the override lives on
+    # jobs but dirties ALL of the job's per-lens state rows for rescoring.
+    db.execute("UPDATE jobs SET company_actual = ? WHERE job_id = ?", (value, job_id))
+    db.execute("UPDATE job_search_state SET needs_rescored = 1 WHERE job_id = ?", (job_id,))
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    append_history(db, job_id, {"ts": ts, "event": "company_actual", "from": old, "to": value})
+    append_history(db, job_id, {"ts": ts, "event": "company_actual", "from": old, "to": value},
+                   _current_search_id())
     db.commit()
     return "", 204
 
@@ -1834,12 +1942,12 @@ def set_title_actual(job_id: str):
     if not row:
         return "Not found", 404
     old = row["title_actual"]
-    db.execute(
-        "UPDATE jobs SET title_actual = ?, needs_rescored = 1 WHERE job_id = ?",
-        (value, job_id),
-    )
+    # Shared posting fact → dirty every lens's state row for rescoring.
+    db.execute("UPDATE jobs SET title_actual = ? WHERE job_id = ?", (value, job_id))
+    db.execute("UPDATE job_search_state SET needs_rescored = 1 WHERE job_id = ?", (job_id,))
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    append_history(db, job_id, {"ts": ts, "event": "title_actual", "from": old, "to": value})
+    append_history(db, job_id, {"ts": ts, "event": "title_actual", "from": old, "to": value},
+                   _current_search_id())
     db.commit()
     return "", 204
 
@@ -1863,10 +1971,9 @@ def set_description_actual(job_id: str):
     if not row:
         return "Not found", 404
     had = bool((row["description_actual"] or "").strip())
-    db.execute(
-        "UPDATE jobs SET description_actual = ?, needs_rescored = 1 WHERE job_id = ?",
-        (value, job_id),
-    )
+    # Shared posting fact → dirty every lens's state row for rescoring.
+    db.execute("UPDATE jobs SET description_actual = ? WHERE job_id = ?", (value, job_id))
+    db.execute("UPDATE job_search_state SET needs_rescored = 1 WHERE job_id = ?", (job_id,))
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     # The full text is bulky and lives in the column; history records only that the override was
     # set/cleared (+ length) so the timeline stays legible.
@@ -1875,7 +1982,7 @@ def set_description_actual(job_id: str):
         "action": "set" if value else "cleared",
         "length": len(value) if value else 0,
         "replaced": had,
-    })
+    }, _current_search_id())
     db.commit()
     return "", 204
 
@@ -1891,16 +1998,23 @@ def set_geo_fit_actual(job_id: str):
     if value is not None and value not in MANUAL_GEO_FIT_CHOICES:
         return "Invalid geographic-fit override.", 400
     db = get_db()
-    row = db.execute("SELECT geo_fit_actual FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
-    if not row:
+    if not db.execute("SELECT 1 FROM jobs WHERE job_id = ?", (job_id,)).fetchone():
         return "Not found", 404
-    old = row["geo_fit_actual"]
+    sid = _current_search_id()
+    # Geo-fit is a per-lens assessment (each search has its own location criteria): write it to
+    # THIS search's state row and dirty only that lens for rescoring.
+    row = db.execute(
+        "SELECT geo_fit_actual FROM job_search_state WHERE job_id = ? AND search_id = ?",
+        (job_id, sid),
+    ).fetchone()
+    old = row["geo_fit_actual"] if row else None
     db.execute(
-        "UPDATE jobs SET geo_fit_actual = ?, needs_rescored = 1 WHERE job_id = ?",
-        (value, job_id),
+        "UPDATE job_search_state SET geo_fit_actual = ?, needs_rescored = 1 "
+        "WHERE job_id = ? AND search_id = ?",
+        (value, job_id, sid),
     )
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    append_history(db, job_id, {"ts": ts, "event": "geo_fit_actual", "from": old, "to": value})
+    append_history(db, job_id, {"ts": ts, "event": "geo_fit_actual", "from": old, "to": value}, sid)
     db.commit()
     return "", 204
 
@@ -1918,12 +2032,12 @@ def set_work_arrangement(job_id: str):
     if not row:
         return "Not found", 404
     old = row["work_arrangement_actual"]
-    db.execute(
-        "UPDATE jobs SET work_arrangement_actual = ?, needs_rescored = 1 WHERE job_id = ?",
-        (value, job_id),
-    )
+    # Shared posting fact → dirty every lens's state row for rescoring.
+    db.execute("UPDATE jobs SET work_arrangement_actual = ? WHERE job_id = ?", (value, job_id))
+    db.execute("UPDATE job_search_state SET needs_rescored = 1 WHERE job_id = ?", (job_id,))
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    append_history(db, job_id, {"ts": ts, "event": "work_arrangement", "from": old, "to": value})
+    append_history(db, job_id, {"ts": ts, "event": "work_arrangement", "from": old, "to": value},
+                   _current_search_id())
     db.commit()
     return "", 204
 
@@ -2051,14 +2165,18 @@ def company_rename(job_id: str):
         "SELECT job_id FROM jobs WHERE lower(trim(company)) = lower(trim(?))", (from_name,)
     ).fetchall()]
     db.execute(
-        "UPDATE jobs SET company = ?, needs_rescored = 1 "
-        "WHERE lower(trim(company)) = lower(trim(?))",
+        "UPDATE jobs SET company = ? WHERE lower(trim(company)) = lower(trim(?))",
         (to_name, from_name),
     )
+    # Company is a shared fact; dirty every affected job's per-lens state rows for rescoring.
+    if affected:
+        ph = ",".join("?" * len(affected))
+        db.execute(f"UPDATE job_search_state SET needs_rescored = 1 WHERE job_id IN ({ph})", affected)
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    sid = _current_search_id()
     for jid in affected:
         append_history(db, jid, {"ts": ts, "event": "company_renamed",
-                                 "from": from_name, "to": to_name, "via": "web"})
+                                 "from": from_name, "to": to_name, "via": "web"}, sid)
     db.commit()
     return {"renamed": len(affected), "alias_added": added}, 200
 
@@ -2114,10 +2232,10 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
     lock could hang the web request behind a long-running rescore.
     """
     # Read config fresh so a prompt/key edit is honored without restarting the app.
+    sid = _current_search_id()
     try:
-        with open(_config_path, "rb") as f:
-            cfg = tomllib.load(f)
-    except OSError:
+        cfg = load_config(_config_path).get_search(sid).config
+    except (ConfigError, AttributeError):
         return False, "could not read config.toml"
     vcfg = cfg.get("viability", {})
     if not vcfg.get("enabled", False):
@@ -2140,7 +2258,12 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
     # viability._thinking_call_config). Resolved the same way rescore_viability does.
     effort     = resolve_effort(cfg, "viability")[0]
     geo_effort = resolve_geo_effort(cfg, geo_uses_description)[0]
-    row = db.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    # Fetch with the per-lens state joined (jss columns first, so status/viability/salary/geo
+    # come from THIS search's row, shadowing the dormant jobs.* columns build_score_message reads).
+    row = db.execute(
+        f"SELECT {_JSS_COLS}, jobs.* FROM jobs {_jss_join(sid)} WHERE jobs.job_id = ?",
+        (job_id,),
+    ).fetchone()
     if not row:
         return False, "job not found"
     # Company reject-list: a listed employer in a pre-decision (or already-autoskipped) status is
@@ -2157,19 +2280,21 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
         # No AI call on the reject path → no factor breakdown; NULL it so a job newly caught by the
         # reject-list doesn't keep a stale breakdown from an earlier real score (mirrors rescore).
         db.execute(
-            "UPDATE jobs SET viability = ?, viability_reason = ?, viability_factors = NULL, "
-            "viability_prompt_hash = ?, needs_rescored = 0 WHERE job_id = ?",
-            (rating, reason, scoring_hash_for_config(cfg), job_id),
+            "UPDATE job_search_state SET viability = ?, viability_reason = ?, "
+            "viability_factors = NULL, viability_prompt_hash = ?, needs_rescored = 0 "
+            "WHERE job_id = ? AND search_id = ?",
+            (rating, reason, scoring_hash_for_config(cfg), job_id, sid),
         )
         old_rating = row["viability"]
         if old_rating is None:
-            append_history(db, job_id, {"ts": ts, "event": "viability", "rating": rating, "reason": reason})
+            append_history(db, job_id, {"ts": ts, "event": "viability", "rating": rating, "reason": reason}, sid)
         elif old_rating != rating:
-            append_history(db, job_id, {"ts": ts, "event": "rescore", "from": old_rating, "to": rating, "reason": reason})
+            append_history(db, job_id, {"ts": ts, "event": "rescore", "from": old_rating, "to": rating, "reason": reason}, sid)
         if row["status"] != "autoskipped":
-            db.execute("UPDATE jobs SET status = 'autoskipped' WHERE job_id = ?", (job_id,))
+            db.execute("UPDATE job_search_state SET status = 'autoskipped' "
+                       "WHERE job_id = ? AND search_id = ?", (job_id, sid))
             append_history(db, job_id, {"ts": ts, "event": "status", "from": row["status"],
-                                        "to": "autoskipped", "note": "company on reject-list"})
+                                        "to": "autoskipped", "note": "company on reject-list"}, sid)
         db.commit()
         return True, f"{rating} (reject-listed)"
     try:
@@ -2194,13 +2319,13 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
     if rating is None:
         return False, "model returned no valid rating"
     db.execute(
-        "UPDATE jobs SET viability = ?, viability_reason = ?, viability_factors = ?, "
-        "viability_prompt_hash = ?, needs_rescored = 0 WHERE job_id = ?",
+        "UPDATE job_search_state SET viability = ?, viability_reason = ?, viability_factors = ?, "
+        "viability_prompt_hash = ?, needs_rescored = 0 WHERE job_id = ? AND search_id = ?",
         (rating, reason, json.dumps(factors) if factors else None,
-         scoring_hash_for_config(cfg), job_id),
+         scoring_hash_for_config(cfg), job_id, sid),
     )
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    append_history(db, job_id, {"ts": ts, "event": "viability", "rating": rating, "reason": reason})
+    append_history(db, job_id, {"ts": ts, "event": "viability", "rating": rating, "reason": reason}, sid)
     db.commit()
     return True, rating
 
@@ -2280,10 +2405,18 @@ def add_manual_job():
             "raw":             json.dumps(dict(f)),
         },
     )
+    # Per-lens state row (membership + status/applied_at/geo-fit) — created before the history
+    # appends below, which target this search's history.
+    sid = _current_search_id()
+    db.execute(
+        "INSERT OR IGNORE INTO job_search_state "
+        "(job_id, search_id, status, applied_at, geo_fit_actual) VALUES (?, ?, ?, ?, ?)",
+        (job_id, sid, status, applied_at, geo_fit_actual),
+    )
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    append_history(db, job_id, {"ts": ts, "event": "created", "source": "manual"})
+    append_history(db, job_id, {"ts": ts, "event": "created", "source": "manual"}, sid)
     if status != "new":
-        append_history(db, job_id, {"ts": ts, "event": "status", "from": "new", "to": status})
+        append_history(db, job_id, {"ts": ts, "event": "status", "from": "new", "to": status}, sid)
     db.commit()
 
     scored, score_msg = False, ""
@@ -2304,27 +2437,31 @@ def set_salary_actual(job_id: str):
     db = get_db()
     if not db.execute("SELECT 1 FROM jobs WHERE job_id = ?", (job_id,)).fetchone():
         return "Not found", 404
-    # Fan out across the matched group: the same role across locations shares one
-    # salary, and each member keeps its own copy if the group is later split.
+    # Salary override is a per-lens assessment (comp can differ by the search's location).
+    # Fan out across the matched group's members IN THIS SEARCH; each keeps its own copy.
+    sid = _current_search_id()
     members = group_member_ids(db, job_id)
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     for mid in members:
         prev = db.execute(
-            "SELECT salary_min_actual, salary_max_actual FROM jobs WHERE job_id = ?", (mid,)
+            "SELECT salary_min_actual, salary_max_actual FROM job_search_state "
+            "WHERE job_id = ? AND search_id = ?", (mid, sid)
         ).fetchone()
+        if prev is None:      # not a member of this search — skip
+            continue
         old_min, old_max = prev["salary_min_actual"], prev["salary_max_actual"]
         if old_min == sal_min and old_max == sal_max:
             continue
         db.execute(
-            "UPDATE jobs SET salary_min_actual = ?, salary_max_actual = ?, "
-            "needs_rescored = 1 WHERE job_id = ?",
-            (sal_min, sal_max, mid),
+            "UPDATE job_search_state SET salary_min_actual = ?, salary_max_actual = ?, "
+            "needs_rescored = 1 WHERE job_id = ? AND search_id = ?",
+            (sal_min, sal_max, mid, sid),
         )
         append_history(db, mid, {
             "ts": ts, "event": "salary_actual",
             "from": [old_min, old_max], "to": [sal_min, sal_max],
             "origin": job_id,
-        })
+        }, sid)
     db.commit()
     return "", 204
 
@@ -2346,10 +2483,12 @@ def set_notes(job_id: str):
         [value, *members],
     )
     # Log on every member so the paper trail survives a later de-group. `origin`
-    # marks which posting the edit was actually made on.
+    # marks which posting the edit was actually made on. (Notes are shared; the event lands
+    # in the current lens's history — see the history-storage note in the plan.)
+    sid = _current_search_id()
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     for mid in members:
-        append_history(db, mid, {"ts": ts, "event": "notes", "origin": job_id})
+        append_history(db, mid, {"ts": ts, "event": "notes", "origin": job_id}, sid)
     db.commit()
     return "", 204
 
@@ -2381,8 +2520,9 @@ def upload_attachment(job_id: str):
         "content_type, size, uploaded_at) VALUES (?,?,?,?,?,?,?)",
         [(mid, attachment_id, stored_name, original, ctype, size, ts) for mid in members],
     )
+    sid = _current_search_id()
     for mid in members:
-        append_history(db, mid, {"ts": ts, "event": "attachment_added", "name": original, "origin": job_id})
+        append_history(db, mid, {"ts": ts, "event": "attachment_added", "name": original, "origin": job_id}, sid)
     db.commit()
     return {"attachment_id": attachment_id, "original_name": original, "size": size,
             "content_type": ctype, "uploaded_at": ts}, 201
@@ -2429,7 +2569,8 @@ def delete_attachment(job_id: str, attachment_id: str):
         except OSError:
             pass
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    append_history(db, job_id, {"ts": ts, "event": "attachment_removed", "name": row["original_name"]})
+    append_history(db, job_id, {"ts": ts, "event": "attachment_removed", "name": row["original_name"]},
+                   _current_search_id())
     db.commit()
     return "", 204
 
@@ -2458,7 +2599,7 @@ def jobs_autocomplete():
     source_root = ""
     if exclude:
         r = db.execute(
-            "SELECT COALESCE(canonical_id, job_id) AS root FROM jobs WHERE job_id = ?",
+            "SELECT COALESCE(canonical_id, jobs.job_id) AS root FROM jobs WHERE job_id = ?",
             (exclude,)).fetchone()
         source_root = r["root"] if r else exclude
     rows = db.execute(
@@ -2493,15 +2634,16 @@ def jobs_autocomplete():
     return out
 
 
-def _merge_group_into(db: sqlite3.Connection, job_id: str, target_root: str, ts: str) -> int:
+def _merge_group_into(db: sqlite3.Connection, job_id: str, target_root: str, ts: str,
+                      search_id: str = DEFAULT_SEARCH_ID) -> int:
     """Merge job_id's ENTIRE current group into the group rooted at target_root.
 
     Re-points the source group's root and every member at target_root (preserving the
     one-hop / no-chain invariant), and inherits the target's status + applied date for any
-    moved member still in a new/reviewing state (mirroring single-link behaviour, across the
-    whole group). Pure DB logic (no request/response) so it's unit-testable. Returns the
-    number of postings moved. The caller guarantees target_root is a real root in a
-    *different* group.
+    moved member still in a new/reviewing state — per lens (status is per-(job, search)), so
+    only members that belong to ``search_id`` inherit. Manual merges may cross searches, so the
+    canonical_id re-point (shared grouping) is unrestricted. Pure DB logic (no request/response)
+    so it's unit-testable. Returns the number of postings moved.
     """
     row = db.execute("SELECT canonical_id FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
     source_root = (row["canonical_id"] if row else None) or job_id
@@ -2516,18 +2658,21 @@ def _merge_group_into(db: sqlite3.Connection, job_id: str, target_root: str, ts:
     append_history(db, source_root, {
         "ts": ts, "event": "linked", "canonical_id": target_root,
         "note": f"merged group of {len(source_ids)}",
-    })
-    root = db.execute("SELECT status, applied_at FROM jobs WHERE job_id = ?", (target_root,)).fetchone()
+    }, search_id)
+    root = db.execute("SELECT status, applied_at FROM job_search_state "
+                      "WHERE job_id = ? AND search_id = ?", (target_root, search_id)).fetchone()
     if root and root["status"] not in ("new", "reviewing"):
         for mid in source_ids:
-            st = db.execute("SELECT status FROM jobs WHERE job_id = ?", (mid,)).fetchone()
+            st = db.execute("SELECT status FROM job_search_state WHERE job_id = ? AND search_id = ?",
+                            (mid, search_id)).fetchone()
             if st and st["status"] in ("new", "reviewing"):
-                db.execute("UPDATE jobs SET status = ?, applied_at = ? WHERE job_id = ?",
-                           (root["status"], root["applied_at"], mid))
+                db.execute("UPDATE job_search_state SET status = ?, applied_at = ? "
+                           "WHERE job_id = ? AND search_id = ?",
+                           (root["status"], root["applied_at"], mid, search_id))
                 append_history(db, mid, {
                     "ts": ts, "event": "status", "from": st["status"], "to": root["status"],
                     "note": "inherited from canonical on link",
-                })
+                }, search_id)
     return len(source_ids)
 
 
@@ -2542,7 +2687,7 @@ def link_job(job_id: str):
     # ── Unlink (this posting only) ────────────────────────────────────────────
     if not target_raw:
         db.execute("UPDATE jobs SET canonical_id = NULL WHERE job_id = ?", (job_id,))
-        append_history(db, job_id, {"ts": ts, "event": "unlinked"})
+        append_history(db, job_id, {"ts": ts, "event": "unlinked"}, _current_search_id())
         db.commit()
         return "", 204
 
@@ -2560,12 +2705,13 @@ def link_job(job_id: str):
     if resolved_root == source_root:
         return {"error": "Those postings are already in the same group."}, 400
 
-    merged = _merge_group_into(db, job_id, resolved_root, ts)
+    merged = _merge_group_into(db, job_id, resolved_root, ts, _current_search_id())
     db.commit()
     return {"canonical_id": resolved_root, "merged": merged}, 200
 
 
-def promote_to_canonical(db: sqlite3.Connection, job_id: str, ts: str) -> tuple[bool, str]:
+def promote_to_canonical(db: sqlite3.Connection, job_id: str, ts: str,
+                         search_id: str = DEFAULT_SEARCH_ID) -> tuple[bool, str]:
     """Make `job_id` the canonical (root) of its fuzzy-match group.
 
     Re-points the former root AND every other member at this job, then clears this job's
@@ -2589,8 +2735,8 @@ def promote_to_canonical(db: sqlite3.Connection, job_id: str, ts: str) -> tuple[
         (job_id, old_root, old_root, job_id),
     )
     db.execute("UPDATE jobs SET canonical_id = NULL WHERE job_id = ?", (job_id,))
-    append_history(db, job_id, {"ts": ts, "event": "promoted_canonical", "from_canonical": old_root})
-    append_history(db, old_root, {"ts": ts, "event": "canonical_demoted", "to_canonical": job_id})
+    append_history(db, job_id, {"ts": ts, "event": "promoted_canonical", "from_canonical": old_root}, search_id)
+    append_history(db, old_root, {"ts": ts, "event": "canonical_demoted", "to_canonical": job_id}, search_id)
     return True, old_root
 
 
@@ -2601,7 +2747,7 @@ def promote_canonical(job_id: str):
     this changes which posting fronts the group. Only valid for a grouped member."""
     db = get_db()
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    ok, result = promote_to_canonical(db, job_id, ts)
+    ok, result = promote_to_canonical(db, job_id, ts, _current_search_id())
     if not ok:
         return {"error": result}, (404 if result == "Job not found." else 400)
     db.commit()

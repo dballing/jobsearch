@@ -14,7 +14,7 @@ import pytest
 # Must happen at conftest import — before test modules do `import app`.
 _TMP = pathlib.Path(tempfile.mkdtemp(prefix="jobsearch-tests-"))
 (_TMP / "config.toml").write_text(
-    f'db_path = "{_TMP / "jobs.db"}"\nuploads_dir = "{_TMP / "uploads"}"\n'
+    f'[basics]\ndb_path = "{_TMP / "jobs.db"}"\nuploads_dir = "{_TMP / "uploads"}"\n'
 )
 os.environ["JOBSEARCH_CONFIG"] = str(_TMP / "config.toml")
 os.environ["JOBSEARCH_DB"] = str(_TMP / "jobs.db")
@@ -63,7 +63,7 @@ def sample_app_db():
 
     def _clear():
         con = sqlite3.connect(path)
-        for t in ("jobs", "ingest_state", "company_hotlist"):
+        for t in ("jobs", "job_search_state", "ingest_state", "company_hotlist"):
             try:
                 con.execute(f"DELETE FROM {t}")
             except sqlite3.OperationalError:

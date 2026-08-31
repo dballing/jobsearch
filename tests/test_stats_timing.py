@@ -113,8 +113,12 @@ def test_viability_by_day_label_filter():
     import sqlite3
     con = sqlite3.connect(os.environ["JOBSEARCH_DB"])
     con.executemany(
-        "INSERT INTO jobs (job_id, viability, labels, raw) VALUES (?, ?, ?, '{}')",
-        [("vt_nc", "high", '["nc"]'), ("vt_sc", "low", '["sc"]')])
+        "INSERT INTO jobs (job_id, labels, raw) VALUES (?, ?, '{}')",
+        [("vt_nc", '["nc"]'), ("vt_sc", '["sc"]')])
+    # Viability is per-lens now → seed the __default__ state rows.
+    con.executemany(
+        "INSERT INTO job_search_state (job_id, search_id, viability) VALUES (?, '__default__', ?)",
+        [("vt_nc", "high"), ("vt_sc", "low")])
     con.commit(); con.close()
     try:
         cl = app.app.test_client()

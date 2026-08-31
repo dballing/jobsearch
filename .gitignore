@@ -1,5 +1,8 @@
 .DS_Store
-config.toml
+# All real config is personal (and often secret-bearing): the canonical config.toml and every
+# per-search [[searches]] file (e.g. midatl_tpm.toml). The tracked template is config.toml.example
+# (ends in .example, so this glob doesn't match it).
+*.toml
 *.backup
 *.db
 # SQLite WAL-mode sidecars (jobs.db-wal / jobs.db-shm) — transient

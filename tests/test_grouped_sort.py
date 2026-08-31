@@ -4,19 +4,27 @@ matches the displayed representative title. Falls back to the group aggregate on
 root is filtered out of the view. Exercises the real GROUPED_HEADERS SQL against a DB."""
 import app
 
+_SID = "__default__"
+
 
 def _insert(db, job_id, title, canonical_id=None, status="new",
             first_seen="2026-01-01 00:00:00", company="Co",
             salary_min=None, salary_max=None):
+    # Shared posting fields on jobs (feed salary stays here); per-lens status on the __default__
+    # state row (status now lives in job_search_state — see the multi-search refactor).
     db.execute(
-        "INSERT INTO jobs (job_id, title, company, status, canonical_id, first_seen, "
-        "salary_min, salary_max, raw, source, labels, history) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', 'linkedin', '[]', '[]')",
-        (job_id, title, company, status, canonical_id, first_seen, salary_min, salary_max))
+        "INSERT INTO jobs (job_id, title, company, canonical_id, first_seen, "
+        "salary_min, salary_max, raw, source, labels) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, '{}', 'linkedin', '[]')",
+        (job_id, title, company, canonical_id, first_seen, salary_min, salary_max))
+    db.execute(
+        "INSERT INTO job_search_state (job_id, search_id, status, first_seen) "
+        "VALUES (?, ?, ?, ?)",
+        (job_id, _SID, status, first_seen))
 
 
 def _grouped(db, where="", order="ORDER BY title", params=None):
-    sql = app.GROUPED_HEADERS.format(where=where, order=order)
+    sql = app.GROUPED_HEADERS.format(join=app._jss_join(_SID), where=where, order=order)
     return db.execute(sql, (params or []) + [-1, 0]).fetchall()
 
 
@@ -44,7 +52,7 @@ def test_header_falls_back_to_min_when_root_filtered_out(jobs_db):
     _insert(jobs_db, "root", "ZZZ Root", status="closed")
     _insert(jobs_db, "m1", "AAA Member", canonical_id="root", status="applied")
     _insert(jobs_db, "m2", "BBB Member", canonical_id="root", status="applied")
-    rows = _grouped(jobs_db, where="WHERE status = 'applied'")
+    rows = _grouped(jobs_db, where="WHERE jss.status = 'applied'")
     assert len(rows) == 1
     assert rows[0]["title"] == "AAA Member"   # MIN of the surviving members
 

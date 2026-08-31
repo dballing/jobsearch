@@ -1,3 +1,8 @@
+# ── Shared basics ─────────────────────────────────────────────────────────────
+# App/DB-wide settings, shared across every job search. Live under [basics] (an
+# older layout put these bare at the top level — still accepted with a deprecation
+# warning; run `ingest.py --fixbasics` to migrate an existing config in place).
+[basics]
 api_token = "apify_api_xxxxxxxxxxxxxxxxxxxx"
 username  = "your-apify-username"
 db_path   = "jobs.db"
@@ -108,12 +113,15 @@ uploads_dir = "uploads"
 # effort = "low"                            # thinking effort if `model` is a reasoning model
 #                                           # (Haiku default is temperature-based and ignores it).
 
-# Global defaults — all can be overridden per task.
+# Global defaults — all can be overridden per task. These belong under [basics]
+# (uncomment them inside that table near the top of the file, or here — they bind to
+# the most recent real table header, which is [basics] while the sections above stay
+# commented).
 # reset_on_change  = true   # reset skipped jobs to new if description changes (default: true)
 # auto_ghost       = false  # automatically move stale 'applied' jobs to 'ghosted' (default: false)
 # auto_ghost_days  = 180    # days since applied_at before auto-ghosting (default: 180)
 
-# Fuzzy near-duplicate detection (global defaults; per-task key overrides).
+# Fuzzy near-duplicate detection (global defaults under [basics]; per-task key overrides).
 # fuzzy_dedup = true               # enable near-duplicate grouping for all tasks (default: true)
 # fuzzy_desc_threshold = 0.85      # min description similarity to consider a near-duplicate (0–1, default: 0.85)
 # fuzzy_title_threshold = 0.6      # min title char-similarity pre-filter before description check (0–1, default: 0.6)
@@ -177,3 +185,23 @@ label = "nc"
 # [company_aliases]
 # "Sirius XM"       = "SiriusXM"
 # "Sirius XM Radio" = "SiriusXM"
+
+# ── Multiple job searches (optional) ──────────────────────────────────────────
+# Everything above describes ONE search (the default). To run several distinct
+# searches — each with its own [viability] criteria and its own feeds — in one app
+# and one DB, add a [[searches]] manifest here and move the PER-SEARCH stanzas
+# ([viability], [[tasks]], [labels]) out of this file into a per-search file. The
+# SHARED globals ([basics], [company_aliases], and optionally [ai]/[descriptions])
+# stay HERE, in the canonical config. Each per-search file inherits them; a
+# per-search file may not redeclare a global stanza.
+#
+# [[searches]]
+# search_id          = "tpm"                 # stable key stored in the DB (don't rename lightly)
+# search_name        = "TPM / Program Mgmt"  # shown in the UI search selector
+# search_config_file = "searches/tpm.toml"   # holds [viability], [[tasks]], [labels]
+# adopts_legacy      = true                  # one-time: this search absorbs the pre-split jobs
+#                                            # from a database that started as a single search
+# [[searches]]
+# search_id          = "director"
+# search_name        = "Director of Eng/IT"
+# search_config_file = "searches/director.toml"

@@ -52,17 +52,20 @@ Flags:
 
 import argparse
 import json
+import os
 import sqlite3
+import subprocess
 import sys
-import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
 import anthropic
 
+from config import ConfigError, load_config
 from ai_config import (format_token_summary, resolve_ai_settings, resolve_effort,
                        resolve_geo_effort, resolve_geo_model, warn_effort_ignored)
-from ingest import append_history, backfill_description_truncated
+from ingest import (adopt_legacy, append_history, backfill_description_truncated,
+                    DEFAULT_SEARCH_ID, ensure_job_search_state)
 from runlock import acquire_run_lock
 from viability import (
     REJECT_DENYABLE_STATUSES, _job_locations, _work_arrangement, assess_location_fit,
@@ -204,6 +207,8 @@ def open_db(path: str) -> sqlite3.Connection:
         conn.execute("ALTER TABLE jobs ADD COLUMN description_truncated INTEGER NOT NULL DEFAULT 0")
         conn.commit()
         backfill_description_truncated(conn)
+    # Per-lens state table (create + backfill), shared with app/ingest so it can't drift.
+    ensure_job_search_state(conn)
     return conn
 
 
@@ -328,7 +333,8 @@ def canonical_promotion_applies(
 
 
 def reconcile_autoskipped(conn, current_hash: str, auto_skip_threshold: int,
-                          *, dry_run: bool = False) -> "list[tuple[str, str]]":
+                          *, dry_run: bool = False,
+                          search_id: str = DEFAULT_SEARCH_ID) -> "list[tuple[str, str]]":
     """One-off repair: flip any 'autoskipped' job whose CURRENT-version score is already above
     the auto-skip threshold back to 'new'.
 
@@ -343,21 +349,25 @@ def reconcile_autoskipped(conn, current_hash: str, auto_skip_threshold: int,
     if not unskip:
         return []
     placeholders = ",".join("?" * len(unskip))
+    # Per-lens: reconcile the state rows of one search (status/viability live on job_search_state).
     rows = conn.execute(
-        f"SELECT job_id, viability FROM jobs WHERE status = 'autoskipped' "
-        f"AND viability_prompt_hash = ? AND viability IN ({placeholders})",
-        [current_hash, *unskip],
+        f"SELECT jobs.job_id AS job_id, jss.viability AS viability FROM jobs "
+        f"JOIN job_search_state jss ON jss.job_id = jobs.job_id AND jss.search_id = ? "
+        f"WHERE jss.status = 'autoskipped' AND jss.viability_prompt_hash = ? "
+        f"AND jss.viability IN ({placeholders})",
+        [search_id, current_hash, *unskip],
     ).fetchall()
     result = [(r["job_id"], r["viability"]) for r in rows]
     if dry_run or not result:
         return result
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     for job_id, rating in result:
-        conn.execute("UPDATE jobs SET status = 'new' WHERE job_id = ?", (job_id,))
+        conn.execute("UPDATE job_search_state SET status = 'new' WHERE job_id = ? AND search_id = ?",
+                     (job_id, search_id))
         append_history(conn, job_id, {
             "ts": ts, "event": "status", "from": "autoskipped", "to": "new",
             "note": f"reconciled: current score above auto-skip threshold (viability: {rating})",
-        })
+        }, search_id)
     conn.commit()
     return result
 
@@ -403,41 +413,43 @@ def build_selection(
     conditions: list[str] = []
     params: list = []
 
+    # Status/viability/staleness live per-lens on job_search_state (aliased `jss` by the caller's
+    # join); first_seen/company are shared jobs columns (qualified to disambiguate the join).
     if not force:
         conditions.append(
-            "(viability IS NULL OR viability_prompt_hash IS NULL "
-            "OR viability_prompt_hash != ? OR needs_rescored = 1)"
+            "(jss.viability IS NULL OR jss.viability_prompt_hash IS NULL "
+            "OR jss.viability_prompt_hash != ? OR jss.needs_rescored = 1)"
         )
         params.append(current_hash)
 
     if all_statuses:
         pass  # No status filter.
     elif early_stage:
-        conditions.append("status IN ('new', 'reviewing', 'deferred')")
+        conditions.append("jss.status IN ('new', 'reviewing', 'deferred')")
     elif autoskipped:
         # Only the autoskipped set — never plain 'skipped'. No NULL/needs_rescored escape
         # here: --autoskipped is a deliberate, narrow re-evaluation of exactly that status.
-        conditions.append("status = 'autoskipped'")
+        conditions.append("jss.status = 'autoskipped'")
     elif status is not None:
         # Exactly this status, parameterized. Like --autoskipped, no NULL/needs_rescored
         # escape: an explicit --status is a deliberate, narrow selection of one status.
-        conditions.append("status = ?")
+        conditions.append("jss.status = ?")
         params.append(status)
     else:
         conditions.append(
-            "(status NOT IN ('skipped', 'autoskipped', 'rejected', 'withdrawn', 'ghosted', 'closed')"
-            " OR viability IS NULL OR needs_rescored = 1)"
+            "(jss.status NOT IN ('skipped', 'autoskipped', 'rejected', 'withdrawn', 'ghosted', 'closed')"
+            " OR jss.viability IS NULL OR jss.needs_rescored = 1)"
         )
 
     if current_viability is not None:
-        conditions.append("viability = ?")
+        conditions.append("jss.viability = ?")
         params.append(current_viability)
 
     if since is not None:
-        conditions.append("date(first_seen) >= ?")
+        conditions.append("date(jobs.first_seen) >= ?")
         params.append(since)
     elif previous_days is not None:
-        conditions.append("first_seen >= datetime('now', ?)")
+        conditions.append("jobs.first_seen >= datetime('now', ?)")
         params.append(f"-{int(previous_days)} days")
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
@@ -457,12 +469,30 @@ def build_selection(
                         or previous_days is not None)
     if reject_companies and default_mode:
         placeholders = ", ".join("?" * len(reject_companies))
-        reject_clause = ("status IN ('new', 'reviewing', 'deferred') "
-                         f"AND lower(trim(company)) IN ({placeholders})")
+        reject_clause = ("jss.status IN ('new', 'reviewing', 'deferred') "
+                         f"AND lower(trim(jobs.company)) IN ({placeholders})")
         base = where[len("WHERE "):] if where else "1"
         where = f"WHERE ({base}) OR ({reject_clause})"
         params.extend(sorted(reject_companies))
     return where, params
+
+
+def _passthrough_argv(args) -> list[str]:
+    """Reconstruct this run's CLI flags (minus --search) to hand to a per-search child process.
+    Used by the multi-search fan-out so each search is scored under the same options."""
+    out = ["--config", args.config]
+    if args.dry_run:            out.append("--dry-run")
+    if args.force:              out.append("--force")
+    if args.all:               out.append("--all")
+    if args.early_stage:       out.append("--early-stage")
+    if args.autoskipped:       out.append("--autoskipped")
+    if args.status:            out += ["--status", args.status]
+    if args.current_viability: out += ["--current-viability", args.current_viability]
+    if args.since:             out += ["--since", args.since]
+    if args.previous_days is not None: out += ["--previous-days", str(args.previous_days)]
+    if args.reconcile_autoskipped:     out.append("--reconcile-autoskipped")
+    if args.verbose:           out.append("--verbose")
+    return out
 
 
 def main() -> None:
@@ -472,6 +502,12 @@ def main() -> None:
     parser.add_argument(
         "--config", default="config.toml",
         help="Path to TOML config (default: config.toml)",
+    )
+    parser.add_argument(
+        "--search", metavar="SEARCH_ID",
+        help="Score only this search ('lens'), by search_id. Default: score EVERY configured "
+             "search (each in its own process, under its own [viability] criteria). Use this to "
+             "target one search.",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -544,11 +580,35 @@ def main() -> None:
         pass
 
     config_path = Path(args.config)
-    if not config_path.exists():
-        sys.exit(f"Config file not found: {config_path}")
+    try:
+        app_cfg = load_config(config_path)
+    except ConfigError as exc:
+        sys.exit(str(exc))
 
-    with open(config_path, "rb") as f:
-        config = tomllib.load(f)
+    # Multi-search fan-out: with no explicit --search on a Path-B config, score EVERY configured
+    # search — each in its own child process. The writer lock is process-scoped (fcntl.flock,
+    # non-reentrant across fds), so it can't be re-acquired in one process; a child per search
+    # serializes cleanly through the lock and keeps the intricate single-search scoring path below
+    # untouched. --search (set on the children) takes the single-search path directly.
+    if not args.search and app_cfg.is_multi_search:
+        rc = 0
+        for s in app_cfg.searches:
+            print(f"\n=== Search: {s.name} ({s.id}) ===", flush=True)
+            child = [sys.executable, os.path.abspath(__file__), "--search", s.id,
+                     *_passthrough_argv(args)]
+            rc = subprocess.run(child).returncode or rc
+        sys.exit(rc)
+
+    # Score one search ("lens"): --search selects it by id, else the single/default search. Each
+    # search carries its own [viability] config.
+    if args.search:
+        search_obj = app_cfg.get_search(args.search)
+        if search_obj is None:
+            sys.exit(f"Unknown search {args.search!r}. Configured: "
+                     f"{', '.join(s.id for s in app_cfg.searches)}")
+    else:
+        search_obj = app_cfg.default_search()
+    config = search_obj.config
 
     viability_cfg = config.get("viability", {})
     if not viability_cfg.get("enabled", False):
@@ -610,7 +670,23 @@ def main() -> None:
     # rescore, and the web-UI staleness check all derive it identically (location_prompt, the
     # description toggle, and the effective scorer/geo effort are folded in; the model is not).
     current_hash = scoring_hash_for_config(config)
+    # Score/read/write this search's per-lens state rows; the join sources status/viability/
+    # overrides from them, and the jss columns come FIRST in the SELECT so they shadow the
+    # dormant jobs.* of the same name.
+    search_id = search_obj.id
+    jss_join = (f"JOIN job_search_state jss ON jss.job_id = jobs.job_id "
+                f"AND jss.search_id = '{search_id}'")
+    jss_cols = (
+        "jss.status AS status, jss.applied_at AS applied_at, jss.viability AS viability, "
+        "jss.viability_reason AS viability_reason, jss.viability_factors AS viability_factors, "
+        "jss.viability_prompt_hash AS viability_prompt_hash, jss.needs_rescored AS needs_rescored, "
+        "jss.salary_min_actual AS salary_min_actual, jss.salary_max_actual AS salary_max_actual, "
+        "jss.geo_fit_actual AS geo_fit_actual"
+    )
     conn = open_db(db_path)
+    # One-time single→multi adoption (Path B only). Gated + idempotent.
+    if not args.dry_run and app_cfg.is_multi_search:
+        adopt_legacy(conn, app_cfg.adopter.id if app_cfg.adopter else None)
 
     # One-off reconciliation: flip autoskipped jobs whose CURRENT-version score is already above
     # the auto-skip threshold back to 'new', without re-scoring. Runs standalone (ignores the
@@ -619,7 +695,8 @@ def main() -> None:
     if args.reconcile_autoskipped:
         if not args.dry_run:
             _lock = acquire_run_lock(db_path, label="reconcile")  # noqa: F841 (held for lifetime)
-        matches = reconcile_autoskipped(conn, current_hash, auto_skip_threshold, dry_run=args.dry_run)
+        matches = reconcile_autoskipped(conn, current_hash, auto_skip_threshold,
+                                        dry_run=args.dry_run, search_id=search_id)
         conn.close()
         verb = "Would reset" if args.dry_run else "Reset"
         print(f"{verb} {len(matches)} autoskipped job(s) with a current above-threshold score to 'new'.")
@@ -641,7 +718,7 @@ def main() -> None:
         reject_companies=reject_set,
     )
 
-    count = conn.execute(f"SELECT COUNT(*) FROM jobs {where}", params).fetchone()[0]
+    count = conn.execute(f"SELECT COUNT(*) FROM jobs {jss_join} {where}", params).fetchone()[0]
     start_time = datetime.now(timezone.utc)
     print(f"Starting viability scoring at {start_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
@@ -676,7 +753,7 @@ def main() -> None:
         conn.close()
         sys.exit("ERROR: the Anthropic API is unreachable (network down?); skipping this run.")
     check_model_currency(available_models, model)
-    rows        = conn.execute(f"SELECT * FROM jobs {where}", params).fetchall()
+    rows        = conn.execute(f"SELECT {jss_cols}, jobs.* FROM jobs {jss_join} {where}", params).fetchall()
     scored       = 0
     failed       = 0
     auto_skipped = 0
@@ -732,26 +809,27 @@ def main() -> None:
             # No AI call here, so there's no factor breakdown — NULL it so a job newly caught by
             # the reject-list doesn't keep a stale breakdown from an earlier real score.
             conn.execute(
-                "UPDATE jobs SET viability = ?, viability_reason = ?, viability_factors = NULL, "
-                "viability_prompt_hash = ?, needs_rescored = 0 WHERE job_id = ?",
-                (rating, reason, current_hash, row["job_id"]),
+                "UPDATE job_search_state SET viability = ?, viability_reason = ?, "
+                "viability_factors = NULL, viability_prompt_hash = ?, needs_rescored = 0 "
+                "WHERE job_id = ? AND search_id = ?",
+                (rating, reason, current_hash, row["job_id"], search_id),
             )
             # Mirror the scored-path history: first-ever verdict vs. a genuine change only.
             if old_rating is None:
                 append_history(conn, row["job_id"], {
                     "ts": ts, "event": "viability", "rating": rating, "reason": reason,
-                })
+                }, search_id)
             elif old_rating != rating:
                 append_history(conn, row["job_id"], {
                     "ts": ts, "event": "rescore", "from": old_rating, "to": rating, "reason": reason,
-                })
+                }, search_id)
             if current_status != "autoskipped":
-                conn.execute("UPDATE jobs SET status = 'autoskipped' WHERE job_id = ?",
-                             (row["job_id"],))
+                conn.execute("UPDATE job_search_state SET status = 'autoskipped' "
+                             "WHERE job_id = ? AND search_id = ?", (row["job_id"], search_id))
                 append_history(conn, row["job_id"], {
                     "ts": ts, "event": "status", "from": current_status, "to": "autoskipped",
                     "note": "company on reject-list",
-                })
+                }, search_id)
             rejected += 1
             note = f"  Reject-listed: {label} → autoskipped (low)"
             if args.verbose:
@@ -817,10 +895,11 @@ def main() -> None:
                 tok_write  += getattr(usage, "cache_creation_input_tokens", 0) or 0
                 tok_read   += getattr(usage, "cache_read_input_tokens",     0) or 0
             conn.execute(
-                "UPDATE jobs SET viability = ?, viability_reason = ?, viability_factors = ?, "
-                "viability_prompt_hash = ?, needs_rescored = 0 WHERE job_id = ?",
+                "UPDATE job_search_state SET viability = ?, viability_reason = ?, "
+                "viability_factors = ?, viability_prompt_hash = ?, needs_rescored = 0 "
+                "WHERE job_id = ? AND search_id = ?",
                 (rating, reason, json.dumps(factors) if factors else None,
-                 current_hash, row["job_id"]),
+                 current_hash, row["job_id"], search_id),
             )
             old_rating   = row["viability"]
             current_status = row["status"]
@@ -828,11 +907,11 @@ def main() -> None:
             if old_rating is None:
                 append_history(conn, row["job_id"], {
                     "ts": ts, "event": "viability", "rating": rating, "reason": reason,
-                })
+                }, search_id)
             elif old_rating != rating:
                 append_history(conn, row["job_id"], {
                     "ts": ts, "event": "rescore", "from": old_rating, "to": rating, "reason": reason,
-                })
+                }, search_id)
             # Note score changes in the log so a tail can spot records that moved. In
             # verbose mode the transition is shown on the per-job line below instead; in
             # interactive mode, clear the transient progress line first so it persists.
@@ -850,14 +929,14 @@ def main() -> None:
             if current_status == "autoskipped":
                 if should_unskip(rating, auto_skip_threshold):
                     conn.execute(
-                        "UPDATE jobs SET status = 'new' WHERE job_id = ?",
-                        (row["job_id"],),
+                        "UPDATE job_search_state SET status = 'new' WHERE job_id = ? AND search_id = ?",
+                        (row["job_id"], search_id),
                     )
                     append_history(conn, row["job_id"], {
                         "ts": ts, "event": "status",
                         "from": current_status, "to": "new",
                         "note": f"re-evaluated above auto-skip threshold (viability: {rating})",
-                    })
+                    }, search_id)
                     promoted   += 1
                     did_promote = True
                     # Log the promotion for a tailed viability.log (mirrors change_note).
@@ -874,14 +953,14 @@ def main() -> None:
                     auto_skip_threshold=auto_skip_threshold,
                     truncated=description_is_truncated(job)):
                 conn.execute(
-                    "UPDATE jobs SET status = 'autoskipped' WHERE job_id = ?",
-                    (row["job_id"],),
+                    "UPDATE job_search_state SET status = 'autoskipped' WHERE job_id = ? AND search_id = ?",
+                    (row["job_id"], search_id),
                 )
                 append_history(conn, row["job_id"], {
                     "ts": ts, "event": "status",
                     "from": current_status, "to": "autoskipped",
                     "note": f"auto-skipped by rescore (viability: {rating})",
-                })
+                }, search_id)
                 auto_skipped += 1
                 did_autoskip  = True
 
@@ -908,8 +987,9 @@ def main() -> None:
             # canonical score spuriously promotes duplicates purely from a prompt change, not merit.
             elif row["canonical_id"] and current_status == "skipped":
                 canonical = conn.execute(
-                    "SELECT viability, viability_prompt_hash FROM jobs WHERE job_id = ?",
-                    (row["canonical_id"],),
+                    "SELECT viability, viability_prompt_hash FROM job_search_state "
+                    "WHERE job_id = ? AND search_id = ?",
+                    (row["canonical_id"], search_id),
                 ).fetchone()
                 canon_viability = canonical["viability"] if canonical else None
                 canon_hash      = canonical["viability_prompt_hash"] if canonical else None
@@ -923,27 +1003,28 @@ def main() -> None:
                         # Score improved but still at/below threshold — update to
                         # autoskipped to record the re-evaluation.
                         conn.execute(
-                            "UPDATE jobs SET status = 'autoskipped' WHERE job_id = ?",
-                            (row["job_id"],),
+                            "UPDATE job_search_state SET status = 'autoskipped' "
+                            "WHERE job_id = ? AND search_id = ?",
+                            (row["job_id"], search_id),
                         )
                         append_history(conn, row["job_id"], {
                             "ts": ts, "event": "status",
                             "from": current_status, "to": "autoskipped",
                             "note": f"re-evaluated; still at/below auto-skip threshold (viability: {rating})",
-                        })
+                        }, search_id)
                         if args.verbose:
                             print(f"    → autoskipped (re-evaluated, still {rating})")
                     else:
                         # Score exceeds threshold (or auto_skip is off) — surface for review.
                         conn.execute(
-                            "UPDATE jobs SET status = 'new' WHERE job_id = ?",
-                            (row["job_id"],),
+                            "UPDATE job_search_state SET status = 'new' WHERE job_id = ? AND search_id = ?",
+                            (row["job_id"], search_id),
                         )
                         append_history(conn, row["job_id"], {
                             "ts": ts, "event": "status",
                             "from": current_status, "to": "new",
                             "note": f"viability {rating!r} exceeds canonical {canon_viability!r}",
-                        })
+                        }, search_id)
                         if args.verbose:
                             print(f"    → reset to new (scores higher than canonical {row['canonical_id']})")
             if args.verbose:

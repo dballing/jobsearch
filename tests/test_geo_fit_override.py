@@ -73,7 +73,8 @@ def test_route_sets_override_and_marks_rescore(sample_app_db):
     resp = _post_geo("cs_review", "acceptable")
     assert resp.status_code == 204
     con = sqlite3.connect(app.DB_PATH)
-    row = con.execute("SELECT geo_fit_actual, needs_rescored FROM jobs WHERE job_id = ?",
+    row = con.execute("SELECT geo_fit_actual, needs_rescored FROM job_search_state "
+                      "WHERE job_id = ? AND search_id = '__default__'",
                       ("cs_review",)).fetchone()
     con.close()
     assert row[0] == "acceptable"
@@ -86,7 +87,7 @@ def test_route_blank_clears_override(sample_app_db):
     resp = client.post("/job/cs_review/geo_fit_actual", data={"geo_fit_actual": "  "})
     assert resp.status_code == 204
     con = sqlite3.connect(app.DB_PATH)
-    val = con.execute("SELECT geo_fit_actual FROM jobs WHERE job_id = ?", ("cs_review",)).fetchone()[0]
+    val = con.execute("SELECT geo_fit_actual FROM job_search_state WHERE job_id = ? AND search_id = '__default__'", ("cs_review",)).fetchone()[0]
     con.close()
     assert val is None
 
@@ -116,7 +117,7 @@ def test_manual_add_persists_geo_override(sample_app_db):
     assert resp.status_code == 201
     job_id = resp.get_json()["job_id"]
     con = sqlite3.connect(app.DB_PATH)
-    val = con.execute("SELECT geo_fit_actual FROM jobs WHERE job_id = ?", (job_id,)).fetchone()[0]
+    val = con.execute("SELECT geo_fit_actual FROM job_search_state WHERE job_id = ? AND search_id = '__default__'", (job_id,)).fetchone()[0]
     con.close()
     assert val == "acceptable"
 
@@ -126,7 +127,7 @@ def test_manual_add_without_override_leaves_it_null(sample_app_db):
     assert resp.status_code == 201
     job_id = resp.get_json()["job_id"]
     con = sqlite3.connect(app.DB_PATH)
-    val = con.execute("SELECT geo_fit_actual FROM jobs WHERE job_id = ?", (job_id,)).fetchone()[0]
+    val = con.execute("SELECT geo_fit_actual FROM job_search_state WHERE job_id = ? AND search_id = '__default__'", (job_id,)).fetchone()[0]
     con.close()
     assert val is None
 

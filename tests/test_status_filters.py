@@ -9,13 +9,14 @@ def test_skipped_filter_is_registered_and_manual_only():
     'skipped' status — never 'autoskipped' (the low-viability auto-decision)."""
     label, condition = app.STATUS_FILTERS["skipped"]
     assert label == "Skipped"
-    assert condition == "status = 'skipped'"
+    # Status predicates reference the per-lens jss.status (queries join job_search_state).
+    assert condition == "jss.status = 'skipped'"
     assert "autoskipped" not in condition
 
 
 def test_skipped_filter_builds_expected_clause():
     where, params = app.build_where("", "skipped")
-    assert where == "WHERE status = 'skipped'"
+    assert where == "WHERE jss.status = 'skipped'"
     assert params == []
 
 

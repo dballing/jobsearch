@@ -27,12 +27,12 @@ import argparse
 import json
 import re
 import sys
-import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
 
+from config import ConfigError, load_config
 from ingest import (
     APIFY_BASE, _TITLE_WORD_GATE, _scalar, _now_iso, append_history,
     find_canonical, open_db,
@@ -260,16 +260,17 @@ def main() -> None:
         parser.error("No URLs provided. Pass URLs as arguments or pipe them via stdin.")
 
     config_path = Path(args.config)
-    if not config_path.exists():
-        sys.exit(f"Config file not found: {config_path}")
-    with open(config_path, "rb") as f:
-        config = tomllib.load(f)
+    try:
+        app_cfg = load_config(config_path)
+    except ConfigError as exc:
+        sys.exit(str(exc))
+    config = app_cfg.default_search().config
 
-    api_token: str = config.get("api_token", "")
+    api_token: str = app_cfg.api_token or ""
     if not api_token:
-        sys.exit("No Apify API token found. Set 'api_token' in config.toml.")
+        sys.exit("No Apify API token found. Set 'api_token' under [basics] in config.toml.")
 
-    db_path: str = config.get("db_path", "jobs.db")
+    db_path: str = app_cfg.db_path
 
     if args.status not in VALID_STATUSES:
         sys.exit(f"Invalid status {args.status!r}. Valid: {', '.join(VALID_STATUSES)}")

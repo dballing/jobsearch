@@ -156,6 +156,16 @@ def build_sample_db(conn) -> None:
     for over in _JOBS:
         row = {**_DEFAULTS, **over}
         conn.execute(f"INSERT INTO jobs ({cols}) VALUES ({placeholders})", row)
+    # Per-lens state: mirror each job's status/viability/overrides/history into its __default__
+    # job_search_state row (what the app now reads). Un-gated (INSERT OR REPLACE) so it always
+    # repopulates, even against an app DB whose table already has rows from a prior test.
+    _jss_cols = ("status, viability, viability_reason, viability_factors, viability_prompt_hash, "
+                 "needs_rescored, salary_min_actual, salary_max_actual, geo_fit_actual, "
+                 "applied_at, history, first_seen")
+    conn.execute(
+        f"INSERT OR REPLACE INTO job_search_state (job_id, search_id, {_jss_cols}) "
+        f"SELECT job_id, '__default__', {_jss_cols} FROM jobs"
+    )
     # Fixed ingest timestamps so the navbar renders deterministically.
     conn.execute(
         "INSERT INTO ingest_state (task_name, last_run_id, last_run_at, last_synced_at) "

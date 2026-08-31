@@ -28,7 +28,9 @@ def test_route_stores_manual_flag_and_marks_rescore(sample_app_db):
 
     con = sqlite3.connect(app.DB_PATH)
     row = con.execute(
-        "SELECT work_arrangement_actual, needs_rescored FROM jobs WHERE job_id = ?",
+        "SELECT j.work_arrangement_actual, s.needs_rescored FROM jobs j "
+        "JOIN job_search_state s ON s.job_id = j.job_id AND s.search_id = '__default__' "
+        "WHERE j.job_id = ?",
         ("cs_review",)).fetchone()
     con.close()
     assert row[0] == viability.GEO_UNSUPPORTED_ARRANGEMENT

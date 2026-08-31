@@ -14,6 +14,11 @@ def _insert(db, job_id, canonical_id=None, title="T"):
         "INSERT INTO jobs (job_id, title, canonical_id, raw) VALUES (?, ?, ?, '{}')",
         (job_id, title, canonical_id),
     )
+    # Per-lens history lives on the __default__ state row now.
+    db.execute(
+        "INSERT INTO job_search_state (job_id, search_id, status) VALUES (?, '__default__', 'new')",
+        (job_id,),
+    )
 
 
 def _group(db, root):
@@ -28,7 +33,7 @@ def _group(db, root):
 
 
 def _history_events(db, job_id):
-    row = db.execute("SELECT history FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    row = db.execute("SELECT history FROM job_search_state WHERE job_id = ?", (job_id,)).fetchone()
     return [e["event"] for e in json.loads(row["history"])]
 
 

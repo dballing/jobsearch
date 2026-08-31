@@ -34,7 +34,9 @@ def test_route_sets_title_override_and_marks_rescore(sample_app_db):
                                       data={"title_actual": "Real Title"})
     assert resp.status_code == 204
     con = sqlite3.connect(app.DB_PATH)
-    row = con.execute("SELECT title_actual, needs_rescored FROM jobs WHERE job_id = ?",
+    row = con.execute("SELECT j.title_actual, s.needs_rescored FROM jobs j "
+                      "JOIN job_search_state s ON s.job_id = j.job_id AND s.search_id = '__default__' "
+                      "WHERE j.job_id = ?",
                       ("cs_review",)).fetchone()
     con.close()
     assert row[0] == "Real Title"

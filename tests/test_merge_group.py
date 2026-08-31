@@ -9,11 +9,18 @@ import json
 import app
 
 
+_SID = "__default__"
+
+
 def _insert(db, job_id, canonical_id=None, status="new", applied_at=None):
     db.execute(
-        "INSERT INTO jobs (job_id, title, canonical_id, status, applied_at, raw) "
-        "VALUES (?, 'T', ?, ?, ?, '{}')",
-        (job_id, canonical_id, status, applied_at),
+        "INSERT INTO jobs (job_id, title, canonical_id, raw) VALUES (?, 'T', ?, '{}')",
+        (job_id, canonical_id),
+    )
+    # Per-lens status/applied_at/history live on the __default__ state row now.
+    db.execute(
+        "INSERT INTO job_search_state (job_id, search_id, status, applied_at) VALUES (?, ?, ?, ?)",
+        (job_id, _SID, status, applied_at),
     )
 
 
@@ -70,7 +77,8 @@ def test_merge_inherits_status_for_early_members(jobs_db):
     _insert(jobs_db, "b2", canonical_id="B", status="rejected")   # terminal → NOT overwritten
     app._merge_group_into(jobs_db, "B", "A", "t")
     stat = {r["job_id"]: (r["status"], r["applied_at"])
-            for r in jobs_db.execute("SELECT job_id, status, applied_at FROM jobs").fetchall()}
+            for r in jobs_db.execute(
+                "SELECT job_id, status, applied_at FROM job_search_state").fetchall()}
     assert stat["B"] == ("applied", "2026-06-01 09:00:00")
     assert stat["b1"] == ("applied", "2026-06-01 09:00:00")
     assert stat["b2"][0] == "rejected"          # left alone
@@ -81,7 +89,8 @@ def test_merge_logs_history_on_source_root(jobs_db):
     _insert(jobs_db, "B")
     _insert(jobs_db, "b1", canonical_id="B")
     app._merge_group_into(jobs_db, "b1", "A", "t")
-    hist = json.loads(jobs_db.execute("SELECT history FROM jobs WHERE job_id='B'").fetchone()["history"])
+    hist = json.loads(jobs_db.execute(
+        "SELECT history FROM job_search_state WHERE job_id='B'").fetchone()["history"])
     linked = [e for e in hist if e["event"] == "linked"]
     assert linked and linked[-1]["canonical_id"] == "A" and "merged group" in linked[-1]["note"]
 

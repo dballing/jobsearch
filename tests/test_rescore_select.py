@@ -93,7 +93,7 @@ def test_status_current_viability_keep_staleness_when_not_forced():
 # ── build_selection: ingest-date axis + param ordering ────────────────────────
 def test_since_adds_date_floor_and_param_order():
     where, params = rv.build_selection(current_hash=HASH, since="2026-07-01")
-    assert "date(first_seen) >= ?" in where
+    assert "date(jobs.first_seen) >= ?" in where
     # Params must line up with placeholder order: staleness hash first, then the date.
     assert params == [HASH, "2026-07-01"]
 
@@ -107,7 +107,7 @@ def test_previous_days_uses_rolling_window():
 def test_autoskipped_with_since_combines():
     where, params = rv.build_selection(
         current_hash=HASH, force=True, autoskipped=True, since="2026-07-05")
-    assert "status = 'autoskipped'" in where and "date(first_seen) >= ?" in where
+    assert "status = 'autoskipped'" in where and "date(jobs.first_seen) >= ?" in where
     assert params == ["2026-07-05"]                        # forced → no hash, just the date
 
 
@@ -225,9 +225,11 @@ _LOW_THRESHOLD = rv.VIABILITY_RANK["low"]      # auto_skip_confidence="low" → 
 
 
 def _insert(conn, job_id, status, viability, phash):
+    # Per-lens status/viability/history live on the __default__ state row now.
+    conn.execute("INSERT INTO jobs (job_id, title, raw) VALUES (?, 'T', '{}')", (job_id,))
     conn.execute(
-        "INSERT INTO jobs (job_id, title, status, viability, viability_prompt_hash, raw, history) "
-        "VALUES (?, 'T', ?, ?, ?, '{}', '[]')",
+        "INSERT INTO job_search_state (job_id, search_id, status, viability, "
+        "viability_prompt_hash, history) VALUES (?, '__default__', ?, ?, ?, '[]')",
         (job_id, status, viability, phash))
 
 
@@ -241,11 +243,13 @@ def test_reconcile_flips_only_current_above_threshold_autoskipped(jobs_db):
 
     reset = rv.reconcile_autoskipped(jobs_db, _CUR, _LOW_THRESHOLD)
     assert sorted(j for j, _ in reset) == ["a", "b"]
-    statuses = {r["job_id"]: r["status"] for r in jobs_db.execute("SELECT job_id, status FROM jobs")}
+    statuses = {r["job_id"]: r["status"]
+                for r in jobs_db.execute("SELECT job_id, status FROM job_search_state")}
     assert statuses == {"a": "new", "b": "new", "c": "autoskipped",
                         "d": "autoskipped", "e": "skipped", "f": "new"}
     # A status-history entry records the reconcile on a flipped job.
-    hist_a = jobs_db.execute("SELECT history FROM jobs WHERE job_id='a'").fetchone()["history"]
+    hist_a = jobs_db.execute(
+        "SELECT history FROM job_search_state WHERE job_id='a'").fetchone()["history"]
     assert '"to":"new"' in hist_a and "reconciled" in hist_a
 
 
@@ -253,7 +257,8 @@ def test_reconcile_dry_run_reports_without_writing(jobs_db):
     _insert(jobs_db, "a", "autoskipped", "high", _CUR)
     reset = rv.reconcile_autoskipped(jobs_db, _CUR, _LOW_THRESHOLD, dry_run=True)
     assert reset == [("a", "high")]                      # reported…
-    row = jobs_db.execute("SELECT status, history FROM jobs WHERE job_id='a'").fetchone()
+    row = jobs_db.execute(
+        "SELECT status, history FROM job_search_state WHERE job_id='a'").fetchone()
     assert row["status"] == "autoskipped" and row["history"] == "[]"   # …but nothing written
 
 

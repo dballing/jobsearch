@@ -2,14 +2,61 @@
 
 All configuration lives in `config.toml` (gitignored — never committed). Copy `config.toml.example` to get started.
 
-## Top-level keys
+## Top-level keys (`[basics]`)
+
+Shared, app/DB-wide settings live under a `[basics]` table. (An older layout put these bare at the top level — still accepted, with a deprecation warning; run `python ingest.py --fixbasics` to migrate an existing config in place, comments preserved.)
 
 ```toml
+[basics]
 api_token   = "apify_api_xxxxxxxxxxxxxxxxxxxx" # Apify API token (required)
 username    = "your-apify-username"            # Apify username (required)
 db_path     = "jobs.db"                        # path to SQLite database (default: jobs.db)
 uploads_dir = "uploads"                        # dir for job file attachments (default: uploads)
 ```
+
+## Multiple job searches (`[[searches]]`)
+
+By default `config.toml` describes **one** search. To run several distinct searches — each with its own `[viability]` criteria and its own feeds — in one app and one database, add a `[[searches]]` manifest and move the **per-search** stanzas (`[viability]`, `[[tasks]]`, `[labels]`) into per-search files. The **shared** stanzas (`[basics]`, `[company_aliases]`, and optionally `[ai]`/`[descriptions]`) stay in the canonical `config.toml`; each per-search file inherits them and may not redeclare a global stanza.
+
+```toml
+# config.toml — shared globals + the search manifest
+[basics]
+db_path = "jobs.db"
+# … api_token, username, uploads_dir, dedup knobs …
+
+[company_aliases]        # global (written at runtime by the app) → must live here
+"Sirius XM" = "SiriusXM"
+
+[[searches]]
+search_id          = "tpm"                 # stable key stored in the DB — don't rename lightly
+search_name        = "TPM / Program Mgmt"  # shown in the UI's search selector
+search_config_file = "searches/tpm.toml"   # holds [viability], [[tasks]], [labels]
+adopts_legacy      = true                  # one-time: this search absorbs the pre-split jobs
+                                           # of a DB that began as a single search (at most one)
+
+[[searches]]
+search_id          = "director"
+search_name        = "Director of Eng/IT"
+search_config_file = "searches/director.toml"
+```
+
+```toml
+# searches/tpm.toml — per-search stanzas only
+[viability]
+enabled = true
+prompt  = """…TPM-specific candidate framing…"""
+
+[[tasks]]
+name  = "apify-linkedin-tpm"
+label = "dc"
+```
+
+Behavior:
+- **Per-lens everything.** Status, viability, the salary/geo overrides, and event history are tracked separately per `(job, search)`; the same posting is one row in the jobs table with independent state under each search. Notes, attachments, and the description override are shared (you apply once).
+- **The UI** shows one search ("lens") at a time — a selector appears in the navbar; switching sets `?search=<id>` (and a sticky cookie).
+- **Scoring:** `./rescore_viability.sh` scores **every** search (each under its own criteria, in its own child process — the writer lock is process-scoped, so it fans out rather than looping in-process). `--search <id>` narrows to one. `./ingest.sh` already ingests all searches in one run.
+- **Dedup:** automatic near-duplicate grouping never crosses searches; a manual merge/promote in the UI may.
+- **Going from one search to many:** set `adopts_legacy = true` on the search that should inherit your existing (pre-split) jobs; the next ingest/rescore/app start folds them in automatically (idempotent).
 
 ## Labels
 
@@ -77,7 +124,7 @@ The ingest script fetches each run's INPUT record from Apify and extracts the la
 
 ## Global keys
 
-These sit at the top level of `config.toml` (not inside `[[tasks]]`).
+These live under `[basics]` in `config.toml` (not inside `[[tasks]]`; bare top-level placement is still accepted but deprecated — see the top of this doc). Per-task overrides where noted.
 
 | Key | Default | Description |
 |-----|---------|-------------|

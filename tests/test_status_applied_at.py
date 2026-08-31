@@ -14,16 +14,19 @@ import app
 
 
 def _set(job_id, status, applied_at):
-    """Force a job's status + applied_at directly, to seed a starting state for a transition."""
+    """Force a job's status + applied_at directly, to seed a starting state for a transition.
+    Status/applied_at are per-lens now — seed the __default__ state row."""
     con = sqlite3.connect(app.DB_PATH)
-    con.execute("UPDATE jobs SET status = ?, applied_at = ? WHERE job_id = ?",
+    con.execute("UPDATE job_search_state SET status = ?, applied_at = ? "
+                "WHERE job_id = ? AND search_id = '__default__'",
                 (status, applied_at, job_id))
     con.commit(); con.close()
 
 
 def _applied_at(job_id):
     con = sqlite3.connect(app.DB_PATH)
-    v = con.execute("SELECT applied_at FROM jobs WHERE job_id = ?", (job_id,)).fetchone()[0]
+    v = con.execute("SELECT applied_at FROM job_search_state "
+                    "WHERE job_id = ? AND search_id = '__default__'", (job_id,)).fetchone()[0]
     con.close()
     return v
 

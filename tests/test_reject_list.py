@@ -61,19 +61,31 @@ def test_reject_reason_names_the_employer():
 
 # ── build_selection reject-OR, executed against a live DB ─────────────────────
 def _db_with_jobs(rows):
+    # Shared fields on jobs; per-lens status/viability/staleness on job_search_state (the schema
+    # build_selection now targets via a join). Row tuple stays (id, company, status, viability,
+    # hash, needs_rescored, first_seen) for readability at the call sites.
     con = sqlite3.connect(":memory:")
     con.row_factory = sqlite3.Row
+    con.execute("CREATE TABLE jobs (job_id TEXT, company TEXT, first_seen TEXT)")
     con.execute(
-        "CREATE TABLE jobs (job_id TEXT, company TEXT, status TEXT, viability TEXT, "
-        "viability_prompt_hash TEXT, needs_rescored INT, first_seen TEXT)"
+        "CREATE TABLE job_search_state (job_id TEXT, search_id TEXT, status TEXT, viability TEXT, "
+        "viability_prompt_hash TEXT, needs_rescored INT)"
     )
-    con.executemany("INSERT INTO jobs VALUES (?,?,?,?,?,?,?)", rows)
+    for job_id, company, status, viability, phash, nr, first_seen in rows:
+        con.execute("INSERT INTO jobs VALUES (?,?,?)", (job_id, company, first_seen))
+        con.execute("INSERT INTO job_search_state VALUES (?, '__default__', ?, ?, ?, ?)",
+                    (job_id, status, viability, phash, nr))
     return con
+
+
+_JSS_JOIN = ("JOIN job_search_state jss ON jss.job_id = jobs.job_id "
+             "AND jss.search_id = '__default__'")
 
 
 def _selected(con, **kwargs):
     where, params = rv.build_selection(**kwargs)
-    return sorted(r["job_id"] for r in con.execute(f"SELECT job_id FROM jobs {where}", params))
+    return sorted(r["job_id"] for r in
+                  con.execute(f"SELECT jobs.job_id AS job_id FROM jobs {_JSS_JOIN} {where}", params))
 
 
 def test_default_run_pulls_in_nonstale_listed_predecision_jobs():
@@ -135,8 +147,12 @@ def test_score_one_job_denies_listed_company_without_ai(jobs_db, config_file):
         'reject_companies = ["Initech"]\n'
     )
     jobs_db.execute(
-        "INSERT INTO jobs (job_id, title, company, status, raw) VALUES (?,?,?,?,?)",
-        ("j1", "Engineer", "Initech", "new", "{}"),
+        "INSERT INTO jobs (job_id, title, company, raw) VALUES (?,?,?,?)",
+        ("j1", "Engineer", "Initech", "{}"),
+    )
+    # Per-lens state row (status/viability now live here) under the default search.
+    jobs_db.execute(
+        "INSERT INTO job_search_state (job_id, search_id, status) VALUES ('j1', '__default__', 'new')"
     )
     jobs_db.commit()
 
@@ -145,7 +161,7 @@ def test_score_one_job_denies_listed_company_without_ai(jobs_db, config_file):
 
     row = jobs_db.execute(
         "SELECT viability, viability_reason, status, viability_prompt_hash "
-        "FROM jobs WHERE job_id = 'j1'"
+        "FROM job_search_state WHERE job_id = 'j1' AND search_id = '__default__'"
     ).fetchone()
     assert row["viability"] == "low"
     assert "reject-list" in row["viability_reason"]

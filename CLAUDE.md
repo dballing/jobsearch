@@ -34,7 +34,9 @@ All `.sh` wrappers activate `.venv` and `cd` into the repo first, so they work f
 ./run_app.sh --port 5002     # override port; FLASK_NO_DEBUG=1 disables the reloader
 ./ingest.sh                  # fetch new Apify run results into jobs.db
 ./ingest.sh --dry-run        # show pending run counts without fetching or writing
-./rescore_viability.sh       # AI-score jobs needing it (--dry-run, --force, --all, --early-stage, --autoskipped, --status, --current-viability, --since, --previous-days)
+./ingest.sh --fixbasics      # migrate a config's bare top-level keys under [basics] and exit
+./rescore_viability.sh       # AI-score jobs needing it (--dry-run, --force, --all, --early-stage, --autoskipped, --status, --current-viability, --since, --previous-days, --search <id>)
+                             # scores EVERY configured search (each in its own child process); --search <id> narrows to one
 ./compare_scoring.sh         # read-only before/after check: score a recent sample with the HEAD prompt vs the working-tree prompt (--n, --previous-days, --since). Run before committing a prompt edit.
 ./import_linkedin.sh --status applied <url-or-id>...   # bulk-import known applications
 ./run_tests.sh               # pytest suite (hermetic except one cached live-pricing check; run before committing). Passes args through, e.g. -k config
@@ -53,7 +55,8 @@ Typical cron line chains ingest then rescore:
 
 | File | Role |
 |------|------|
-| `app.py` | Flask app: index (filter/group/sort), preview panel, status/override/notes/attachment/link routes, manual job add (`/jobs/manual`), stats, weekly contact report (`/report/weekly`). Holds the SQLite schema migration in `_migrate()`. |
+| `config.py` | Central config loader (all entry points use it). Resolves the one canonical config into `AppConfig`/`Search`: Path A (no `[[searches]]`) = one implicit `__default__` search; Path B = shared globals + `[[searches]]` manifest, each search file merged with the globals. `[basics]` (bare-key fallback + `--fixbasics` migrator), `adopts_legacy`, per-search `config` dicts shape-identical to the old flat config. |
+| `app.py` | Flask app: index (filter/group/sort), preview panel, status/override/notes/attachment/link routes, manual job add (`/jobs/manual`), stats, weekly contact report (`/report/weekly`). Holds the SQLite schema migration in `_migrate()`. The current search ("lens") comes from `_current_search_id()` (`?search=` / form / sticky cookie); every listing/stats query joins `job_search_state` via `_jss_join()`. |
 | `ingest.py` | Apify ingestion: fetch runs, extract fields (linkedin + careersite extractors), fuzzy dedup, company-alias normalization, auto-ghost/close/reset, run summary. `DescriptionFormatter` wraps AI reformatting. |
 | `viability.py` | Shared scoring helpers: `prompt_hash`, `score_job`. |
 | `rescore_viability.py` | Batch AI viability scoring driver (selection logic, auto-skip, progress output). |
@@ -72,8 +75,17 @@ Typical cron line chains ingest then rescore:
 - `jobs.db` — the SQLite database (gitignored). `jobs.db-wal` / `jobs.db-shm` are transient WAL files; ignore them in status.
 - `jobsbackup.db`, `jobbackup2.db` — manual backups (gitignored).
 - `uploads/` — attachment files stored under UUID names; real filenames live in the DB. Back up separately from `jobs.db`.
-- Schema changes happen in `app.py:_migrate()` (idempotent `ALTER TABLE` guards), run on app start. There are no migration files.
+- Schema changes happen in `app.py:_migrate()` (idempotent `ALTER TABLE` guards), run on app start. There are no migration files. A **shared helper `ingest.ensure_job_search_state()`** creates the `job_search_state` table + one-time backfill; it's called from all three migration paths (`ingest.open_db`, `app._migrate`, `rescore_viability.open_db`).
+- **Per-lens state lives in `job_search_state(job_id, search_id, …)`** — status, viability (+reason/factors/hash/needs_rescored), the `salary_*_actual`/`geo_fit_actual` overrides, `applied_at`, and per-lens `history`. A row's existence IS the job's membership in that search. The matching columns on `jobs` are **dormant** (kept for rollback, migrated once to `__default__`); nothing reads them (a poison test guards this). Shared, objective posting facts stay on `jobs`: notes, attachments, `description_actual`, `company_actual`, `title_actual`, `work_arrangement_actual`.
 - `config.toml` is gitignored; `config.toml.example` is the tracked template. `docs/configuration.md` documents every key.
+
+## Multi-search ("lenses")
+
+One app + one DB can run several distinct job searches, each with its own `[viability]` criteria and feeds, scored independently. **Path A** (no `[[searches]]`) is the single-search default — everything behaves exactly as before under the implicit `__default__` search. **Path B** adds a `[[searches]]` manifest in the canonical config (shared globals: `[basics]`, `[company_aliases]`, optionally `[ai]`/`[descriptions]`) pointing at per-search files (`[viability]`, `[[tasks]]`, `[labels]`); a search file may not redeclare a global stanza. See `config.py` and `docs/configuration.md`.
+
+- **Everything per-lens is keyed by `search_id`.** `app.py` reads/writes the current lens (`_current_search_id()`); `ingest.ingest(search_id=…)` tags membership + status/history (one `./ingest.sh` loops all searches' tasks); `rescore_viability.py` scores **every** search by default — a Path-B run fans out one child process per search (the writer lock is process-scoped, so it can't loop in-process; `--search <id>` narrows to one and takes the single-search path directly). Automatic fuzzy dedup (`find_canonical(search_id=…)`) is restricted to the incoming search; **manual** merges (`_merge_group_into`/`promote_to_canonical`) may cross searches.
+- **Single→multi transition:** mark one `[[searches]]` entry `adopts_legacy = true`; `ingest.adopt_legacy()` re-points the pre-split `__default__` state/history/`ingest_state` into it (gated, idempotent, run from the migration paths). At most one adopter; a loud warning if legacy rows go unadopted.
+- **The `jss.*`-first SELECT trick:** listing queries select the per-lens columns FIRST (aliased to their canonical names) so they shadow the dormant `jobs.*` columns of the same name — `sqlite3.Row` and `dict(row)` both take the first match. `first_seen`/`applied_at` are on both tables, so they're qualified in joined queries.
 
 ## Things that bite
 

@@ -71,7 +71,9 @@ def test_route_sets_override_and_marks_rescore(sample_app_db):
 
     con = sqlite3.connect(app.DB_PATH)
     row = con.execute(
-        "SELECT description_actual, needs_rescored, history FROM jobs WHERE job_id = ?",
+        "SELECT j.description_actual, s.needs_rescored, s.history FROM jobs j "
+        "JOIN job_search_state s ON s.job_id = j.job_id AND s.search_id = '__default__' "
+        "WHERE j.job_id = ?",
         ("cs_review",)).fetchone()
     con.close()
     assert row[0] == "Full pasted job description from the employer site."
@@ -88,7 +90,9 @@ def test_route_clears_override(sample_app_db):
 
     con = sqlite3.connect(app.DB_PATH)
     row = con.execute(
-        "SELECT description_actual, needs_rescored FROM jobs WHERE job_id = ?",
+        "SELECT j.description_actual, s.needs_rescored FROM jobs j "
+        "JOIN job_search_state s ON s.job_id = j.job_id AND s.search_id = '__default__' "
+        "WHERE j.job_id = ?",
         ("cs_review",)).fetchone()
     con.close()
     assert row[0] is None

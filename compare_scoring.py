@@ -41,12 +41,12 @@ import importlib.util
 import subprocess
 import sys
 import tempfile
-import tomllib
 from datetime import datetime
 from pathlib import Path
 
 import anthropic
 
+from config import ConfigError, load_config
 from ai_config import (format_token_summary, resolve_ai_settings, resolve_effort,
                        resolve_geo_effort, resolve_geo_model)
 import viability as viability_new
@@ -240,10 +240,10 @@ def main() -> None:
         pass
 
     config_path = Path(args.config)
-    if not config_path.exists():
-        sys.exit(f"Config file not found: {config_path}")
-    with open(config_path, "rb") as f:
-        config = tomllib.load(f)
+    try:
+        config = load_config(config_path).default_search().config
+    except ConfigError as exc:
+        sys.exit(str(exc))
 
     vcfg = config.get("viability", {}) or {}
     if not vcfg.get("enabled", False):

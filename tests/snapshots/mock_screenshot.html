@@ -55,6 +55,8 @@
       <a class="navbar-brand" href="/">Job Search - Listings</a>
       <div class="d-flex align-items-center gap-3">
         
+        
+        
         <div class="text-white-50 small" style="display:grid;grid-template-columns:max-content auto;column-gap:0.35rem;line-height:1.4">
           
           <span class="text-end">Data:</span>
@@ -2341,6 +2343,15 @@ Solid fit; re-score pending.">medium</span>
         }
         if (job.applied_at) {
           metaHtml += `<div class="mt-1 text-muted small">Applied: ${escHtml(job.applied_at)}</div>`;
+        }
+        // Cross-lens: the same posting's viability/status under the OTHER searches it belongs to.
+        // Read-only — a nudge that this role is also being tracked under another search's criteria.
+        if (Array.isArray(job.other_searches) && job.other_searches.length) {
+          const chips = job.other_searches.map(o => {
+            const v = o.viability ? `<span class="badge text-bg-${viabilityColors[o.viability] || 'secondary'}">${escHtml(o.viability)}</span>` : '<span class="text-muted">unscored</span>';
+            return `<div class="small">Also in <strong>${escHtml(o.search_name)}</strong>: ${v} <span class="text-muted">${escHtml(o.status || '')}</span></div>`;
+          }).join('');
+          metaHtml += `<div class="mt-1">${chips}</div>`;
         }
         if (job.history && job.history.length > 0) {
           const sorted = [...job.history].sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
