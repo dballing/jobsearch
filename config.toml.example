@@ -142,6 +142,8 @@ label = "dc"             # short key stored in the database; shown in the UI fil
 # exclude_ats_duplicates = true  # optional: skip results already covered by a career-site task
 # reset_on_change = true         # optional: overrides global default for this task
 # fuzzy_dedup = true             # optional: overrides global default for this task
+# schedule_name = "my-schedule"  # optional: ingest only runs this Apify schedule triggered
+#                                #   (see "one task, two schedules" note below)
 
 [[tasks]]
 name  = "my-dc-va-search-career-sites"
@@ -172,6 +174,32 @@ label = "nc"
 # label            = "unknown"
 # label_from_input = "_jobsearch_label"
 # actor            = "careersite"
+
+# ── One Apify task, two schedules (per-search scoping) ────────────────────────
+# When two SEARCHES (lenses) share a single Apify task definition — same scraper,
+# but invoked by two different Apify schedules that pass different parameters
+# (e.g. US vs. Europe location limiters) — set `schedule_name` on each search's task
+# entry to the schedule that feeds it. Apify lists runs per task, not per schedule,
+# so both schedules' runs come back mixed; `schedule_name` filters each search down to
+# only its own schedule's runs. Without it, both searches would ingest both schedules'
+# postings.
+#
+# `schedule_name` is the schedule's name as shown in the Apify console (an opaque
+# schedule id also works). Ingest resolves the name to the id Apify stamps on each run
+# (meta.scheduleId) and matches on that. If a dry run reports `0 of N run(s)`, it also
+# lists the schedule ids actually present on the task's runs so you can spot a mismatch.
+#
+#   # searches/midatl_tpm.toml
+#   [[tasks]]
+#   name          = "derek-tpm-scraper"          # the SHARED Apify task
+#   label         = "tpm"
+#   schedule_name = "job-search-schedule-usa"    # only this search's schedule
+#
+#   # searches/europe_tpm.toml
+#   [[tasks]]
+#   name          = "derek-tpm-scraper"          # same Apify task
+#   label         = "tpm"
+#   schedule_name = "job-search-schedule-europe" # only this search's schedule
 
 # ── Company-name normalization (optional) ─────────────────────────────────────
 # Job feeds spell the same employer inconsistently (e.g. "Sirius XM" vs

@@ -94,6 +94,33 @@ Multiple tasks can share the same `label` — they contribute to the same filter
 | `exclude_ats_duplicates` | `false` | Skip LinkedIn results the actor has flagged as duplicates of career-site postings. Useful when running parallel LinkedIn + career-site tasks for the same geography. |
 | `reset_on_change` | *(global value)* | Per-task override of the global `reset_on_change` setting. |
 | `fuzzy_dedup` | *(global value)* | Per-task override of the global `fuzzy_dedup` setting. |
+| `schedule_name` | *(unset)* | Ingest only the runs that this Apify **schedule** triggered. Lets two searches share one Apify task, split by schedule. The schedule's console **name** (an opaque schedule id also works). See [One Apify task, two schedules](#one-apify-task-two-schedules) below. |
+
+### One Apify task, two schedules
+
+Two **searches** (lenses) can share a **single** Apify task definition when the only difference between them is the input a schedule injects — e.g. one scraper invoked by a US schedule and a Europe schedule that pass different location limiters, each feeding a different search. Apify lists runs per *task*, not per *schedule*, so a shared task's run list mixes both schedules' runs; there is no server-side "runs of schedule X" query. Set `schedule_name` on each search's task entry to filter its ingest down to only the runs that schedule triggered — matched on the run's platform-stamped `meta.scheduleId` (already present on the run-list response, so no extra API calls). Without it, **both** searches would ingest **both** schedules' postings.
+
+```toml
+# searches/midatl_tpm.toml
+[[tasks]]
+name          = "derek-tpm-scraper"          # the SHARED Apify task
+label         = "tpm"
+schedule_name = "job-search-schedule-usa"
+
+# searches/europe_tpm.toml
+[[tasks]]
+name          = "derek-tpm-scraper"          # same Apify task
+label         = "tpm"
+schedule_name = "job-search-schedule-europe"
+```
+
+`schedule_name` is the schedule's name as shown in the Apify console. Apify stamps each run with the schedule's opaque *id* (in `meta.scheduleId`), not its name, so ingest fetches the account's schedules once per run and resolves the name → id before matching. (An opaque id in the field also works and skips a lookup path; the value is tried as an id first, then as a name.)
+
+A run whose schedule doesn't match is skipped and recorded as seen for *this* search only (so it isn't re-probed each cycle); the sibling search that owns that schedule still ingests it under its own history. Leaving `schedule_name` unset preserves the default single-schedule behavior (every run of the task is ingested).
+
+**Adding a scoped search to a task with history — seed it first.** Resolving a run's schedule costs one API call per run (`scheduleId` is on the run *detail*, not the run *list*). A brand-new search has no ingest history, so it would scan the task's *entire* run backlog one run at a time — slow, and usually pointless (you added the lens to track its schedule going forward, not to dredge a mostly-foreign back-catalog). Run `ingest.py --seed <search_id>` once: it marks the search's current runs all-seen (list-only, no per-run fetch — instant) so the search starts from *now* and only processes runs created afterward. A scoped task also prints a `--seed` hint if a normal ingest is about to probe a large batch.
+
+**Troubleshooting a `0 of N run(s)` dry run:** if scoping matches nothing, ingest prints the schedule ids actually present on that task's runs (`NOTE: … Schedule ids present: <id> (count), …`), and — if the name itself wasn't found among your account's schedules — a `WARNING` listing the known schedule names. Cross-check the spelling against the console.
 
 ### Generic tasks with per-schedule labels
 

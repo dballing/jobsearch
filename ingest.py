@@ -32,6 +32,11 @@ from runlock import acquire_run_lock
 
 APIFY_BASE = "https://api.apify.com/v2"
 
+# Above this many unseen runs, a schedule-scoped task warns before detail-probing them one by one
+# (scheduleId is detail-only). A batch this large means a fresh search hitting the full backlog —
+# the cue to seed it (--seed) instead. Well above a normal catch-up (a handful of runs per cycle).
+_SCHEDULE_PROBE_WARN = 50
+
 # ── Database schema ───────────────────────────────────────────────────────────
 # The `jobs` table is the heart of the app — one row per posting (PK job_id; career-
 # site IDs are prefixed "cs_" to avoid collision with numeric LinkedIn IDs). Columns
@@ -423,6 +428,62 @@ def fetch_task_runs(username: str, task_name: str, api_token: str) -> list[dict]
     return runs
 
 
+def fetch_schedules(api_token: str) -> list[dict]:
+    """Return the account's Apify schedules (each a dict with at least ``id`` and ``name``).
+
+    Used only to let a task's ``schedule_name`` be the human-readable schedule NAME (what you
+    see in the Apify console) rather than the opaque id Apify stamps on runs — see
+    resolve_schedule_id. Unlike runs, this endpoint is per-account (the token identifies the
+    user), so no username is in the path. Paginated like fetch_task_runs."""
+    headers = {"Authorization": f"Bearer {api_token}"}
+    schedules: list[dict] = []
+    offset = 0
+    limit = 1000
+    while True:
+        resp = requests.get(
+            f"{APIFY_BASE}/schedules",
+            headers=headers,
+            params={"limit": limit, "offset": offset},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        batch = resp.json()["data"]["items"]
+        if not batch:
+            break
+        schedules.extend(batch)
+        if len(batch) < limit:
+            break
+        offset += limit
+    return schedules
+
+
+def resolve_schedule_id(configured: str, schedules: list[dict]) -> str | None:
+    """Map a task's configured ``schedule_name`` to the opaque id Apify stamps on runs.
+
+    The value is normally the schedule's human NAME (what the config field is called), but an
+    opaque id is also accepted (it matches runs' ``meta.scheduleId`` directly). This returns the
+    opaque id in both cases, or ``None`` when the value matches neither a known id nor a known
+    name — the caller then warns and lists what's available. An opaque id is preferred over a
+    name on the (near-impossible, since Apify names are unique) chance a string is both."""
+    if any(s.get("id") == configured for s in schedules):
+        return configured
+    for s in schedules:
+        if s.get("name") == configured:
+            return s.get("id")
+    return None
+
+
+def schedule_id_counts(runs: list[dict]) -> "Counter[str]":
+    """Tally a run list by triggering schedule id (``meta.scheduleId``), with ``"-"`` for
+    runs that weren't schedule-triggered. Powers the diagnostic that lists which schedule ids
+    are actually present when a configured ``schedule_name`` matches nothing, so the real value
+    is discoverable straight from a dry run."""
+    counts: Counter[str] = Counter()
+    for run in runs:
+        counts[run_schedule_id(run) or "-"] += 1
+    return counts
+
+
 def fetch_run_input(run: dict, api_token: str) -> dict:
     """Fetch the INPUT record from a run's default key-value store.
 
@@ -445,6 +506,28 @@ def fetch_run_input(run: dict, api_token: str) -> dict:
         return resp.json() or {}
     except Exception:
         return {}
+
+
+def fetch_run_schedule_id(run_id: str, api_token: str) -> str | None:
+    """The schedule id that triggered a run, read from the single-run DETAIL endpoint.
+
+    ``meta.scheduleId`` is NOT on the run objects the task-runs LIST returns — their ``meta``
+    carries only ``origin`` (verified against live Apify data). It appears only on the per-run
+    detail (``/actor-runs/{id}``, whose ``meta`` adds ``scheduleId``/``scheduledAt``). Schedule
+    scoping therefore resolves it one run at a time here, so it's called only for the runs a
+    scoped task is about to consider (the unseen ones) — not the whole backlog every cycle.
+    Returns None on any failure or a non-schedule (manual/API) run, so the caller treats such a
+    run as 'not this schedule' rather than crashing."""
+    try:
+        resp = requests.get(
+            f"{APIFY_BASE}/actor-runs/{run_id}",
+            headers={"Authorization": f"Bearer {api_token}"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return ((resp.json().get("data") or {}).get("meta") or {}).get("scheduleId")
+    except Exception:
+        return None
 
 
 def fetch_dataset_items(dataset_id: str, api_token: str) -> list[dict]:
@@ -523,6 +606,39 @@ def runs_to_process(
     """
     seen = search_history_run_ids(conn, search_id)
     return [run for run in all_runs if run["id"] not in seen]
+
+
+def run_schedule_id(run: dict) -> str | None:
+    """The Apify schedule that triggered this run, or None if it wasn't schedule-triggered.
+
+    Apify stamps every run with a ``meta`` block; ``meta.scheduleId`` is the (immutable,
+    platform-assigned) id of the triggering schedule and is present on the run objects the
+    run-list endpoint already returns, so reading it costs no extra API call. ``meta`` may
+    omit the key entirely for a manual/API run — hence the defensive ``.get`` chain."""
+    return (run.get("meta") or {}).get("scheduleId")
+
+
+def filter_runs_by_schedule(runs: list[dict], schedule_id: str | None) -> list[dict]:
+    """Keep only the runs triggered by ``schedule_id`` — the mechanism that lets two searches
+    share ONE Apify task definition yet each ingest only its own schedule's runs.
+
+    The motivating case: one scraper task invoked by two Apify schedules that pass different
+    location limiters (US vs. Europe), each feeding a different search lens. Apify lists runs
+    per *task*, not per *schedule*, so both schedules' runs come back mixed in one list; there
+    is no server-side "runs of schedule X" query. Filtering client-side on each run's
+    ``meta.scheduleId`` recovers the per-schedule split. The list endpoint omits ``scheduleId``
+    (its ``meta`` carries only ``origin``), so the caller enriches each run from its detail
+    (fetch_run_schedule_id) before calling this — a pure predicate over whatever meta is present.
+
+    ``schedule_id`` here is the resolved opaque id (the caller translates the task's configured
+    ``schedule_name`` to it via resolve_schedule_id). ``schedule_id=None`` (a task with no
+    ``schedule_name`` configured — the common single-schedule case) is a no-op: every run passes,
+    preserving today's behavior. When a schedule *is* configured, a run without a matching
+    ``meta.scheduleId`` (a different schedule, or a manual/API run with no schedule at all) is
+    dropped — a schedule-scoped task deliberately ignores everything but its own schedule's runs."""
+    if not schedule_id:
+        return runs
+    return [run for run in runs if run_schedule_id(run) == schedule_id]
 
 
 def _scalar(val: object) -> object:
@@ -1660,12 +1776,56 @@ def record_state(conn: sqlite3.Connection, task_name: str, run: dict,
     conn.commit()
 
 
+def mark_run_seen(conn: sqlite3.Connection, task_name: str, run: dict) -> None:
+    """Record a run in this search's ingest_history WITHOUT ingesting it (0/0/0), so it isn't
+    re-examined on the next cycle. Used for a run a schedule-scoped task deliberately skips
+    (it belongs to a *different* schedule): resolving a run's schedule costs a per-run detail
+    fetch (see fetch_run_schedule_id), so leaving the foreign run unrecorded would re-probe it
+    every cycle forever. Marking it seen is safe across lenses because ingest_history is keyed
+    per search (state_key) — the sibling search that owns that schedule has its own scope and
+    still ingests the run. Unlike record_state this deliberately leaves ingest_state's last_run
+    bookmark untouched: that should track the last run actually ingested, not a skipped one."""
+    conn.execute(
+        "INSERT OR IGNORE INTO ingest_history "
+        "(task_name, run_id, run_at, inserted, updated, unchanged) VALUES (?, ?, ?, 0, 0, 0)",
+        (task_name, run["id"], run["startedAt"]),
+    )
+    conn.commit()
+
+
+def seed_search(conn: sqlite3.Connection, search, username: str, api_token: str) -> int:
+    """Mark every CURRENT run of a search's tasks as already-seen (via mark_run_seen) without
+    fetching run detail, datasets, or ingesting anything — so the search starts clean from "now"
+    and only processes runs created afterward. Returns the total runs seeded.
+
+    This exists for adding a new *schedule-scoped* search to a task that already has a large run
+    backlog. Filtering that backlog by schedule would cost one run-detail fetch per run (scheduleId
+    is detail-only — see fetch_run_schedule_id), which is slow and usually pointless: the reason
+    to add the lens is to track its schedule's runs going forward, not to dredge a mostly-foreign
+    history. Seeding uses only the run LIST (id + startedAt), so it's fast regardless of backlog
+    size. It's per-search (state_key), so seeding one lens never touches a sibling's state."""
+    total = 0
+    for task in search.tasks:
+        task_name = task["name"]
+        skey = state_key(search.id, task_name)
+        runs = fetch_task_runs(username, task_name, api_token)
+        for run in runs:
+            mark_run_seen(conn, skey, run)
+        print(f"  {task_name}: seeded {len(runs)} run(s).")
+        total += len(runs)
+    return total
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Ingest Apify LinkedIn job results into SQLite.")
     parser.add_argument("--config", default="config.toml", help="Path to TOML config file (default: config.toml)")
     parser.add_argument("--dry-run", action="store_true", help="Show pending run counts without fetching items or writing to the database")
     parser.add_argument("--fixbasics", action="store_true",
                         help="Migrate the config's bare top-level settings under a [basics] table and exit")
+    parser.add_argument("--seed", metavar="SEARCH_ID",
+                        help="Mark all current runs of SEARCH_ID's tasks as already-seen (no ingest), "
+                             "so a newly added search starts fresh from now instead of backfilling the "
+                             "whole run history. Use when adding a schedule-scoped search. Exits after.")
     args = parser.parse_args()
 
     # One-shot config maintenance: nest deprecated bare top-level keys under [basics]. Runs
@@ -1694,6 +1854,23 @@ def main() -> None:
     api_token: str = shared["api_token"]
     username: str = shared["username"]
     db_path: str = app_cfg.db_path
+
+    # One-shot: seed a search's history so it starts fresh from now (skips a large backlog it
+    # would otherwise scan/ingest). Needs config + token + DB; exits before the ingest loop.
+    if args.seed:
+        search = app_cfg.get_search(args.seed)
+        if search is None:
+            sys.exit(f"--seed: no search with id {args.seed!r} "
+                     f"(configured: {', '.join(s.id for s in app_cfg.searches)}).")
+        conn = open_db(db_path)
+        _seed_lock = acquire_run_lock(db_path, label="seed")  # noqa: F841 (held for lifetime)
+        print(f"Seeding '{search.name}' ({search.id}) — marking current runs seen, no ingest "
+              f"({len(search.tasks)} task(s))...")
+        n = seed_search(conn, search, username, api_token)
+        print(f"Seeded '{search.name}' ({search.id}): {n} run(s) marked seen. "
+              "Runs created after this ingest normally.")
+        sys.exit(0)
+
     reset_on_change_global: bool = shared.get("reset_on_change", True)
     auto_ghost: bool             = shared.get("auto_ghost", False)
     auto_ghost_days: int         = shared.get("auto_ghost_days", 180)
@@ -1741,10 +1918,37 @@ def main() -> None:
     dry_run_note = " (DRY RUN)" if args.dry_run else ""
     print(f"Starting ingestion at {start_time.strftime('%Y-%m-%d %H:%M:%S %Z')}{dry_run_note}")
 
-    # One (search_id, task) per feed across all configured searches. Iterating tuples keeps the
-    # loop body flat while tagging every ingest + run-tracking key with its owning search.
-    task_specs: list[tuple[str, dict]] = [(s.id, t) for s in app_cfg.searches for t in s.tasks]
-    for search_id, task in task_specs:
+    # One (search_id, search_name, task) per feed across all configured searches. Iterating tuples
+    # keeps the loop body flat while tagging every ingest + run-tracking key (and log line) with
+    # its owning search — the name matters in logs when several searches share one Apify task.
+    task_specs: list[tuple[str, str, dict]] = [
+        (s.id, s.name, t) for s in app_cfg.searches for t in s.tasks]
+
+    # If any task scopes to a schedule, resolve the configured schedule_name once to the opaque
+    # id Apify stamps on runs (meta.scheduleId). The config field is the console-friendly NAME
+    # (it's what the original feature asked for); we translate name→id here. Fail-soft: if the
+    # schedules list can't be fetched, fall back to treating the value as a literal id, so a
+    # config that happens to hold an opaque id still filters correctly.
+    schedule_name_to_id: dict[str, str] = {}   # configured schedule_name → resolved opaque id
+    if any(t.get("schedule_name") for _, _, t in task_specs):
+        try:
+            schedules = fetch_schedules(api_token)
+            for _, _, t in task_specs:
+                sname = t.get("schedule_name")
+                if not sname or sname in schedule_name_to_id:
+                    continue
+                resolved = resolve_schedule_id(sname, schedules)
+                if resolved is None:
+                    known = ", ".join(sorted(s.get("name", "?") for s in schedules)) or "(none)"
+                    print(f"WARNING: schedule_name {sname!r} matches no Apify schedule name or id "
+                          f"(known schedules: {known}); its runs won't be filtered to it.",
+                          file=sys.stderr)
+                schedule_name_to_id[sname] = resolved or sname
+        except requests.RequestException as exc:
+            print(f"WARNING: could not list Apify schedules ({exc}); treating schedule_name as a "
+                  "literal id.", file=sys.stderr)
+
+    for search_id, search_name, task in task_specs:
         task_name:        str       = task["name"]
         default_label:    str       = task.get("label", "unknown")
         label_from_input: str | None = task.get("label_from_input")
@@ -1752,16 +1956,56 @@ def main() -> None:
         exclude_ats_dups: bool      = task.get("exclude_ats_duplicates", False)
         reset_on_change:  bool      = task.get("reset_on_change", reset_on_change_global)
         fuzzy_dedup:      bool      = task.get("fuzzy_dedup", fuzzy_dedup_global)
+        schedule_name:    str | None = task.get("schedule_name")
         # Run-tracking key: bare for the default search (preserves single-search history labels),
         # namespaced <search_id>:<task> otherwise so two searches can share an Apify task name.
         skey = state_key(search_id, task_name)
         label_desc = f"label_from_input={label_from_input!r}" if label_from_input else f"label: {default_label}"
-        print(f"Fetching runs for '{task_name}' ({label_desc}, actor: {actor_type}) ...")
+        sched_desc = f", schedule: {schedule_name}" if schedule_name else ""
+        # Name the owning search: with a shared Apify task, otherwise-identical lines are ambiguous.
+        print(f"[{search_name}] Fetching runs for '{task_name}' "
+              f"({label_desc}, actor: {actor_type}{sched_desc}) ...")
         try:
             all_runs = fetch_task_runs(username, task_name, api_token)
             # Rename-proof: selection is keyed on run_id within this search, not the task
             # name (see runs_to_process). skey is still what record_state writes below.
             pending = runs_to_process(conn, search_id, all_runs)
+
+            # Two searches may share ONE Apify task, split by which schedule triggered each run
+            # (e.g. US vs. Europe location limiters). Scope the unseen runs to this task's schedule
+            # so the other schedule's runs aren't ingested here. scheduleId is only on the run
+            # DETAIL, not the LIST, so enrich each pending run once (a per-run fetch) — done AFTER
+            # runs_to_process so only unseen runs are probed, never the whole backlog every cycle.
+            if schedule_name and pending:
+                resolved_sched = schedule_name_to_id.get(schedule_name, schedule_name)
+                # Probing schedule scope costs one run-detail fetch each. A large batch means a
+                # fresh search facing the whole backlog — slow, and usually not what's wanted.
+                # Flag it (and point at --seed) rather than silently grinding for minutes.
+                if len(pending) > _SCHEDULE_PROBE_WARN:
+                    print(f"  NOTE: probing {len(pending)} runs for schedule (one API call each; "
+                          f"this can take a while). To start this search from now instead, Ctrl-C "
+                          f"and run: ingest.py --seed {search_id}", file=sys.stderr)
+                for run in pending:
+                    if run_schedule_id(run) is None:
+                        run.setdefault("meta", {})["scheduleId"] = fetch_run_schedule_id(run["id"], api_token)
+                kept = filter_runs_by_schedule(pending, resolved_sched)
+                kept_ids = {r["id"] for r in kept}
+                skipped = [r for r in pending if r["id"] not in kept_ids]
+                # Show the resolved opaque id here (it's the same for every kept run) so the
+                # per-run lines below don't repeat it, and a name→id misresolve is obvious.
+                print(f"  Scoped to schedule {schedule_name} (id {resolved_sched}): "
+                      f"{len(kept)} of {len(pending)} new run(s) match.")
+                # Mark the other schedules' runs seen (per-search) so we don't re-probe them each
+                # cycle; the sibling search that owns them still ingests them under its own scope.
+                if not args.dry_run:
+                    for run in skipped:
+                        mark_run_seen(conn, skey, run)
+                # Nothing matched → surface which schedule ids ARE present, to catch a misconfig.
+                if skipped and not kept:
+                    avail = ", ".join(f"{sid} ({n})" for sid, n in schedule_id_counts(pending).most_common())
+                    print(f"  NOTE: no new run matched schedule id {resolved_sched}. "
+                          f"Schedule ids present on these runs: {avail}", file=sys.stderr)
+                pending = kept
 
             if not pending:
                 print(f"  No new runs since last ingestion.")

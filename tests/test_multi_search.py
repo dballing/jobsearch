@@ -109,6 +109,127 @@ def test_runs_to_process_underscore_search_id_does_not_overmatch(jobs_db):
     assert [r["id"] for r in pending] == ["r1"]               # not falsely marked seen
 
 
+# ── filter_runs_by_schedule: one Apify task, split by triggering schedule ────
+
+def _sched_runs(*pairs):
+    """Build run dicts carrying a meta.scheduleId. Each pair is (run_id, schedule_id);
+    a schedule_id of None models a manual/API run whose meta omits the key entirely."""
+    out = []
+    for run_id, sched in pairs:
+        meta = {"origin": "SCHEDULER", "scheduleId": sched} if sched is not None else {"origin": "API"}
+        out.append({"id": run_id, "startedAt": "2026-01-01T00:00:00Z", "meta": meta})
+    return out
+
+
+def test_run_schedule_id_reads_meta():
+    us, api = _sched_runs(("r1", "sched-us"), ("r2", None))
+    assert ingest.run_schedule_id(us) == "sched-us"
+    assert ingest.run_schedule_id(api) is None            # meta present but no scheduleId key
+    assert ingest.run_schedule_id({"id": "r3"}) is None   # meta absent entirely (defensive)
+
+
+def test_filter_runs_by_schedule_none_is_passthrough():
+    # A task with no schedule_id configured (the single-schedule default) ingests every run.
+    runs = _sched_runs(("r1", "sched-us"), ("r2", "sched-eu"), ("r3", None))
+    assert ingest.filter_runs_by_schedule(runs, None) == runs
+
+
+def test_filter_runs_by_schedule_keeps_only_matching_schedule():
+    # One shared Apify task, two schedules (US + Europe) mixed in one run list: each search
+    # scopes to its own schedule and sees only its own runs.
+    runs = _sched_runs(("us1", "sched-us"), ("eu1", "sched-eu"), ("us2", "sched-us"))
+    assert [r["id"] for r in ingest.filter_runs_by_schedule(runs, "sched-us")] == ["us1", "us2"]
+    assert [r["id"] for r in ingest.filter_runs_by_schedule(runs, "sched-eu")] == ["eu1"]
+
+
+def test_filter_runs_by_schedule_drops_non_schedule_runs():
+    # A manual/API run (no scheduleId) never matches a configured schedule and is dropped —
+    # a schedule-scoped task deliberately ignores ad-hoc runs.
+    runs = _sched_runs(("us1", "sched-us"), ("adhoc", None))
+    assert [r["id"] for r in ingest.filter_runs_by_schedule(runs, "sched-us")] == ["us1"]
+
+
+# ── resolve_schedule_id: config's schedule_name (or id) → opaque id ──────────
+
+_SCHEDULES = [
+    {"id": "SCHEDusOPAQUE", "name": "job-search-usa"},
+    {"id": "SCHEDeuOPAQUE", "name": "job-search-europe"},
+]
+
+
+def test_resolve_schedule_id_by_name():
+    # The config field holds the console NAME; resolution returns the opaque id runs carry.
+    assert ingest.resolve_schedule_id("job-search-usa", _SCHEDULES) == "SCHEDusOPAQUE"
+    assert ingest.resolve_schedule_id("job-search-europe", _SCHEDULES) == "SCHEDeuOPAQUE"
+
+
+def test_resolve_schedule_id_passes_through_an_opaque_id():
+    # An id written directly in config is accepted as-is (matches meta.scheduleId already).
+    assert ingest.resolve_schedule_id("SCHEDusOPAQUE", _SCHEDULES) == "SCHEDusOPAQUE"
+
+
+def test_resolve_schedule_id_unknown_returns_none():
+    # A typo'd name matches neither id nor name → None (caller warns + lists known schedules).
+    assert ingest.resolve_schedule_id("job-search-uk", _SCHEDULES) is None
+
+
+# ── schedule_id_counts: the "0 matched" discovery diagnostic ─────────────────
+
+def test_schedule_id_counts_tallies_by_schedule_with_dash_for_none():
+    runs = _sched_runs(("a", "s1"), ("b", "s1"), ("c", "s2"), ("d", None))
+    counts = ingest.schedule_id_counts(runs)
+    assert counts == {"s1": 2, "s2": 1, "-": 1}
+
+
+# ── mark_run_seen: bound per-cycle cost of a scoped task, without starving the sibling ──
+
+def test_mark_run_seen_skips_run_for_this_search_only(jobs_db):
+    # A run from the OTHER schedule, marked seen for "tpm", must not be re-probed by "tpm" — but
+    # must still be pending for the sibling "director" search that actually owns that schedule.
+    run = _runs("foreign-run")[0]
+    ingest.mark_run_seen(jobs_db, state_key("tpm", "shared-task"), run)
+    assert [r["id"] for r in ingest.runs_to_process(jobs_db, "tpm", [run])] == []
+    assert [r["id"] for r in ingest.runs_to_process(jobs_db, "director", [run])] == ["foreign-run"]
+
+
+def test_mark_run_seen_is_idempotent(jobs_db):
+    # Re-marking the same run (e.g. two overlapping cycles) must not raise on the UNIQUE index.
+    run = _runs("r1")[0]
+    key = state_key("tpm", "shared-task")
+    ingest.mark_run_seen(jobs_db, key, run)
+    ingest.mark_run_seen(jobs_db, key, run)
+    assert [r["id"] for r in ingest.runs_to_process(jobs_db, "tpm", [run])] == []
+
+
+# ── seed_search: start a new scoped search from "now" without backfilling ─────
+
+class _Search:  # minimal stand-in for config.Search (id + tasks are all seed_search reads)
+    def __init__(self, id, tasks):
+        self.id, self.tasks = id, tasks
+
+
+def test_seed_search_marks_all_current_runs_seen(jobs_db, monkeypatch):
+    # Seeding records every current run as seen (no detail/dataset fetch), so afterwards the
+    # search treats the whole existing backlog as done and only picks up NEW runs.
+    backlog = _runs("r1", "r2", "r3")
+    monkeypatch.setattr(ingest, "fetch_task_runs", lambda user, task, token: list(backlog))
+    search = _Search("europe_tpm", [{"name": "shared-task"}])
+
+    n = ingest.seed_search(jobs_db, search, "user", "token")
+    assert n == 3
+    # The whole backlog is now seen; only a run minted after seeding is still pending.
+    assert ingest.runs_to_process(jobs_db, "europe_tpm", backlog) == []
+    assert [r["id"] for r in ingest.runs_to_process(jobs_db, "europe_tpm", _runs("r4"))] == ["r4"]
+
+
+def test_seed_search_does_not_affect_a_sibling_search(jobs_db, monkeypatch):
+    # Seeding is per-lens (state_key), so a sibling sharing the Apify task still sees the backlog.
+    backlog = _runs("r1", "r2")
+    monkeypatch.setattr(ingest, "fetch_task_runs", lambda user, task, token: list(backlog))
+    ingest.seed_search(jobs_db, _Search("europe_tpm", [{"name": "shared-task"}]), "u", "t")
+    assert [r["id"] for r in ingest.runs_to_process(jobs_db, "midatl_tpm", backlog)] == ["r1", "r2"]
+
+
 # ── history_scope: per-search filter for the activity chart ──────────────────
 
 def test_history_scope_fragments():
