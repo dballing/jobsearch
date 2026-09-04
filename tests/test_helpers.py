@@ -47,6 +47,39 @@ def test_parse_salary_invalid():
         app._parse_salary_field("abc")
 
 
+# ── currency: viability.currency_symbol + app.effective_currency/format_salary ──
+import viability
+
+
+@pytest.mark.parametrize("code,sym", [
+    ("USD", "$"), ("usd", "$"), ("EUR", "€"), ("GBP", "£"),
+    (None, "$"), ("", "$"), ("  ", "$"),   # missing/blank ⇒ dollars (backward-compatible default)
+    ("CHF", "CHF "), ("zar", "ZAR "),      # unknown-but-present ⇒ spaced code prefix, never "$"
+])
+def test_currency_symbol(code, sym):
+    assert viability.currency_symbol(code) == sym
+
+
+def test_effective_currency_override_wins():
+    # The per-lens override beats the feed currency; absent it, the feed value shows.
+    assert app.effective_currency({"salary_currency": "USD", "salary_currency_actual": "EUR"}) == "EUR"
+    assert app.effective_currency({"salary_currency": "GBP", "salary_currency_actual": None}) == "GBP"
+    assert app.effective_currency({}) is None
+
+
+def test_format_salary_uses_currency():
+    assert app.format_salary({"salary_min": 120000, "salary_max": 150000, "salary_currency": "EUR"}) \
+        == "€120k – €150k"
+    assert app.format_salary({"salary_min": 175000, "salary_currency": "GBP"}) == "£175k+"
+    assert app.format_salary({"salary_max": 150000, "salary_currency": "CHF"}) == "up to CHF 150k"
+    # No currency ⇒ dollars, preserving prior output for the common US case.
+    assert app.format_salary({"salary_min": 120000, "salary_max": 150000}) == "$120k – $150k"
+    # Currency override wins over the feed currency.
+    assert app.format_salary({"salary_min": 120000, "salary_max": 150000,
+                              "salary_currency": "USD", "salary_currency_actual": "EUR"}) \
+        == "€120k – €150k"
+
+
 # ── app._company_key ──────────────────────────────────────────────────────────
 def test_company_key_actual_wins_and_normalizes():
     assert app._company_key("  Real Co ", "Feed Co") == "real co"

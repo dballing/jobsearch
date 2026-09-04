@@ -28,10 +28,14 @@ from ingest import (adopt_legacy, append_history, backfill_description_truncated
                     bootstrap_history, ensure_job_search_state, history_scope)
 from viability import (
     _work_arrangement, FACTOR_DIMENSIONS, GEO_UNSUPPORTED_ARRANGEMENT, MANUAL_GEO_FIT_CHOICES,
-    assess_location_fit, clamp_viability_for_geo, description_is_truncated, effective_description,
-    geo_note, has_description_override, manual_geo_verdict, parse_factors,
-    score_job, scoring_hash_for_config,
+    assess_location_fit, clamp_viability_for_geo, CURRENCY_SYMBOLS, currency_symbol,
+    description_is_truncated, effective_description, geo_note, has_description_override,
+    manual_geo_verdict, parse_factors, score_job, scoring_hash_for_config,
 )
+
+# Currency codes offerable as a manual salary-currency override (drives the editor dropdown and
+# validates the route). The keys of CURRENCY_SYMBOLS are the currencies we can render a glyph for.
+CURRENCY_CHOICES = list(CURRENCY_SYMBOLS.keys())
 
 app = Flask(__name__)
 PER_PAGE = 25                                  # default page size
@@ -284,7 +288,7 @@ _JSS_COLS = (
     "jss.viability_reason AS viability_reason, jss.viability_factors AS viability_factors, "
     "jss.viability_prompt_hash AS viability_prompt_hash, jss.needs_rescored AS needs_rescored, "
     "jss.salary_min_actual AS salary_min_actual, jss.salary_max_actual AS salary_max_actual, "
-    "jss.geo_fit_actual AS geo_fit_actual"
+    "jss.salary_currency_actual AS salary_currency_actual, jss.geo_fit_actual AS geo_fit_actual"
 )
 
 _VALID_SEARCH_IDS = {s.id for s in APP_CONFIG.searches}
@@ -646,16 +650,26 @@ def build_where(label: str, status_filter: str, q: str = "", source: str = "",
     return where, params
 
 
+def effective_currency(row: dict) -> "str | None":
+    """The currency code to display a row's salary in: a manual override (salary_currency_actual)
+    wins over the feed's salary_currency. Independent of the min/max override — you can correct a
+    mislabeled currency without touching the numbers (e.g. a feed that stamped a €-band as USD)."""
+    return row.get("salary_currency_actual") or row.get("salary_currency")
+
+
 def format_salary(row: dict) -> str:
-    """Compact "$120k – $150k" / "$120k+" / "up to $150k" string for a row's effective
-    salary (override-aware), or "" when neither bound is known. Rounds to whole $k."""
+    """Compact "€120k – €150k" / "£120k+" / "up to $150k" string for a row's effective salary
+    (override-aware for both the band AND the currency), or "" when neither bound is known. The
+    currency glyph comes from effective_currency; an unknown/absent currency renders as "$"
+    (see currency_symbol). Rounds to whole k."""
     lo, hi = effective_salary(row)
+    cur = currency_symbol(effective_currency(row))
     if lo and hi:
-        return f"${lo // 1000}k – ${hi // 1000}k"
+        return f"{cur}{lo // 1000}k – {cur}{hi // 1000}k"
     if lo:
-        return f"${lo // 1000}k+"
+        return f"{cur}{lo // 1000}k+"
     if hi:
-        return f"up to ${hi // 1000}k"
+        return f"up to {cur}{hi // 1000}k"
     return ""
 
 
@@ -757,12 +771,21 @@ def process_job_row(row: sqlite3.Row | dict, hotlist: "set[str] | frozenset" = f
     # (salary_*_feed) so the UI can show "originally listed as" on an override.
     j["salary_min_feed"]  = j.get("salary_min")
     j["salary_max_feed"]  = j.get("salary_max")
+    # Feed currency (shared, from jobs.salary_currency) vs. the per-lens override
+    # (salary_currency_actual). The "*" marker means "some manual salary override", so a
+    # currency-only correction also flags it. The feed display uses the FEED currency so the
+    # override tooltip ("feed listed …") reports what the posting actually said.
+    j["salary_currency_feed"] = j.get("salary_currency")
+    j["has_currency_override"] = j.get("salary_currency_actual") is not None
     j["has_salary_override"] = (
-        j.get("salary_min_actual") is not None or j.get("salary_max_actual") is not None
+        j.get("salary_min_actual") is not None
+        or j.get("salary_max_actual") is not None
+        or j.get("salary_currency_actual") is not None
     )
-    j["salary_feed_display"] = format_salary(
-        {"salary_min": j.get("salary_min"), "salary_max": j.get("salary_max")}
-    )
+    j["salary_feed_display"] = format_salary({
+        "salary_min": j.get("salary_min"), "salary_max": j.get("salary_max"),
+        "salary_currency": j.get("salary_currency"),
+    })
     j["salary_display"]   = format_salary(j)
     j["salary_min"], j["salary_max"] = effective_salary(j)
     j["source_display"]   = SOURCE_NAMES.get(j.get("source", "linkedin"), j.get("source", ""))
@@ -1807,6 +1830,11 @@ def get_job(job_id: str):
         "salary_max":       job.get("salary_max"),
         "salary_min_actual": job.get("salary_min_actual"),
         "salary_max_actual": job.get("salary_max_actual"),
+        # Currency: what the feed reported (the editor's "as-is" hint) and any per-lens override
+        # (the pre-selected value). None override ⇒ display falls back to the feed currency.
+        "salary_currency":        job.get("salary_currency"),
+        "salary_currency_actual": job.get("salary_currency_actual"),
+        "salary_currency_options": CURRENCY_CHOICES,
         "posted_date":      (job["posted_date"] or "")[:10],
         # Effective description (override wins). When overridden, suppress the AI-formatted HTML —
         # it was rendered from the now-superseded feed text — so the panel renders the pasted text.
@@ -2438,6 +2466,12 @@ def set_salary_actual(job_id: str):
         return "Salary must be a number", 400
     if sal_min is not None and sal_max is not None and sal_min > sal_max:
         return "Minimum salary exceeds maximum", 400
+    # Currency override is independent of the min/max override (correct a mislabeled currency
+    # without touching the numbers). Blank ⇒ no override (use the feed currency). Restricted to
+    # the renderable set so the display always has a glyph and stray codes can't be stored.
+    cur = (request.form.get("salary_currency", "") or "").strip().upper() or None
+    if cur is not None and cur not in CURRENCY_SYMBOLS:
+        return "Unknown currency", 400
     db = get_db()
     if not db.execute("SELECT 1 FROM jobs WHERE job_id = ?", (job_id,)).fetchone():
         return "Not found", 404
@@ -2448,22 +2482,25 @@ def set_salary_actual(job_id: str):
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     for mid in members:
         prev = db.execute(
-            "SELECT salary_min_actual, salary_max_actual FROM job_search_state "
-            "WHERE job_id = ? AND search_id = ?", (mid, sid)
+            "SELECT salary_min_actual, salary_max_actual, salary_currency_actual "
+            "FROM job_search_state WHERE job_id = ? AND search_id = ?", (mid, sid)
         ).fetchone()
         if prev is None:      # not a member of this search — skip
             continue
         old_min, old_max = prev["salary_min_actual"], prev["salary_max_actual"]
-        if old_min == sal_min and old_max == sal_max:
+        old_cur = prev["salary_currency_actual"]
+        if old_min == sal_min and old_max == sal_max and old_cur == cur:
             continue
         db.execute(
             "UPDATE job_search_state SET salary_min_actual = ?, salary_max_actual = ?, "
-            "needs_rescored = 1 WHERE job_id = ? AND search_id = ?",
-            (sal_min, sal_max, mid, sid),
+            "salary_currency_actual = ?, needs_rescored = 1 "
+            "WHERE job_id = ? AND search_id = ?",
+            (sal_min, sal_max, cur, mid, sid),
         )
         append_history(db, mid, {
             "ts": ts, "event": "salary_actual",
             "from": [old_min, old_max], "to": [sal_min, sal_max],
+            "cur_from": old_cur, "cur_to": cur,
             "origin": job_id,
         }, sid)
     db.commit()

@@ -430,6 +430,30 @@ def test_salary_override_wins():
     assert "Salary: $150,000 – $200,000" in msg  # override, not the feed pair
 
 
+def test_salary_shown_in_feed_currency():
+    # A €/£ band must reach the scorer in its real currency, not mislabeled as dollars —
+    # otherwise the model comp-judges a foreign role as USD.
+    eur = viability.build_score_message({"title": "T", "company": "C", "salary_currency": "EUR",
+                                         "salary_min": 90000, "salary_max": 110000})
+    assert "Salary: €90,000 – €110,000" in eur
+    gbp = viability.build_score_message({"title": "T", "company": "C", "salary_currency": "GBP",
+                                         "salary_min": 90000})
+    assert "Salary: £90,000+" in gbp
+    # A currency without a dedicated glyph falls back to a spaced code prefix, never "$".
+    chf = viability.build_score_message({"title": "T", "company": "C", "salary_currency": "CHF",
+                                         "salary_max": 200000})
+    assert "Salary: up to CHF 200,000" in chf
+
+
+def test_salary_currency_override_wins_over_feed():
+    # The per-lens currency override (salary_currency_actual) beats the feed's currency,
+    # independent of the min/max override.
+    msg = viability.build_score_message({"title": "T", "company": "C", "salary_currency": "USD",
+                                         "salary_min": 90000, "salary_max": 110000,
+                                         "salary_currency_actual": "EUR"})
+    assert "Salary: €90,000 – €110,000" in msg
+
+
 def test_description_capped():
     msg = viability.build_score_message(
         {"title": "T", "company": "C", "job_description": "x" * 9000})

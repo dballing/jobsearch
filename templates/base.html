@@ -581,12 +581,22 @@
             else if (e.event === 'company_normalized') desc = `Company normalized: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong> <span class="text-muted fst-italic">(auto)</span>`;
             else if (e.event === 'company_renamed') desc = `Company renamed: <strong>${escHtml(e.from||'?')}</strong> → <strong>${escHtml(e.to||'?')}</strong> <span class="text-muted fst-italic">(manual — canonical + alias)</span>`;
             else if (e.event === 'salary_actual') {
+              // Currency symbol for the override at edit time (cur_to on newer events; older
+              // events predate the field and fall back to '$'). Codes we don't have a glyph for
+              // render as a spaced prefix, mirroring the server's currency_symbol.
+              const SYM = {USD:'$', EUR:'€', GBP:'£', CAD:'C$', AUD:'A$', NZD:'NZ$', CHF:'CHF ', JPY:'¥', INR:'₹', SEK:'kr ', NOK:'kr ', DKK:'kr ', PLN:'zł ', SGD:'S$'};
+              const sym = c => c ? (SYM[c] || (c + ' ')) : '$';
+              const s = sym(e.cur_to);
               const fmtSal = a => (a && (a[0] != null || a[1] != null))
-                ? '$' + (a[0] != null ? a[0].toLocaleString() : '?') + '–$' + (a[1] != null ? a[1].toLocaleString() : '?')
+                ? s + (a[0] != null ? a[0].toLocaleString() : '?') + '–' + s + (a[1] != null ? a[1].toLocaleString() : '?')
                 : 'none';
-              const setOrCleared = (e.to && (e.to[0] != null || e.to[1] != null))
-                ? `Salary override set: <strong>${escHtml(fmtSal(e.to))}</strong>`
-                : 'Salary override cleared';
+              // A currency-only override (no band) still records a change — surface it explicitly
+              // rather than reading as "cleared".
+              const hasBand = e.to && (e.to[0] != null || e.to[1] != null);
+              let setOrCleared;
+              if (hasBand) setOrCleared = `Salary override set: <strong>${escHtml(fmtSal(e.to))}</strong>`;
+              else if (e.cur_to) setOrCleared = `Salary currency set: <strong>${escHtml(e.cur_to)}</strong>`;
+              else setOrCleared = 'Salary override cleared';
               desc = setOrCleared + ((e.origin && e.origin !== job.job_id) ? ' <span class="text-muted fst-italic">(on a grouped posting)</span>' : '');
             }
             else if (e.event === 'closed')     desc = 'Auto-closed (expired)';
@@ -776,9 +786,18 @@
         salMax.type = 'text'; salMax.className = 'form-control form-control-sm';
         salMax.placeholder = 'max'; salMax.style.maxWidth = '110px';
         salMax.value = job.salary_max_actual != null ? job.salary_max_actual : '';
+        // Currency override — independent of the min/max band. Blank option = leave as-is (use the
+        // feed currency, shown as the hint); a chosen code corrects a mislabeled feed currency.
+        const salCur = document.createElement('select');
+        salCur.className = 'form-select form-select-sm'; salCur.style.width = 'auto';
+        salCur.add(new Option(
+          job.salary_currency ? `— feed: ${job.salary_currency} —` : '— feed default —', ''));
+        (job.salary_currency_options || []).forEach(c => salCur.add(new Option(c, c)));
+        salCur.value = job.salary_currency_actual || '';
         const salSave = document.createElement('button');
         salSave.className = 'btn btn-sm btn-outline-primary'; salSave.textContent = 'Save';
-        const hasSalOverride = job.salary_min_actual != null || job.salary_max_actual != null;
+        const hasSalOverride = job.salary_min_actual != null || job.salary_max_actual != null
+          || job.salary_currency_actual != null;
         const salClear = document.createElement('button');
         salClear.className = 'btn btn-sm btn-outline-secondary' + (hasSalOverride ? '' : ' d-none');
         salClear.textContent = 'Clear';
@@ -788,8 +807,8 @@
         const salFb = document.createElement('span');
         salFb.className = 'small';
 
-        async function saveSalaryActual(minV, maxV) {
-          const body = new URLSearchParams({salary_min: minV, salary_max: maxV});
+        async function saveSalaryActual(minV, maxV, curV) {
+          const body = new URLSearchParams({salary_min: minV, salary_max: maxV, salary_currency: curV});
           const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/salary_actual`, {method: 'POST', body});
           if (resp.ok) {
             salFb.className = 'text-success small';
@@ -802,11 +821,11 @@
             salFb.textContent = (await resp.text().catch(() => '')) || 'Save failed.';
           }
         }
-        salSave.addEventListener('click', () => saveSalaryActual(salMin.value.trim(), salMax.value.trim()));
-        salClear.addEventListener('click', () => { salMin.value = ''; salMax.value = ''; saveSalaryActual('', ''); });
+        salSave.addEventListener('click', () => saveSalaryActual(salMin.value.trim(), salMax.value.trim(), salCur.value));
+        salClear.addEventListener('click', () => { salMin.value = ''; salMax.value = ''; salCur.value = ''; saveSalaryActual('', '', ''); });
         salMin.addEventListener('keydown', e => { if (e.key === 'Enter') salSave.click(); });
         salMax.addEventListener('keydown', e => { if (e.key === 'Enter') salSave.click(); });
-        salEditor.append(salLabel, salMin, salDash, salMax, salSave, salClear, salHint, salFb);
+        salEditor.append(salLabel, salMin, salDash, salMax, salCur, salSave, salClear, salHint, salFb);
         // After the title override (which now sits below the company override), keeping the
         // stack order: company, title, salary, work arrangement, location viability.
         titleEditor.insertAdjacentElement('afterend', salEditor);

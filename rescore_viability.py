@@ -681,7 +681,7 @@ def main() -> None:
         "jss.viability_reason AS viability_reason, jss.viability_factors AS viability_factors, "
         "jss.viability_prompt_hash AS viability_prompt_hash, jss.needs_rescored AS needs_rescored, "
         "jss.salary_min_actual AS salary_min_actual, jss.salary_max_actual AS salary_max_actual, "
-        "jss.geo_fit_actual AS geo_fit_actual"
+        "jss.salary_currency_actual AS salary_currency_actual, jss.geo_fit_actual AS geo_fit_actual"
     )
     conn = open_db(db_path)
     # One-time single→multi adoption (Path B only). Gated + idempotent.

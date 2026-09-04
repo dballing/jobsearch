@@ -236,7 +236,13 @@ _SYSTEM_BOILERPLATE = (
 # has the override set — and setting the override always flags that job needs_rescored, so it
 # re-scores on its own. A global bump would needlessly re-score the whole DB for jobs whose
 # effective description is unchanged, so — consistent with those existing overrides — it holds.
-_SCORING_INPUT_VERSION = "16"
+#
+# v17: build_score_message now renders the salary in its real currency (currency_symbol on the
+# feed's salary_currency / the salary_currency_actual override) instead of hardcoding "$". This
+# changes what the model sees for every non-USD (or currency-overridden) posting — a €/£ band was
+# previously mislabeled as dollars — so it's a global bump: every score re-runs once under the
+# corrected contract.
+_SCORING_INPUT_VERSION = "17"
 
 # Cap on locations included in the scoring message — bounds token cost for the rare job
 # posted across dozens of sites, while staying generous enough to almost never truncate
@@ -472,6 +478,31 @@ def description_is_truncated(job: dict) -> bool:
     return bool(job.get("description_truncated")) and not has_description_override(job)
 
 
+# Currency code → the glyph shown immediately before a salary figure. Only the currencies a
+# feed realistically reports get a dedicated symbol; anything else falls through to a "CODE "
+# prefix (e.g. "CHF 120,000") so an unusual currency is shown honestly rather than silently
+# mislabeled as dollars. CAD/AUD keep a disambiguating letter so they don't read as USD.
+CURRENCY_SYMBOLS = {
+    "USD": "$", "EUR": "€", "GBP": "£", "CAD": "C$", "AUD": "A$",
+    "NZD": "NZ$", "CHF": "CHF ", "JPY": "¥", "INR": "₹",
+    "SEK": "kr ", "NOK": "kr ", "DKK": "kr ", "PLN": "zł ", "SGD": "S$",
+}
+
+
+def currency_symbol(code: object) -> str:
+    """The prefix to place before a salary amount for a currency code.
+
+    A known code maps to its glyph ("EUR" → "€"); an unrecognized-but-present code falls back
+    to itself as a spaced prefix ("SEK 120,000") so nothing is silently rendered as dollars; a
+    missing/blank code defaults to "$" — historically every salary was shown in dollars, and a
+    feed that omits the currency is overwhelmingly a US posting, so this preserves prior output.
+    """
+    c = str(code or "").strip().upper()
+    if not c:
+        return "$"
+    return CURRENCY_SYMBOLS.get(c, f"{c} ")
+
+
 def build_score_message(job: dict, geo_note: str | None = None) -> str:
     """Build the per-job user message the scorer sends (title/company/location/salary +
     description). Pure and self-contained so it can be unit-tested without an API call.
@@ -516,12 +547,16 @@ def build_score_message(job: dict, geo_note: str | None = None) -> str:
         sal_min, sal_max = job.get("salary_min_actual"), job.get("salary_max_actual")
     else:
         sal_min, sal_max = job.get("salary_min"), job.get("salary_max")
+    # Show the salary in its real currency (a manual currency override wins over the feed): a
+    # €200k or £200k band must not be presented to the scorer as "$200,000", or it comp-judges a
+    # foreign-currency role as if it were dollars. cur is a bare prefix ("$", "€", "CHF ").
+    cur = currency_symbol(job.get("salary_currency_actual") or job.get("salary_currency"))
     if sal_min and sal_max:
-        salary_line = f"Salary: ${sal_min:,} – ${sal_max:,}"
+        salary_line = f"Salary: {cur}{sal_min:,} – {cur}{sal_max:,}"
     elif sal_min:
-        salary_line = f"Salary: ${sal_min:,}+"
+        salary_line = f"Salary: {cur}{sal_min:,}+"
     elif sal_max:
-        salary_line = f"Salary: up to ${sal_max:,}"
+        salary_line = f"Salary: up to {cur}{sal_max:,}"
     else:
         salary_line = None
 

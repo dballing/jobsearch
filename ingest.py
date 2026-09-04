@@ -153,6 +153,7 @@ CREATE TABLE IF NOT EXISTS job_search_state (
     needs_rescored        INTEGER NOT NULL DEFAULT 0,
     salary_min_actual     INTEGER,
     salary_max_actual     INTEGER,
+    salary_currency_actual TEXT,
     geo_fit_actual        TEXT,
     applied_at            TEXT,
     history               TEXT NOT NULL DEFAULT '[]',
@@ -326,6 +327,7 @@ def ensure_job_search_state(conn: sqlite3.Connection) -> None:
                needs_rescored        INTEGER NOT NULL DEFAULT 0,
                salary_min_actual     INTEGER,
                salary_max_actual     INTEGER,
+               salary_currency_actual TEXT,
                geo_fit_actual        TEXT,
                applied_at            TEXT,
                history               TEXT NOT NULL DEFAULT '[]',
@@ -335,6 +337,13 @@ def ensure_job_search_state(conn: sqlite3.Connection) -> None:
            )"""
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_jss_search ON job_search_state(search_id, status)")
+    # Add-a-column migration for DBs created before the per-lens currency override existed. Unlike
+    # the salary_*_actual pair, this has no dormant `jobs` counterpart to backfill from — it's a
+    # brand-new field — so it's a plain nullable ALTER (NULL ⇒ "use the feed currency"), not part
+    # of _JSS_MIGRATED_COLS.
+    jss_cols = {r[1] for r in conn.execute("PRAGMA table_info(job_search_state)")}
+    if "salary_currency_actual" not in jss_cols:
+        conn.execute("ALTER TABLE job_search_state ADD COLUMN salary_currency_actual TEXT")
     # First-time backfill: one __default__ row per job, copying the dormant per-lens columns.
     if not conn.execute("SELECT 1 FROM job_search_state LIMIT 1").fetchone():
         cols = ", ".join(_JSS_MIGRATED_COLS)
