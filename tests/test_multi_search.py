@@ -109,6 +109,39 @@ def test_runs_to_process_underscore_search_id_does_not_overmatch(jobs_db):
     assert [r["id"] for r in pending] == ["r1"]               # not falsely marked seen
 
 
+# ── history_scope: per-search filter for the activity chart ──────────────────
+
+def test_history_scope_fragments():
+    clause, params = ingest.history_scope(DEFAULT_SEARCH_ID)
+    assert "NOT LIKE" in clause and params == []
+    clause, params = ingest.history_scope("mid_atlantic")
+    assert "ESCAPE" in clause and params == ["mid\\_atlantic:%"]   # '_' escaped
+
+
+def test_history_scope_aggregation_is_per_search(jobs_db):
+    # The scoped SUM query (as the /stats/history chart runs it) sees only its own search's
+    # ingest_history rows — the bug was that a fresh search charted every search's activity.
+    _record_run(jobs_db, "tpm", "t", "r1")
+    _record_run(jobs_db, "tpm", "t", "r2")
+    _record_run(jobs_db, "director", "t", "r3")
+    for sid, expected in (("tpm", 2), ("director", 1)):
+        clause, params = ingest.history_scope(sid)
+        total = jobs_db.execute(
+            f"SELECT SUM(unchanged) FROM ingest_history WHERE {clause}", params
+        ).fetchone()[0]
+        assert total == expected
+
+
+def test_history_scope_default_excludes_namespaced(jobs_db):
+    _record_run(jobs_db, DEFAULT_SEARCH_ID, "t", "r1")   # bare key
+    _record_run(jobs_db, "tpm", "t", "r2")               # "tpm:t"
+    clause, params = ingest.history_scope(DEFAULT_SEARCH_ID)
+    count = jobs_db.execute(
+        f"SELECT COUNT(*) FROM ingest_history WHERE {clause}", params
+    ).fetchone()[0]
+    assert count == 1                                    # only the default search's row
+
+
 # ── ensure_job_search_state backfill ─────────────────────────────────────────
 
 def test_backfill_seeds_default_rows_from_dormant_columns(jobs_db):

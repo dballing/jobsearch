@@ -471,24 +471,28 @@ def fetch_dataset_items(dataset_id: str, api_token: str) -> list[dict]:
     return items
 
 
-def search_history_run_ids(conn: sqlite3.Connection, search_id: str) -> set[str]:
-    """The Apify run IDs this SEARCH has already ingested, read from ingest_history.
+def history_scope(search_id: str) -> tuple[str, list]:
+    """A ``(SQL WHERE fragment, params)`` pair restricting an ingest_history/ingest_state
+    query to one search's rows, matching the ``state_key()`` key convention: bare task names
+    (no colon) for the default search, the ``"<search_id>:"`` prefix otherwise.
 
-    History rows are keyed by ``state_key(search_id, task_name)`` — bare task names for the
-    default search, ``"<search_id>:<task_name>"`` otherwise — so a search's rows are exactly
-    those whose key carries its prefix. The prefix is matched with LIKE, and LIKE
-    metacharacters in the search_id are escaped: ``_`` is a single-char wildcard and is
-    plausible in a slug (e.g. ``mid_atlantic``), so an unescaped prefix could over-match a
-    sibling search. Scope is the whole search, not one task, on purpose — see runs_to_process.
+    The prefix is matched with LIKE, and LIKE metacharacters in the search_id are escaped —
+    ``_`` is a single-char wildcard and is plausible in a slug (e.g. ``mid_atlantic``), so an
+    unescaped prefix could over-match a sibling search. Shared by run-selection
+    (search_history_run_ids) and the app's activity chart so the escaping lives in one place.
     """
     if search_id == DEFAULT_SEARCH_ID:
-        # Default-search keys are bare (no colon); this mirrors the namespace-migration guard.
-        cur = conn.execute("SELECT run_id FROM ingest_history WHERE task_name NOT LIKE '%:%'")
-    else:
-        like = search_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + ":%"
-        cur = conn.execute(
-            "SELECT run_id FROM ingest_history WHERE task_name LIKE ? ESCAPE '\\'", (like,)
-        )
+        # Default-search keys are bare (no colon); mirrors the namespace-migration guard.
+        return ("task_name NOT LIKE '%:%'", [])
+    like = search_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + ":%"
+    return ("task_name LIKE ? ESCAPE '\\'", [like])
+
+
+def search_history_run_ids(conn: sqlite3.Connection, search_id: str) -> set[str]:
+    """The Apify run IDs this SEARCH has already ingested, read from ingest_history. Scope is
+    the whole search, not one task, on purpose — see runs_to_process."""
+    clause, params = history_scope(search_id)
+    cur = conn.execute(f"SELECT run_id FROM ingest_history WHERE {clause}", params)
     return {row[0] for row in cur}
 
 

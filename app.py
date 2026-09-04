@@ -25,7 +25,7 @@ from flask import (Flask, abort, g, has_request_context, make_response, render_t
 from werkzeug.utils import secure_filename
 from config import ConfigError, DEFAULT_SEARCH_ID, load_config
 from ingest import (adopt_legacy, append_history, backfill_description_truncated,
-                    bootstrap_history, ensure_job_search_state)
+                    bootstrap_history, ensure_job_search_state, history_scope)
 from viability import (
     _work_arrangement, FACTOR_DIMENSIONS, GEO_UNSUPPORTED_ARRANGEMENT, MANUAL_GEO_FIT_CHOICES,
     assess_location_fit, clamp_viability_for_geo, description_is_truncated, effective_description,
@@ -1670,20 +1670,24 @@ def stats():
 @app.route("/stats/history")
 def stats_history():
     """JSON time series (last 7 days) of ingest_history inserted/updated/unchanged per
-    day, for the activity chart. Returns empty arrays if the table doesn't exist yet."""
+    day, for the activity chart. Scoped to the current lens (the ingest_history key carries
+    the search_id prefix) so a freshly-created search doesn't show every search's activity.
+    Returns empty arrays if the table doesn't exist yet."""
     db = get_db()
+    scope_sql, scope_params = history_scope(_current_search_id())
     try:
         rows = db.execute(
-            """
+            f"""
             SELECT DATE(run_at) AS day,
                    SUM(inserted)  AS inserted,
                    SUM(updated)   AS updated,
                    SUM(unchanged) AS unchanged
             FROM ingest_history
-            WHERE run_at >= datetime('now', '-7 days')
+            WHERE {scope_sql} AND run_at >= datetime('now', '-7 days')
             GROUP BY DATE(run_at)
             ORDER BY day
-            """
+            """,
+            scope_params,
         ).fetchall()
     except sqlite3.OperationalError:
         rows = []
