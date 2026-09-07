@@ -65,6 +65,7 @@ Typical cron line chains ingest then rescore:
 | `reformat.py` | AI description→Markdown reformatting + `content_preserved` integrity check. |
 | `ai_config.py` | Shared `[ai]`/per-feature settings resolution + token-cost accounting (`MODEL_PRICING`). |
 | `pricing_check.py` | Fetches Anthropic's public pricing page (24h disk cache) and diffs it against `MODEL_PRICING`; drives the network-tolerant drift test. |
+| `fx_rates.py` | Fetches USD-based FX rates from a free public endpoint (24h disk cache, fail-soft) for the display-only USD-equivalent salary hover on non-USD figures. Pure parse/convert helpers unit-tested hermetically; `app.get_fx_rates()` memoizes it per process and the test suite stubs that to stay offline. |
 | `runlock.py` | `acquire_run_lock()` — single shared writer lock serializing ingest vs. rescore. |
 | `import_linkedin.py` | One-off import by LinkedIn URL/ID. |
 | `templates/base.html`, `jobs.html` | Layout/navbar/offcanvas preview; main jobs table. |

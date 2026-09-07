@@ -28,6 +28,16 @@ _seed.executescript(ingest.SCHEMA)
 _seed.close()
 
 
+@pytest.fixture(autouse=True)
+def _no_fx_network(monkeypatch):
+    """Keep the suite hermetic. The index/preview routes call app.get_fx_rates(), which on a cold
+    cache would fetch live FX rates over the network — so force it to None (⇒ salaries render with
+    no USD tooltip, exactly as when rates are unavailable). Tests that exercise the conversion
+    itself call fx_rates.* / app.format_salary_usd directly with explicit rates, bypassing this."""
+    import app
+    monkeypatch.setattr(app, "get_fx_rates", lambda: None)
+
+
 @pytest.fixture
 def jobs_db():
     """In-memory SQLite with the real jobs schema and Row access, for exercising the

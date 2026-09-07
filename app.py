@@ -15,6 +15,7 @@ import os
 import re
 import shlex
 import sqlite3
+import time
 import tomllib
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -23,6 +24,7 @@ from pathlib import Path
 from flask import (Flask, abort, g, has_request_context, make_response, render_template,
                    request, send_file, url_for)
 from werkzeug.utils import secure_filename
+import fx_rates
 from config import ConfigError, DEFAULT_SEARCH_ID, load_config
 from ingest import (adopt_legacy, append_history, backfill_description_truncated,
                     bootstrap_history, ensure_job_search_state, history_scope)
@@ -673,6 +675,57 @@ def format_salary(row: dict) -> str:
     return ""
 
 
+# In-process FX-rate cache over fx_rates.load_rates (which itself caches to disk for 24h). The memo
+# just avoids re-reading the disk cache / re-attempting the network on every request.
+#
+# Crucially it uses ASYMMETRIC TTLs: a good result is trusted for an hour, but a None (offline, or
+# a transient failure before any disk cache existed) is held only briefly. Caching a None for the
+# full hour was a real bug — a single network blip on the first request after startup silently
+# disabled the tooltip process-wide for an hour even after the disk cache went healthy. With the
+# short negative TTL the feature recovers within _FX_NEG_TTL once load_rates can succeed (which,
+# with a warm disk cache, is immediately and network-free).
+_FX_POS_TTL = 60 * 60        # trust a successful rate load for an hour
+_FX_NEG_TTL = 60             # after a failure, allow a retry within a minute — don't stay dark
+_fx_memo: "dict[str, object]" = {"rates": None, "loaded_at": 0.0}
+
+
+def get_fx_rates() -> "dict[str, float] | None":
+    """Current USD-based FX rates for salary conversion, memoized per process, or None when
+    unavailable (offline with no cache). Fail-soft: callers omit the USD tooltip on None. A None
+    outcome is re-attempted after only _FX_NEG_TTL (not the full positive TTL) so a transient
+    startup failure can't disable the feature for an hour while the disk cache is healthy."""
+    now = time.time()
+    ttl = _FX_POS_TTL if _fx_memo["rates"] is not None else _FX_NEG_TTL
+    if _fx_memo["loaded_at"] and (now - _fx_memo["loaded_at"]) < ttl:
+        return _fx_memo["rates"]
+    _fx_memo["rates"] = fx_rates.load_rates()
+    _fx_memo["loaded_at"] = now
+    return _fx_memo["rates"]
+
+
+def format_salary_usd(row: dict, rates: "dict[str, float] | None") -> "str | None":
+    """Approximate USD-equivalent string for a row's effective salary — e.g. "≈ $130k – $160k USD"
+    — for the hover tooltip on a non-USD figure, or None when there's nothing to show: no rates, a
+    USD/absent currency (already dollars), a currency we have no rate for, or no salary band. Mirrors
+    format_salary's shape (range / open-ended) and rounds to whole k. Deliberately approximate (the
+    "≈") — rates are a daily snapshot, not a booked conversion."""
+    code = effective_currency(row)
+    if not rates or not code or str(code).strip().upper() == "USD":
+        return None
+    lo, hi = effective_salary(row)
+    lo_usd = fx_rates.to_usd(lo, code, rates)
+    hi_usd = fx_rates.to_usd(hi, code, rates)
+    if lo_usd and hi_usd:
+        body = f"${round(lo_usd) // 1000}k – ${round(hi_usd) // 1000}k"
+    elif lo_usd:
+        body = f"${round(lo_usd) // 1000}k+"
+    elif hi_usd:
+        body = f"up to ${round(hi_usd) // 1000}k"
+    else:
+        return None
+    return f"≈ {body} USD"
+
+
 # Tags allowed in AI-formatted descriptions. Anything else (script, style, event
 # attributes, etc.) is stripped — this is the XSS boundary, since the client injects
 # the result via innerHTML.
@@ -744,13 +797,17 @@ def _viability_factors(raw: object) -> "list[dict] | None":
     return sorted(factors, key=lambda f: order.get(f["dimension"], len(order)))
 
 
-def process_job_row(row: sqlite3.Row | dict, hotlist: "set[str] | frozenset" = frozenset()) -> dict:
+def process_job_row(row: sqlite3.Row | dict, hotlist: "set[str] | frozenset" = frozenset(),
+                    fx: "dict[str, float] | None" = None) -> dict:
     """Decorate a raw jobs row with everything the templates need for display.
 
     Adds decoded labels, effective + feed salary (with display strings and an override
     flag), status/source/viability colors, a "stale score" flag, a trimmed applied_at
     date, and the parsed locations list (for the "+N" tooltip). Used both for flat rows
     and as the per-sub-row builder inside grouped views.
+
+    `fx` (USD-based rates from get_fx_rates) enables the USD-equivalent hover on a non-USD
+    salary; None (the default, and when rates are unavailable) simply omits it.
     """
     j = dict(row)
     j["labels"]           = decode_labels(j.get("labels"))
@@ -787,6 +844,9 @@ def process_job_row(row: sqlite3.Row | dict, hotlist: "set[str] | frozenset" = f
         "salary_currency": j.get("salary_currency"),
     })
     j["salary_display"]   = format_salary(j)
+    # Approximate USD equivalent for the hover tooltip; None for USD/absent currencies or when no
+    # rates are available (the template only renders the tooltip when this is set).
+    j["salary_usd_display"] = format_salary_usd(j, fx)
     j["salary_min"], j["salary_max"] = effective_salary(j)
     j["source_display"]   = SOURCE_NAMES.get(j.get("source", "linkedin"), j.get("source", ""))
     # Effective description: a manual paste-in override (description_actual) wins over the feed
@@ -897,7 +957,8 @@ def group_member_ids(db: sqlite3.Connection, job_id: str) -> list[str]:
 
 def fetch_sub_rows(db: sqlite3.Connection, group_key: str,
                    where: str, params: list,
-                   hotlist: "set[str] | frozenset" = frozenset()) -> list[dict]:
+                   hotlist: "set[str] | frozenset" = frozenset(),
+                   fx: "dict[str, float] | None" = None) -> list[dict]:
     """Fetch all jobs belonging to a canonical group.
 
     A group contains:
@@ -911,7 +972,7 @@ def fetch_sub_rows(db: sqlite3.Connection, group_key: str,
         "(canonical_id = ? OR (canonical_id IS NULL AND jobs.job_id = ?)) ORDER BY location",
         params + [group_key, group_key],
     ).fetchall()
-    return [process_job_row(r, hotlist) for r in rows]
+    return [process_job_row(r, hotlist, fx) for r in rows]
 
 
 def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
@@ -1012,6 +1073,8 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
         # Root's salary string (not '(varied)'): the canonical posting's band, with the
         # template flagging '(varies)' when members differ — see salary_varies.
         "group_salary":     root_row.get("salary_display") if root_row else None,
+        # USD-equivalent hover for the group row, mirroring group_salary's source (the root's).
+        "group_salary_usd": root_row.get("salary_usd_display") if root_row else None,
         # Union of every label across the group (sorted), rendered as one badge each.
         "group_labels":     sorted({lbl for s in sub_rows for lbl in (s.get("labels") or [])}),
         # Dates use the group's earliest member (MIN), the meaningful "first seen/posted"
@@ -1033,6 +1096,11 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
             "locations_count":  s.get("locations_count", 1),
             "refreshed_at":     s.get("refreshed_at"),
             "salary_display":   s["salary_display"],
+            # The USD-equivalent hover must ride along too — the single-row template renders
+            # salary_text(job.salary_display, job.salary_usd_display) like a flat row, so without
+            # this a non-USD single-posting group shows no tooltip (the grouped-header path uses
+            # group_salary_usd instead).
+            "salary_usd_display": s.get("salary_usd_display"),
             "salary_min":       s.get("salary_min"),
             "salary_max":       s.get("salary_max"),
             "labels":           s["labels"],
@@ -1140,6 +1208,7 @@ def index():
     """
     db = get_db()
     hotlist = get_hotlist(db)  # employer keys to highlight new/reviewing jobs for
+    fx = get_fx_rates()        # USD-equivalent hover rates (None → no tooltip); loaded once per request
 
     label         = request.args.get("label", "")
     q             = request.args.get("q", "").strip()
@@ -1276,7 +1345,7 @@ def index():
                     GROUPED_HEADERS_EMP.format(join=join, where=where, having=having, order=order),
                     params + hparams + [-1, 0]).fetchall()
                 emp_jobs = [
-                    build_grouped_job(h, fetch_sub_rows(db, h["group_key"], where, params, hotlist))
+                    build_grouped_job(h, fetch_sub_rows(db, h["group_key"], where, params, hotlist, fx))
                     for h in headers
                 ]
                 job_count = sum(j["location_count"] for j in emp_jobs)
@@ -1284,7 +1353,7 @@ def index():
                 ewhere, eparams = employer_where(where, params, employer)
                 rows = db.execute(FLAT_SELECT.format(join=join, where=ewhere, order=order),
                                   eparams + [-1, 0]).fetchall()
-                emp_jobs = [process_job_row(r, hotlist) for r in rows]
+                emp_jobs = [process_job_row(r, hotlist, fx) for r in rows]
                 job_count = len(emp_jobs)
             employer_groups.append({
                 "employer_name": employer or "(no company)",
@@ -1296,14 +1365,14 @@ def index():
         headers = db.execute(GROUPED_HEADERS.format(join=join, where=where, order=order),
                              params + [limit, offset]).fetchall()
         jobs = [
-            build_grouped_job(h, fetch_sub_rows(db, h["group_key"], where, params, hotlist))
+            build_grouped_job(h, fetch_sub_rows(db, h["group_key"], where, params, hotlist, fx))
             for h in headers
         ]
     else:
         total = db.execute(FLAT_COUNT.format(join=join, where=where), params).fetchone()[0]
         rows  = db.execute(FLAT_SELECT.format(join=join, where=where, order=order),
                            params + [limit, offset]).fetchall()
-        jobs  = [process_job_row(r, hotlist) for r in rows]
+        jobs  = [process_job_row(r, hotlist, fx) for r in rows]
 
     total_pages          = 1 if per_page == "all" else max(1, math.ceil(total / limit))
     labels               = available_labels(db)
@@ -1826,6 +1895,9 @@ def get_job(job_id: str):
         "apply_url":        job["apply_url"],
         "easy_apply":       job["easy_apply"],
         "salary_display":   format_salary(job),
+        # Approximate USD equivalent for the preview's salary hover (None ⇒ USD/absent currency or
+        # no rates available). See format_salary_usd / get_fx_rates.
+        "salary_usd_display": format_salary_usd(job, get_fx_rates()),
         "salary_min":       job.get("salary_min"),
         "salary_max":       job.get("salary_max"),
         "salary_min_actual": job.get("salary_min_actual"),

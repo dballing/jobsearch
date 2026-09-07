@@ -222,6 +222,16 @@
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
+  // Salary text for the preview meta line, with an approximate-USD hover on non-USD figures
+  // (salary_usd_display is set server-side only for those; see format_salary_usd). Returns null
+  // when there's no salary so .filter(Boolean) drops it from the ' · '-joined meta.
+  function salaryHtml(job) {
+    if (!job.salary_display) return null;
+    const disp = escHtml(job.salary_display);
+    if (!job.salary_usd_display) return disp;
+    return `<span title="${escHtml(job.salary_usd_display)}" style="cursor:help; text-decoration: underline dotted; text-underline-offset: 2px;">${disp}</span>`;
+  }
+
   function renderDescription(raw) {
     if (!raw) return '<em class="text-muted">No description available.</em>';
     const BULLET = /^[•\-\*·–—]\s*(.*)/;
@@ -511,7 +521,7 @@
         const companyHtml = job.company_actual
           ? `${companyLinked} <span class="text-muted fst-italic" style="font-size:.85em">(via ${escHtml(job.company)})</span>`
           : companyLinked;
-        const metaParts = [companyHtml, job.location ? escHtml(job.location) : null, job.salary_display ? escHtml(job.salary_display) : null]
+        const metaParts = [companyHtml, job.location ? escHtml(job.location) : null, salaryHtml(job)]
                            .filter(Boolean).join(' · ');
         let metaHtml = `<div>${metaParts}</div>`;
         if (job.viability) {
@@ -657,7 +667,7 @@
             const updatedCompanyHtml = job.company_actual
               ? `${escHtml(job.company_actual)} <span class="text-muted fst-italic" style="font-size:.85em">(via ${escHtml(job.company)})</span>`
               : escHtml(job.company || '');
-            const updatedParts = [updatedCompanyHtml, job.location ? escHtml(job.location) : null, job.salary_display ? escHtml(job.salary_display) : null].filter(Boolean).join(' · ');
+            const updatedParts = [updatedCompanyHtml, job.location ? escHtml(job.location) : null, salaryHtml(job)].filter(Boolean).join(' · ');
             metaEl.querySelector('div').innerHTML = updatedParts;
             clearBtn.classList.toggle('d-none', !job.company_actual);
             feedbackEl.textContent = 'Saved!';
