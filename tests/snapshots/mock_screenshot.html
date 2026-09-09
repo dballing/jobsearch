@@ -303,6 +303,7 @@
 
 
 
+
 <div class="d-flex flex-wrap align-items-center gap-3 mb-3">
 
   <form class="d-flex align-items-center gap-2" method="get" action="/">
@@ -439,10 +440,13 @@
     <ul class="dropdown-menu" id="colPickerMenu" aria-labelledby="colPickerBtn"></ul>
   </div>
 
+  
+  
   <button type="button" class="btn btn-sm btn-success" data-bs-toggle="modal"
           data-bs-target="#addJobModal" title="Manually add a job not from a feed">
     <i class="bi bi-plus-lg"></i> Add job
   </button>
+  
 
   <div class="d-flex align-items-center gap-1">
     <span class="text-muted small">Per&nbsp;page:</span>
@@ -2024,6 +2028,17 @@ Solid fit; re-score pending.">medium</span>
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
+  // The lens the open preview belongs to. In the combined "all searches" view a posting can appear
+  // under several searches with different status/viability, so showPreview stamps the row's own
+  // search here and previewUrl() carries it on every per-lens read/write (?search=…) so the panel
+  // shows and edits the right (job, search) tuple. Empty in single-lens mode → the server uses the
+  // sticky cookie lens exactly as before.
+  let _previewSearch = '';
+  function previewUrl(path) {
+    if (!_previewSearch) return path;
+    return path + (path.includes('?') ? '&' : '?') + 'search=' + encodeURIComponent(_previewSearch);
+  }
+
   // Salary text for the preview meta line, with an approximate-USD hover on non-USD figures
   // (salary_usd_display is set server-side only for those; see format_salary_usd). Returns null
   // when there's no salary so .filter(Boolean) drops it from the ' · '-joined meta.
@@ -2226,7 +2241,7 @@ Solid fit; re-score pending.">medium</span>
   async function removeAttachment(job, aid) {
     if (!confirm('Remove this attachment from this posting?')) return;
     try {
-      const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/attachment/${encodeURIComponent(aid)}/delete`, {method: 'POST'});
+      const resp = await fetch(previewUrl(`/job/${encodeURIComponent(job.job_id)}/attachment/${encodeURIComponent(aid)}/delete`), {method: 'POST'});
       if (resp.ok) {
         job.attachments = (job.attachments || []).filter(a => a.attachment_id !== aid);
         renderAttachList(job);
@@ -2249,7 +2264,7 @@ Solid fit; re-score pending.">medium</span>
     const fb = document.getElementById('descOverrideFeedback');
     fb.className = 'small text-body-secondary'; fb.textContent = 'Saving…';
     try {
-      const resp = await fetch(`/job/${encodeURIComponent(descOverrideJob.job_id)}/description_actual`,
+      const resp = await fetch(previewUrl(`/job/${encodeURIComponent(descOverrideJob.job_id)}/description_actual`),
         {method: 'POST', body: new URLSearchParams({description_actual: value})});
       if (resp.ok) {
         const jobId = descOverrideJob.job_id;
@@ -2276,7 +2291,10 @@ Solid fit; re-score pending.">medium</span>
   // company/salary override editors, notes box, attachments list, and the description
   // (server-formatted HTML when present, else the heuristic renderDescription), and wire
   // the View Job + Cover Letter buttons. Called from the row preview icons in jobs.html.
-  function showPreview(jobId) {
+  function showPreview(jobId, searchId) {
+    // searchId is passed only from the combined all-searches view (the row's own lens); elsewhere
+    // it's undefined and the panel operates on the sticky cookie lens as before.
+    _previewSearch = searchId || '';
     const panel   = document.getElementById('jobPreview');
     const titleEl = document.getElementById('jobPreviewLabel');
     const metaEl  = document.getElementById('jobPreviewMeta');
@@ -2298,7 +2316,7 @@ Solid fit; re-score pending.">medium</span>
     if (_prevGeoEditor) _prevGeoEditor.remove();
     bootstrap.Offcanvas.getOrCreateInstance(panel).show();
 
-    fetch('/job/' + jobId)
+    fetch(previewUrl('/job/' + encodeURIComponent(jobId)))
       .then(async r => {
         if (!r.ok) {
           const err = new Error((await r.text().catch(() => '')) || 'load failed');
@@ -2462,7 +2480,7 @@ Solid fit; re-score pending.">medium</span>
 
         async function saveCompanyActual(value) {
           const body = new URLSearchParams({company_actual: value});
-          const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/company_actual`, {method: 'POST', body});
+          const resp = await fetch(previewUrl(`/job/${encodeURIComponent(job.job_id)}/company_actual`), {method: 'POST', body});
           if (resp.ok) {
             job.company_actual = value || null;
             // Refresh the meta display
@@ -2487,7 +2505,7 @@ Solid fit; re-score pending.">medium</span>
         async function renameCompany(value) {
           if (!value) { feedbackEl.className = 'text-danger small'; feedbackEl.textContent = 'Enter the new name.'; return; }
           if (!confirm(`Rename every job whose company is "${job.company}" to "${value}", and add a permanent alias to config.toml?`)) return;
-          const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/company_rename`,
+          const resp = await fetch(previewUrl(`/job/${encodeURIComponent(job.job_id)}/company_rename`),
             {method: 'POST', body: new URLSearchParams({new_name: value})});
           if (resp.ok) {
             const data = await resp.json();
@@ -2559,7 +2577,7 @@ Solid fit; re-score pending.">medium</span>
         const titleFb = document.createElement('span'); titleFb.className = 'small';
 
         async function saveTitleActual(value) {
-          const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/title_actual`,
+          const resp = await fetch(previewUrl(`/job/${encodeURIComponent(job.job_id)}/title_actual`),
             {method: 'POST', body: new URLSearchParams({title_actual: value})});
           if (resp.ok) {
             job.title_actual = value || null;
@@ -2621,7 +2639,7 @@ Solid fit; re-score pending.">medium</span>
 
         async function saveSalaryActual(minV, maxV, curV) {
           const body = new URLSearchParams({salary_min: minV, salary_max: maxV, salary_currency: curV});
-          const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/salary_actual`, {method: 'POST', body});
+          const resp = await fetch(previewUrl(`/job/${encodeURIComponent(job.job_id)}/salary_actual`), {method: 'POST', body});
           if (resp.ok) {
             salFb.className = 'text-success small';
             salFb.textContent = 'Saved!';
@@ -2660,7 +2678,7 @@ Solid fit; re-score pending.">medium</span>
         waSelect.value = job.work_arrangement_actual || '';
         const waFb = document.createElement('span'); waFb.className = 'text-success small';
         waSelect.addEventListener('change', async () => {
-          const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/work_arrangement`,
+          const resp = await fetch(previewUrl(`/job/${encodeURIComponent(job.job_id)}/work_arrangement`),
             {method: 'POST', body: new URLSearchParams({work_arrangement: waSelect.value})});
           if (resp.ok) {
             job.work_arrangement_actual = waSelect.value || null;
@@ -2691,7 +2709,7 @@ Solid fit; re-score pending.">medium</span>
         const geoFb = document.createElement('span'); geoFb.className = 'small';
         geoCheck.addEventListener('change', async () => {
           const value = geoCheck.checked ? 'acceptable' : '';
-          const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/geo_fit_actual`,
+          const resp = await fetch(previewUrl(`/job/${encodeURIComponent(job.job_id)}/geo_fit_actual`),
             {method: 'POST', body: new URLSearchParams({geo_fit_actual: value})});
           if (resp.ok) {
             job.geo_fit_actual = value || null;
@@ -2723,7 +2741,7 @@ Solid fit; re-score pending.">medium</span>
           promoteFb.className = 'text-muted small';
           promoteBtn.addEventListener('click', async () => {
             if (!confirm('Make this posting the canonical of its matched group? Every other posting in the group will point to it.')) return;
-            const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/promote_canonical`, {method: 'POST'});
+            const resp = await fetch(previewUrl(`/job/${encodeURIComponent(job.job_id)}/promote_canonical`), {method: 'POST'});
             if (resp.ok) {
               promoteFb.className = 'text-success small'; promoteFb.textContent = 'Promoted!';
               setTimeout(() => location.reload(), 500);
@@ -2795,7 +2813,7 @@ Solid fit; re-score pending.">medium</span>
         const notesFb = document.getElementById('jobNotesFeedback');
         document.getElementById('jobNotesSave').addEventListener('click', async () => {
           try {
-            const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/notes`,
+            const resp = await fetch(previewUrl(`/job/${encodeURIComponent(job.job_id)}/notes`),
               {method: 'POST', body: new URLSearchParams({notes: notesEl.value})});
             if (resp.ok) {
               job.notes = notesEl.value.trim() || null;
@@ -2823,7 +2841,7 @@ Solid fit; re-score pending.">medium</span>
           fb.className = 'text-muted small'; fb.textContent = 'Uploading…';
           uploadBtn.disabled = true;
           try {
-            const resp = await fetch(`/job/${encodeURIComponent(job.job_id)}/attachment`, {method: 'POST', body: fd});
+            const resp = await fetch(previewUrl(`/job/${encodeURIComponent(job.job_id)}/attachment`), {method: 'POST', body: fd});
             if (resp.ok) {
               const a = await resp.json();
               (job.attachments = job.attachments || []).push(a);
@@ -3205,9 +3223,13 @@ async function updateGroupStatus(sel) {
 async function updateStatus(jobId, sel) {
   const prev = sel.dataset.prev;
   try {
-    const resp = await fetch('/job/' + jobId + '/status', {
+    // In the combined all-searches view the select carries its row's lens (data-search) so the
+    // status change targets the right (job, search) tuple; otherwise the server uses the cookie lens.
+    const body = new URLSearchParams({status: sel.value});
+    if (sel.dataset.search) body.set('search', sel.dataset.search);
+    const resp = await fetch('/job/' + encodeURIComponent(jobId) + '/status', {
       method: 'POST',
-      body: new URLSearchParams({status: sel.value}),
+      body,
     });
     if (!resp.ok) throw new Error();
     sel.dataset.prev = sel.value;

@@ -177,6 +177,23 @@ SOURCE_BADGE_CLASSES = {
 }
 SOURCE_BADGE_DEFAULT = "bg-info text-dark"
 
+# Lens ("search") tag colors for the combined all-searches view's Search column. Deliberately
+# NOT the semantic Bootstrap palette (primary/info/success/warning/danger) the status/viability/
+# source badges already own — a lens is a category, not a rating, so these are neutral, distinct
+# hues. All are dark enough to carry white text (≥ ~4.5:1), so the badge is theme-independent.
+# Assigned by each search's position in the config manifest (stable → a lens keeps its color), and
+# the list cycles if there are more searches than colors. See LENS_COLORS.
+_LENS_PALETTE = (
+    "#34568b",  # slate blue
+    "#6b4c9a",  # muted purple
+    "#94571a",  # burnt orange
+    "#146b5e",  # deep teal
+    "#9c3559",  # rose
+    "#445a94",  # indigo slate
+    "#7a6a00",  # dark olive
+    "#3f6e33",  # forest green
+)
+
 GROUP_VARIED = "(varied)"  # Displayed whenever a grouped field differs across sub-rows.
 
 VIABILITY_COLORS = {
@@ -276,7 +293,21 @@ def _root_pref(col: str, agg: str = "MIN") -> str:
 # jobs.* columns of the same name. The search id is validated against the configured searches
 # before it reaches here (see _current_search_id), so inlining it as a literal is injection-safe
 # and leaves the existing {where}/params threading untouched.
+# Display-only pseudo-lens: the combined "all searches" listing. It is a READ/VIEW mode only —
+# never a write target (see _current_search_id / _current_view_id). Chosen to collide with no real
+# search id (config ids can't contain the leading/trailing dunder shape a user would type).
+ALL_SEARCHES = "__all__"
+
+
 def _jss_join(search_id: str) -> str:
+    # ALL_SEARCHES joins EVERY per-lens row unfiltered, so a job that belongs to N searches yields
+    # N rows — the (job_id, search_id) tuple becomes the row identity. Callers using this mode must
+    # render flat (grouping is global but membership is per-lens, so a canonical group can straddle
+    # searches) and must never treat it as a write target. A concrete id keeps the single-lens
+    # filter. search_id is validated to a configured id or the ALL_SEARCHES literal before it
+    # reaches here (see _current_view_id), so inlining it is injection-safe.
+    if search_id == ALL_SEARCHES:
+        return "JOIN job_search_state jss ON jss.job_id = jobs.job_id"
     return (f"JOIN job_search_state jss ON jss.job_id = jobs.job_id "
             f"AND jss.search_id = '{search_id}'")
 
@@ -290,10 +321,19 @@ _JSS_COLS = (
     "jss.viability_reason AS viability_reason, jss.viability_factors AS viability_factors, "
     "jss.viability_prompt_hash AS viability_prompt_hash, jss.needs_rescored AS needs_rescored, "
     "jss.salary_min_actual AS salary_min_actual, jss.salary_max_actual AS salary_max_actual, "
-    "jss.salary_currency_actual AS salary_currency_actual, jss.geo_fit_actual AS geo_fit_actual"
+    "jss.salary_currency_actual AS salary_currency_actual, jss.geo_fit_actual AS geo_fit_actual, "
+    # The owning lens of this row. In single-lens mode it's a constant (the joined search);
+    # in the combined ALL_SEARCHES view it distinguishes the (job, search) tuples of one job.
+    # Templates read it to label each row and to carry the correct write target for per-lens edits.
+    "jss.search_id AS search_id"
 )
 
 _VALID_SEARCH_IDS = {s.id for s in APP_CONFIG.searches}
+
+# Stable lens→color assignment for the combined view's Search tags: each configured search keyed to
+# a palette entry by its manifest position (cycling if there are more searches than colors).
+LENS_COLORS = {s.id: _LENS_PALETTE[i % len(_LENS_PALETTE)]
+               for i, s in enumerate(APP_CONFIG.searches)}
 
 
 def _current_search_id() -> str:
@@ -310,6 +350,23 @@ def _current_search_id() -> str:
         if sid in _VALID_SEARCH_IDS:
             return sid
     return APP_CONFIG.default_search().id
+
+
+def _current_view_id() -> str:
+    """The lens the main LISTING renders — like _current_search_id, but also honours the
+    ALL_SEARCHES sentinel (the combined, read-only all-searches view).
+
+    Only the jobs list uses this, and only in a multi-search setup: a single-search config has
+    nothing to combine, so it always collapses to the concrete lens. Deliberately NOT used to
+    resolve any write target — writes always go through _current_search_id (which rejects the
+    sentinel and falls back to a concrete lens), and per-row edits in the combined view carry
+    their own explicit search id so they never depend on that fallback."""
+    if APP_CONFIG.is_multi_search and has_request_context():
+        sid = (request.args.get("search") or request.form.get("search")
+               or request.cookies.get("search") or "")
+        if sid == ALL_SEARCHES:
+            return ALL_SEARCHES
+    return _current_search_id()
 
 
 # Grouped header query — one row per canonical group.
@@ -859,7 +916,11 @@ def process_job_row(row: sqlite3.Row | dict, hotlist: "set[str] | frozenset" = f
     j["job_description"]          = effective_description(j)
     j["applied_at"]       = (j.get("applied_at") or "")[:10] or None
     j["viability_color"]  = VIABILITY_COLORS.get(j.get("viability") or "", "")
-    _cur_hash = _current_viability_hash()
+    # Staleness compares against THIS row's lens's prompt hash — not the request's lens. It matters in
+    # the combined all-searches view, where rows from different searches (each with its own viability
+    # prompt) share one page; a row carries its owning search_id (jss.search_id in _JSS_COLS). Falls
+    # back to the current lens when absent (e.g. unit tests passing a bare dict).
+    _cur_hash = _current_viability_hash(j.get("search_id"))
     # A score is "stale" if the prompt changed under it (hash mismatch) OR a
     # viability-relevant field was edited since (needs_rescored). Either way the
     # badge is subdued until the next rescore catches it.
@@ -1227,6 +1288,15 @@ def index():
     match_default = "0" if legacy_view == "flat" else "1"
     group_match    = request.args.get("group_match", match_default) == "1"
     group_employer = request.args.get("group_employer", "0") == "1"
+    # The combined all-searches view is intrinsically flat: grouping keys on the global canonical_id
+    # while membership is per-lens, so a canonical group can straddle searches — collapsing it would
+    # fuse two independently-scored lenses' rows. Force flat + no employer sections so the (job,
+    # search) tuple stays the unit, one labelled row each. is_all also drives the Search column and
+    # the per-row write-target threading.
+    view_id = _current_view_id()
+    is_all  = view_id == ALL_SEARCHES
+    if is_all:
+        group_match = group_employer = False
     # `view` still drives ~6 column-layout conditionals in the template.
     view = "grouped" if group_match else "flat"
     # Employer-section order direction (group-by-employer only). Independent of the
@@ -1275,8 +1345,9 @@ def index():
 
     where, params = build_where(label, status_filter, q, source, viability,
                                 comp_active, comp_min, comp_max)
-    # Per-lens state join for this request's search (Phase 1: the single/default search).
-    join = _jss_join(_current_search_id())
+    # Per-lens state join for this request's lens. ALL_SEARCHES unfilters the join → one row per
+    # (job, search) tuple; a concrete id scopes to that single lens.
+    join = _jss_join(view_id)
     _TEXT_COLS = {"title", "company", "location"}
     if sort == "status":
         # Grouped view sorts by the header's status aggregate (alias); flat by the joined
@@ -1435,12 +1506,20 @@ def index():
         # Multi-search lens selector: the configured searches and the active one. A single
         # (default) search means Path A — the selector is hidden in the template.
         searches=[{"id": s.id, "name": s.name} for s in APP_CONFIG.searches],
-        current_search=_current_search_id(),
+        current_search=view_id,
         is_multi_search=APP_CONFIG.is_multi_search,
+        # Combined all-searches view: render the Search column + label, force flat, and have per-row
+        # controls carry their own lens. all_searches_id lets the selector offer/select the option.
+        is_all_view=is_all,
+        all_searches_id=ALL_SEARCHES,
+        search_names={s.id: s.name for s in APP_CONFIG.searches},
+        search_colors=LENS_COLORS,
     ))
-    # Sticky lens cookie: POST actions from the page (status/notes/overrides) don't carry the
-    # ?search= param, so persist the viewed lens here for _current_search_id to read back.
-    resp.set_cookie("search", _current_search_id(), samesite="Lax")
+    # Sticky lens cookie so sort/filter/pagination links (which don't carry ?search=) keep the
+    # viewed lens — including ALL_SEARCHES for the combined view. Concrete-lens writes still read it
+    # back via _current_search_id; ALL_SEARCHES there safely falls to the default lens, and combined-
+    # view per-row edits never rely on that (they pass an explicit valid search id).
+    resp.set_cookie("search", view_id, samesite="Lax")
     return resp
 
 

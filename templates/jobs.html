@@ -201,13 +201,16 @@
 
 {# Status dropdown for a single job. data-prev/data-viability let the JS animate the
    left-border color and confirm risky transitions; onchange POSTs to /job/<id>/status. #}
-{% macro status_select(job_id, current_status, viability='') %}
+{# search_id is set only in the combined all-searches view: it's the row's own lens, carried on the
+   status POST (data-search → updateStatus) so the change lands on the right (job, search) tuple
+   rather than the sticky-cookie lens. Empty in single-lens mode → attribute omitted, unchanged. #}
+{% macro status_select(job_id, current_status, viability='', search_id='') %}
 <select class="form-select form-select-sm status-select"
         style="width:auto"
         autocomplete="off"
         data-prev="{{ current_status }}"
         data-job-id="{{ job_id }}"
-        data-viability="{{ viability }}"
+        data-viability="{{ viability }}"{% if search_id %} data-search="{{ search_id }}"{% endif %}
         onchange="updateStatus('{{ job_id }}', this)">
   {% for s in statuses %}
   <option value="{{ s }}" {% if s == current_status %}selected{% endif %}>{{ s }}</option>
@@ -350,13 +353,14 @@
         {% else %}
           {# ── Single-location row (grouped or flat) ── #}
           <tr class="{{ 'row-hot' if job.is_hot }}">
+            {% if is_all_view %}<td class="col-search"><span class="badge" style="background-color:{{ search_colors.get(job.search_id, '#6c757d') }};color:#fff">{{ search_names.get(job.search_id, job.search_id) }}</span></td>{% endif -%}
             <td class="job-title">
               {% set url = job.get('job_url') %}
               {% if url %}<a href="{{ url }}" target="_blank" rel="noopener">{{ job.title or '(no title)' }}</a>
               {% else %}{{ job.title or '(no title)' }}{% endif %}{% if job.has_title_override %}<sup title="Manually overridden — originally: {{ job.title_original }}" style="cursor:help">*</sup>{% endif %}
               {% if job.refreshed_at %}<span class="text-warning ms-1" title="Description changed — previously skipped, reset to new on {{ job.refreshed_at[:10] }}"><i class="bi bi-arrow-repeat"></i></span>{% endif %}
               {% if job.job_id %}
-              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('{{ job.job_id }}')" title="Preview description"><i class="bi bi-card-text"></i></button>
+              <button class="btn btn-sm btn-link p-0 ms-1 text-muted" onclick="showPreview('{{ job.job_id }}'{% if is_all_view %}, '{{ job.search_id }}'{% endif %})" title="Preview description"><i class="bi bi-card-text"></i></button>
               {{ link_btn(job.job_id, job.get('canonical_id') or '') }}
               {% endif %}
               {% if job.title %}<button class="btn btn-sm btn-link p-0 ms-1 text-muted title-search-btn" title="Find all jobs with this title (possible missed match)" onclick='searchByTitle({{ job.title | tojson }}, this)'><i class="bi bi-search"></i></button>{% endif %}
@@ -384,7 +388,7 @@
             {% if sources|length > 1 %}
             <td class="col-source"><span class="badge {{ source_badges.get(job.source, source_badge_default) }}">{{ job.source_display }}</span></td>
             {% endif %}
-            <td>{{ status_select(job.job_id, job.status, job.viability or '') }}</td>
+            <td>{{ status_select(job.job_id, job.status, job.viability or '', job.search_id if is_all_view else '') }}</td>
             <td class="text-nowrap col-applied">{% if job.applied_at %}<span data-utc="{{ job.applied_at }}">{{ job.applied_at }}</span>{% else %}—{% endif %}</td>
             <td class="text-nowrap col-posted">{{ (job.posted_date or '')[:10] }}</td>
             <td class="text-nowrap col-firstseen">{% if job.first_seen %}<span data-utc="{{ job.first_seen }}">{{ job.first_seen }}</span>{% else %}—{% endif %}</td>
@@ -505,10 +509,15 @@
     <ul class="dropdown-menu" id="colPickerMenu" aria-labelledby="colPickerBtn"></ul>
   </div>
 
+  {# The combined all-searches view has no single target lens, so a manual add (which lens would it
+     land in?) and the page-wide bulk-skip (its selection can span lenses) are hidden there; pick a
+     concrete search to use them. #}
+  {% if not is_all_view %}
   <button type="button" class="btn btn-sm btn-success" data-bs-toggle="modal"
           data-bs-target="#addJobModal" title="Manually add a job not from a feed">
     <i class="bi bi-plus-lg"></i> Add job
   </button>
+  {% endif %}
 
   <div class="d-flex align-items-center gap-1">
     <span class="text-muted small">Per&nbsp;page:</span>
@@ -519,7 +528,7 @@
     </select>
   </div>
 
-  {% if show_viability_filter %}
+  {% if show_viability_filter and not is_all_view %}
   <button id="bulk-skip-btn" class="btn btn-sm btn-outline-danger d-none">
     <i class="bi bi-x-circle"></i> Skip <span id="bulk-skip-count"></span> low &amp; new
   </button>
@@ -554,6 +563,7 @@
           </th>
         {% endmacro %}
 
+        {% if is_all_view %}<th class="col-search">Search</th>{% endif -%}
         {{ sort_th('title',      'Title') }}
         {% if group_employer %}
         <th>
@@ -577,7 +587,7 @@
     </thead>
     {# ncols: column count for the "No jobs" / employer-header colspan (9 fixed + the
        optional Source and Viability columns). #}
-    {% set ncols = 9 + (1 if sources|length > 1 else 0) + (1 if show_viability_filter else 0) %}
+    {% set ncols = 9 + (1 if sources|length > 1 else 0) + (1 if show_viability_filter else 0) + (1 if is_all_view else 0) %}
     {# ns.gi: a mutable counter (Jinja loop vars can't be reassigned, hence namespace())
        handing each rendered group a unique gindex so expand/collapse stays scoped even
        across employer sections. Two table shapes follow: employer sections, or a single
@@ -700,9 +710,13 @@ async function updateGroupStatus(sel) {
 async function updateStatus(jobId, sel) {
   const prev = sel.dataset.prev;
   try {
-    const resp = await fetch('/job/' + jobId + '/status', {
+    // In the combined all-searches view the select carries its row's lens (data-search) so the
+    // status change targets the right (job, search) tuple; otherwise the server uses the cookie lens.
+    const body = new URLSearchParams({status: sel.value});
+    if (sel.dataset.search) body.set('search', sel.dataset.search);
+    const resp = await fetch('/job/' + encodeURIComponent(jobId) + '/status', {
       method: 'POST',
-      body: new URLSearchParams({status: sel.value}),
+      body,
     });
     if (!resp.ok) throw new Error();
     sel.dataset.prev = sel.value;
