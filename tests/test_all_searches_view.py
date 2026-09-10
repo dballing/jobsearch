@@ -3,6 +3,7 @@ one row per (job, search) tuple, the read-only view resolver, and the guard that
 from ever resolving as a write target. Hermetic — in-memory DB + request contexts, no real app
 config (the test app is single-search, so the multi-search paths are exercised via monkeypatch)."""
 import app
+from config import AppConfig
 
 
 def _job_two_searches(conn):
@@ -65,14 +66,14 @@ def test_view_id_single_search_never_reaches_all():
 
 def test_view_id_all_only_when_multi_search(monkeypatch):
     # Multi-search + an explicit ?search=__all__ selects the combined view.
-    monkeypatch.setattr(type(app.APP_CONFIG), "is_multi_search", property(lambda self: True))
+    monkeypatch.setattr(AppConfig, "is_multi_search", property(lambda self: True))
     with app.app.test_request_context("/?search=__all__"):
         assert app._current_view_id() == app.ALL_SEARCHES
 
 
 def test_view_id_concrete_lens_in_multi_search(monkeypatch):
     # A concrete ?search= in a multi-search setup resolves to that lens, not the combined view.
-    monkeypatch.setattr(type(app.APP_CONFIG), "is_multi_search", property(lambda self: True))
+    monkeypatch.setattr(AppConfig, "is_multi_search", property(lambda self: True))
     with app.app.test_request_context("/?search=__default__"):
         assert app._current_view_id() == "__default__"
 
@@ -84,14 +85,14 @@ def test_write_target_never_resolves_to_all_searches():
     # concrete lens, so a stray search=__all__ on a POST can never mutate "every lens" / the wrong one.
     with app.app.test_request_context("/job/x/status", method="POST",
                                       data={"search": app.ALL_SEARCHES}):
-        assert app._current_search_id() == app.APP_CONFIG.default_search().id
+        assert app._current_search_id() == app.current_config().default_search().id
         assert app._current_search_id() != app.ALL_SEARCHES
 
 
 def test_write_target_honors_explicit_valid_search():
     # A per-row control in the combined view carries its row's concrete lens; the write resolver
     # honours it (here trivially the only search, but it documents the contract the JS relies on).
-    sid = app.APP_CONFIG.default_search().id
+    sid = app.current_config().default_search().id
     with app.app.test_request_context("/job/x/status", method="POST", data={"search": sid}):
         assert app._current_search_id() == sid
 
@@ -105,7 +106,7 @@ def test_combined_view_route_renders_all_lenses(sample_app_db, monkeypatch):
     import os
     import sqlite3
 
-    monkeypatch.setattr(type(app.APP_CONFIG), "is_multi_search", property(lambda self: True))
+    monkeypatch.setattr(AppConfig, "is_multi_search", property(lambda self: True))
     con = sqlite3.connect(os.environ["JOBSEARCH_DB"])
     con.execute("INSERT INTO job_search_state (job_id, search_id, status, viability) "
                 "VALUES ('cs_review', 'director', 'applied', 'medium')")
@@ -135,4 +136,4 @@ def test_lens_colors_are_stable_distinct_and_cycle():
     assert len(set(list(colors.values())[:n])) == n                # first n are all distinct
     assert colors["s0"] == colors[f"s{n}"]                         # wraps around (cycles)
     # And the real map is keyed by the configured searches (here just the single default lens).
-    assert set(app.LENS_COLORS) == {s.id for s in app.APP_CONFIG.searches}
+    assert set(app._lens_colors()) == {s.id for s in app.current_config().searches}

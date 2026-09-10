@@ -2,6 +2,8 @@
 
 All configuration lives in `config.toml` (gitignored — never committed). Copy `config.toml.example` to get started.
 
+**Live reload.** The running web app re-reads `config.toml` (and any per-search files) whenever you save an edit — changes take effect on the **next request**, no restart needed. This covers everything display- and scoring-related: search names, labels, viability prompts, feeds, aliases, AI settings. A half-saved or malformed file is ignored (the app keeps serving the last good config and picks up your fix automatically once it parses). **Two exceptions need a restart:** `db_path` and `uploads_dir` — they bind the running process to an open database and attachment directory that can't be swapped mid-flight. Edit one of those and the app shows a **sticky banner** telling you to restart; the banner clears itself once you do (or once you revert the value). Batch tools (`ingest.sh`, `rescore_viability.sh`) read the config fresh on every run, so reload doesn't apply to them.
+
 ## Top-level keys (`[basics]`)
 
 Shared, app/DB-wide settings live under a `[basics]` table. (An older layout put these bare at the top level — still accepted, with a deprecation warning; run `python ingest.py --fixbasics` to migrate an existing config in place, comments preserved.)

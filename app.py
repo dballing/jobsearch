@@ -25,7 +25,7 @@ from flask import (Flask, abort, g, has_request_context, make_response, render_t
                    request, send_file, url_for)
 from werkzeug.utils import secure_filename
 import fx_rates
-from config import ConfigError, DEFAULT_SEARCH_ID, load_config
+from config import AppConfig, ConfigError, DEFAULT_SEARCH_ID, load_config
 from ingest import (adopt_legacy, append_history, backfill_description_truncated,
                     bootstrap_history, ensure_job_search_state, history_scope)
 from viability import (
@@ -43,48 +43,137 @@ app = Flask(__name__)
 PER_PAGE = 25                                  # default page size
 PER_PAGE_OPTIONS = ["25", "50", "100", "200", "all"]  # user-selectable page sizes
 
-# Load config once at startup via the shared loader. The config and DB paths can be
-# overridden via env vars (JOBSEARCH_CONFIG / JOBSEARCH_DB) — used by the test suite to point
-# at throwaway files so importing this module never migrates the real jobs.db.
+# The config/DB paths can be overridden via env vars (JOBSEARCH_CONFIG / JOBSEARCH_DB) — used by
+# the test suite to point at throwaway files so importing this module never migrates the real
+# jobs.db.
 _config_path = Path(os.environ.get("JOBSEARCH_CONFIG", "config.toml"))
-APP_CONFIG = load_config(_config_path)
 
-DB_PATH: str = os.environ.get("JOBSEARCH_DB") or APP_CONFIG.db_path
+# ── Live, hot-reloading config ────────────────────────────────────────────────────────────
+# Most config is hot: edit config.toml (or a per-search file), save, and the change takes effect
+# on the next request — no app restart. current_config() is the single read path; it reloads on
+# an mtime change, keeps the last-good config if a (half-)saved file doesn't parse, and snapshots
+# per request so one request never sees a torn read. The deliberate exceptions that do NOT
+# hot-reload are _PINNED_CONFIG_FIELDS (below); config_drift() surfaces when one was edited.
+_active_config: AppConfig = load_config(_config_path)
+_active_mtime: float = max((p.stat().st_mtime for p in _active_config.source_files), default=0.0)
+
+
+def current_config() -> AppConfig:
+    """The live application config, reloaded from disk when any source file changes.
+
+    FAIL-SOFT: a malformed/half-saved file keeps the last-good config and is retried on the next
+    request, so an editor mid-save never 500s the app. PER-REQUEST SNAPSHOT: the result is cached
+    in flask.g, so a single request always renders against one consistent config even if the file
+    changes mid-request. Use this — never a frozen module global — for any config read that should
+    reflect live edits; the startup-pinned fields (_PINNED_CONFIG_FIELDS) are the exception."""
+    if has_request_context():
+        cached = g.get("_cfg_snapshot")
+        if cached is not None:
+            return cached
+    _reload_if_stale()
+    if has_request_context():
+        g._cfg_snapshot = _active_config
+    return _active_config
+
+
+def _reload_if_stale() -> None:
+    """Reload _active_config if any source file's mtime changed. If the new config won't load
+    (malformed/partially-written TOML, or a semantic ConfigError) keep the last-good config WITHOUT
+    advancing _active_mtime, so the next request re-attempts and the fix goes live the moment the
+    file parses again (no extra edit needed). An un-stat-able source file (momentarily gone
+    mid-edit) likewise leaves it untouched."""
+    global _active_config, _active_mtime
+    try:
+        mtime = max((p.stat().st_mtime for p in _active_config.source_files), default=0.0)
+    except OSError:
+        return
+    if mtime == _active_mtime:
+        return
+    try:
+        fresh = load_config(_config_path)
+    except (ConfigError, tomllib.TOMLDecodeError, OSError):
+        # Malformed/half-written TOML (TOMLDecodeError), a semantic config error (ConfigError), or a
+        # file that vanished mid-save (OSError): keep last-good and DON'T advance _active_mtime, so
+        # the next request re-attempts and the fix goes live the moment the file is whole again.
+        return
+    _active_config = fresh
+    _active_mtime = mtime
+
+
+# ── Startup-pinned config (the deliberate exceptions to hot-reload) ─────────────────────────
+# These bind the running process to resources it cannot swap mid-flight: DB_PATH anchors the open
+# SQLite connections, the WAL files, and the cross-process writer lock; UPLOADS_DIR is created on
+# disk here at startup. Each is captured ONCE, recording whether its value came from config.toml
+# or an env override — an env-sourced field can't "drift" (the file value is permanently inert),
+# so only file-sourced ones arm the stale-config banner (see config_drift). Editing one of these
+# needs a restart. Keep this list TINY: a field NOT listed here is live by default, which is the
+# safe direction to be wrong in (a forgotten field reloads harmlessly rather than silently pinning).
+_PINNED_CONFIG_FIELDS = ("db_path", "uploads_dir")
+
+DB_PATH: str = os.environ.get("JOBSEARCH_DB") or _active_config.db_path
 
 # Where uploaded attachments live on disk (UUID filenames; real names in the DB).
-UPLOADS_DIR: str = APP_CONFIG.uploads_dir
+UPLOADS_DIR: str = _active_config.uploads_dir
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024  # 25 MB per upload
 
-# Per-search viability prompt hash — recomputed whenever any config source file changes on
-# disk, so a live prompt edit shows up without an app restart. Keyed by search_id (each lens
-# scores under its own criteria), invalidated on the newest mtime across all config files.
-_cfg_mtime: float = 0.0
-_viability_hash_cache: dict[str, str | None] = {}
+# Per pinned field: (value the process started with, whether it came from an env override). The
+# drift check compares the live file value against the startup value, skipping env-sourced fields.
+_PINNED_STARTUP: dict[str, tuple[str, bool]] = {
+    "db_path":     (DB_PATH,     "JOBSEARCH_DB" in os.environ),
+    "uploads_dir": (UPLOADS_DIR, False),  # no env override exists for uploads_dir
+}
+
+
+def _compute_drift(cfg: AppConfig, pinned_startup: dict[str, tuple[str, bool]]) -> list[str]:
+    """Pinned fields whose live value differs from the startup value — i.e. edits needing a
+    restart. Env-sourced fields are skipped (their file value never becomes live). Pure so it can
+    be unit-tested without the import-time env capture."""
+    drifted = []
+    for field, (start_val, from_env) in pinned_startup.items():
+        if from_env:
+            continue
+        if getattr(cfg, field) != start_val:
+            drifted.append(field)
+    return drifted
+
+
+def config_drift() -> list[str]:
+    """Pinned config fields (_PINNED_CONFIG_FIELDS) that have been edited in config.toml since
+    startup and therefore need an app restart to take effect. Drives the sticky, app-wide
+    stale-config banner; self-clears the moment the file matches the running value again."""
+    return _compute_drift(current_config(), _PINNED_STARTUP)
+
+
+def _viability_hashes() -> dict[str, str | None]:
+    """Per-search viability prompt hash for the current config snapshot, cached per request so the
+    row-by-row staleness check (process_job_row) doesn't rehash the prompt for every row. Tied to
+    the request's config snapshot, so a live prompt edit shows up without an app restart."""
+    if has_request_context():
+        cached = g.get("_viab_hashes")
+        if cached is not None:
+            return cached
+    hashes = {s.id: scoring_hash_for_config(s.config) for s in current_config().searches}
+    if has_request_context():
+        g._viab_hashes = hashes
+    return hashes
 
 
 def _current_viability_hash(search_id: str | None = None) -> str | None:
-    """The viability prompt hash for a search ("lens"), refreshing if any config file changed.
-
-    Defaults to the request's current lens. Kept per-search so the web-UI staleness check matches
-    exactly the hash the batch/on-demand rescore stamps for that search. None when the search has
-    no viability prompt configured."""
-    global _cfg_mtime, _viability_hash_cache
+    """The viability prompt hash for a search ("lens"), from the live config. Defaults to the
+    request's current lens. Kept per-search so the web-UI staleness check matches exactly the hash
+    the batch/on-demand rescore stamps for that search. None when the search has no viability
+    prompt configured."""
     sid = search_id or _current_search_id()
-    try:
-        mtime = max((p.stat().st_mtime for p in APP_CONFIG.source_files), default=0.0)
-        if mtime != _cfg_mtime:
-            _cfg_mtime = mtime
-            live = load_config(_config_path)
-            _viability_hash_cache = {s.id: scoring_hash_for_config(s.config) for s in live.searches}
-    except (OSError, ConfigError):
-        pass
-    return _viability_hash_cache.get(sid)
+    return _viability_hashes().get(sid)
 
-# Label → display-name mapping, unioned across searches by the loader (preferred source:
-# each search's [labels] table; backward-compat fallback: per-task `display` key). Any label
-# not covered defaults to the label uppercased at use-time.
-LABEL_NAMES: dict[str, str] = APP_CONFIG.label_names
+
+# Label → display-name mapping, unioned across searches by the loader (preferred source: each
+# search's [labels] table; backward-compat fallback: per-task `display` key). Any label not
+# covered defaults to the label uppercased at use-time. A function (not a frozen global) so it
+# tracks live config edits.
+def _label_names() -> dict[str, str]:
+    return current_config().label_names
 
 SORTABLE_COLS = {
     "title", "company", "location", "salary_min",
@@ -182,7 +271,7 @@ SOURCE_BADGE_DEFAULT = "bg-info text-dark"
 # source badges already own — a lens is a category, not a rating, so these are neutral, distinct
 # hues. All are dark enough to carry white text (≥ ~4.5:1), so the badge is theme-independent.
 # Assigned by each search's position in the config manifest (stable → a lens keeps its color), and
-# the list cycles if there are more searches than colors. See LENS_COLORS.
+# the list cycles if there are more searches than colors. See _lens_colors().
 _LENS_PALETTE = (
     "#34568b",  # slate blue
     "#6b4c9a",  # muted purple
@@ -328,12 +417,17 @@ _JSS_COLS = (
     "jss.search_id AS search_id"
 )
 
-_VALID_SEARCH_IDS = {s.id for s in APP_CONFIG.searches}
+# Functions (not frozen globals) so they track live config edits — a search added/renamed in
+# config.toml is valid / re-colored on the next request without an app restart.
+def _valid_search_ids() -> set[str]:
+    return {s.id for s in current_config().searches}
+
 
 # Stable lens→color assignment for the combined view's Search tags: each configured search keyed to
 # a palette entry by its manifest position (cycling if there are more searches than colors).
-LENS_COLORS = {s.id: _LENS_PALETTE[i % len(_LENS_PALETTE)]
-               for i, s in enumerate(APP_CONFIG.searches)}
+def _lens_colors() -> dict[str, str]:
+    return {s.id: _LENS_PALETTE[i % len(_LENS_PALETTE)]
+            for i, s in enumerate(current_config().searches)}
 
 
 def _current_search_id() -> str:
@@ -347,9 +441,9 @@ def _current_search_id() -> str:
         # carry the param — still target the lens you're viewing). Always validated.
         sid = (request.args.get("search") or request.form.get("search")
                or request.cookies.get("search") or "")
-        if sid in _VALID_SEARCH_IDS:
+        if sid in _valid_search_ids():
             return sid
-    return APP_CONFIG.default_search().id
+    return current_config().default_search().id
 
 
 def _current_view_id() -> str:
@@ -361,7 +455,7 @@ def _current_view_id() -> str:
     resolve any write target — writes always go through _current_search_id (which rejects the
     sentinel and falls back to a concrete lens), and per-row edits in the combined view carry
     their own explicit search id so they never depend on that fallback."""
-    if APP_CONFIG.is_multi_search and has_request_context():
+    if current_config().is_multi_search and has_request_context():
         sid = (request.args.get("search") or request.form.get("search")
                or request.cookies.get("search") or "")
         if sid == ALL_SEARCHES:
@@ -571,8 +665,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
     ensure_job_search_state(conn)
     # One-time single→multi adoption (Path B only; no-op/warn-free for the single __default__
     # search). Writes at startup like the other migrations here — gated + idempotent.
-    if APP_CONFIG.is_multi_search:
-        adopt_legacy(conn, APP_CONFIG.adopter.id if APP_CONFIG.adopter else None)
+    # A one-time, structural migration — reads the startup config (current_config() equals it at
+    # import time, before any request); legacy adoption can't be reconfigured live anyway.
+    cfg = current_config()
+    if cfg.is_multi_search:
+        adopt_legacy(conn, cfg.adopter.id if cfg.adopter else None)
 
 
 def _init_db() -> None:
@@ -639,6 +736,9 @@ def inject_nav_timestamps() -> dict:
         "last_data_iso":   data_iso,
         "last_synced_at":  fmt(synced_iso),
         "last_synced_iso": synced_iso,
+        # Pinned config fields edited since startup (need a restart) → the sticky, app-wide
+        # stale-config banner in base.html. Empty list ⇒ no banner.
+        "config_drift":    config_drift(),
     }
 
 
@@ -811,9 +911,10 @@ def format_description_html(md: str | None) -> str | None:
 
 
 def decode_labels(raw: str | None) -> list[str]:
-    """Turn the stored labels JSON array (e.g. '["dc","nc"]') into display names via
-    LABEL_NAMES, falling back to the uppercased key for any label without a mapping."""
-    return [LABEL_NAMES.get(r, r.upper()) for r in json.loads(raw or "[]")]
+    """Turn the stored labels JSON array (e.g. '["dc","nc"]') into display names via the live
+    label map, falling back to the uppercased key for any label without a mapping."""
+    names = _label_names()
+    return [names.get(r, r.upper()) for r in json.loads(raw or "[]")]
 
 
 # A job is "hot" only while it's actionable at a hotlisted employer — once it leaves
@@ -1212,8 +1313,9 @@ def available_labels(db: sqlite3.Connection) -> list[dict]:
     rows = db.execute(
         "SELECT DISTINCT je.value FROM jobs, json_each(jobs.labels) je ORDER BY je.value"
     ).fetchall()
+    names = _label_names()
     return [
-        {"value": r["value"], "label": LABEL_NAMES.get(r["value"], r["value"].upper())}
+        {"value": r["value"], "label": names.get(r["value"], r["value"].upper())}
         for r in rows
     ]
 
@@ -1496,7 +1598,7 @@ def index():
         # All configured labels (not just those already present in the data) for the
         # manual "Add job" form's label checkboxes.
         all_labels=[{"value": k, "label": v}
-                    for k, v in sorted(LABEL_NAMES.items(), key=lambda kv: kv[1].lower())],
+                    for k, v in sorted(_label_names().items(), key=lambda kv: kv[1].lower())],
         sources=sources,
         source=source,
         viability=viability,
@@ -1505,15 +1607,15 @@ def index():
         col_urls=col_urls,
         # Multi-search lens selector: the configured searches and the active one. A single
         # (default) search means Path A — the selector is hidden in the template.
-        searches=[{"id": s.id, "name": s.name} for s in APP_CONFIG.searches],
+        searches=[{"id": s.id, "name": s.name} for s in current_config().searches],
         current_search=view_id,
-        is_multi_search=APP_CONFIG.is_multi_search,
+        is_multi_search=current_config().is_multi_search,
         # Combined all-searches view: render the Search column + label, force flat, and have per-row
         # controls carry their own lens. all_searches_id lets the selector offer/select the option.
         is_all_view=is_all,
         all_searches_id=ALL_SEARCHES,
-        search_names={s.id: s.name for s in APP_CONFIG.searches},
-        search_colors=LENS_COLORS,
+        search_names={s.id: s.name for s in current_config().searches},
+        search_colors=_lens_colors(),
     ))
     # Sticky lens cookie so sort/filter/pagination links (which don't carry ?search=) keep the
     # viewed lens — including ALL_SEARCHES for the combined view. Concrete-lens writes still read it
@@ -1788,8 +1890,9 @@ def stats():
            FROM jobs {join}, json_each(jobs.labels) je
            GROUP BY je.value ORDER BY cnt DESC"""
     ).fetchall()
+    label_names = _label_names()
     by_label = [
-        {"label": r["lbl"], "display": LABEL_NAMES.get(r["lbl"], r["lbl"].upper()), "count": r["cnt"]}
+        {"label": r["lbl"], "display": label_names.get(r["lbl"], r["lbl"].upper()), "count": r["cnt"]}
         for r in label_rows
     ]
     viability_rows = db.execute(
@@ -1941,10 +2044,11 @@ def get_job(job_id: str):
     # Cross-lens info: the SAME posting's (viability, status) under every OTHER search it belongs
     # to, so the panel can surface "also appears in <search> — <viability>/<status>". Empty for a
     # single-search setup (there are no other lenses).
+    cfg = current_config()
     other_searches = [
         {"search_id":   r["search_id"],
-         "search_name": (APP_CONFIG.get_search(r["search_id"]).name
-                         if APP_CONFIG.get_search(r["search_id"]) else r["search_id"]),
+         "search_name": (cfg.get_search(r["search_id"]).name
+                         if cfg.get_search(r["search_id"]) else r["search_id"]),
          "viability":   r["viability"],
          "status":      r["status"]}
         for r in db.execute(
@@ -2543,7 +2647,8 @@ def add_manual_job():
     if sal_min is not None and sal_max is not None and sal_min > sal_max:
         return "Minimum salary exceeds maximum.", 400
     # Keep only configured labels; silently drop anything unrecognized.
-    labels = [lbl for lbl in f.getlist("labels") if lbl in LABEL_NAMES]
+    label_names = _label_names()
+    labels = [lbl for lbl in f.getlist("labels") if lbl in label_names]
 
     # Manual geographic-fit override ('acceptable' or None). A manual entry often exists only
     # because the candidate would work this location, so let them assert it at entry time; it

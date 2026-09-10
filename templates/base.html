@@ -110,6 +110,19 @@
     </div>
   </nav>
 
+  {# Stale-config banner: sticky (deliberately NOT dismissible) and app-wide. Shown when a
+     startup-pinned config field (db_path, uploads_dir) has been edited in config.toml since the
+     app started — those bind the running process (open DB connection, WAL files, writer lock,
+     the uploads dir) and can't hot-reload, so the edit needs a restart. Everything else reloads
+     live. Self-clears once the file matches the running value again (or on restart). #}
+  {% if config_drift %}
+  <div class="alert alert-warning rounded-0 border-0 border-bottom mb-0 px-4 py-2 small" role="alert">
+    ⚠️ <strong>config.toml changed {{ config_drift | join(", ") }}</strong> — restart the app to
+    apply. This setting binds the running process and can't reload live; all other config changes
+    take effect immediately.
+  </div>
+  {% endif %}
+
   {# Stats modal: populated on demand by showStats() (GET /stats + /stats/history);
      the footer holds the 7-day ingest-activity Chart.js canvas. #}
   <div class="modal fade" id="statsModal" tabindex="-1" aria-labelledby="statsModalLabel" aria-hidden="true">
