@@ -11,7 +11,7 @@ A personal tool for ingesting job search results from multiple sources (via Apif
 1. You configure one or more Apify Actor tasks using either:
    - **[fantastic-jobs/advanced-linkedin-job-search-api](https://apify.com/fantastic-jobs/advanced-linkedin-job-search-api)** — LinkedIn job postings (default)
    - **[fantastic-jobs/career-site-job-listing-api](https://apify.com/fantastic-jobs/career-site-job-listing-api)** — career-site postings from 54+ ATS platforms (Greenhouse, Lever, Workday, Ashby, etc.)
-2. A cron job runs `ingest.sh` on a schedule, fetching the latest results and inserting new jobs into a local SQLite database.
+2. A cron job runs `ingest.sh` on a schedule, fetching the latest results and inserting new jobs into a local SQLite database. If AI viability scoring is enabled, the same cron line also runs `rescore_viability.sh` so freshly ingested jobs get scored.
 3. You run the Flask app locally to browse, filter, sort, and track your application status for each job.
 
 ---
@@ -124,6 +124,8 @@ AirPlay Receiver occupies 5000. Override with `./run_app.sh --port N`.)
 ```
 
 Use the absolute path to `ingest.sh`. The script changes into its own directory, so relative paths in `config.toml` work correctly.
+
+The `&& …/rescore_viability.sh` chained onto the end is what AI-scores newly ingested jobs for viability. Keep it if you've enabled AI scoring (most setups have) — without it, new jobs land in the database unscored and stay that way until you run a scoring pass by hand. `rescore_viability.sh` only runs when `ingest.sh` succeeds, and it scores every configured search. If you're not using AI scoring, drop that half and cron just `ingest.sh`.
 
 ---
 
