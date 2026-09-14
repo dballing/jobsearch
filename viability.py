@@ -35,6 +35,62 @@ FACTOR_DIMENSIONS = (
     "company_fit", "compensation", "location",
 )
 
+# The mandatory employer's-eye-view factor the scorer must self-report whenever a resume is
+# configured (see compose_candidate_prompt / _RESUME_INSTRUCTION). Named as a constant so the
+# prompt text and the tests agree on the exact key; it's an *extra* axis (not in
+# FACTOR_DIMENSIONS), so the UI renders it after the six fixed dimensions, humanized to
+# "Application Competitiveness".
+RESUME_COMPETITIVENESS_DIMENSION = "application_competitiveness"
+
+# Header + instruction that wraps the candidate's resume when one is configured. Folded into the
+# candidate PROMPT (see compose_candidate_prompt) — deliberately NOT into _SYSTEM_BOILERPLATE — so
+# a search WITHOUT a resume sends exactly the pre-feature prompt (its scores stay current; nothing
+# re-scores), while a search WITH one re-scores automatically because the prompt, and therefore
+# prompt_hash, changed. This is the same "opt-in, no global version bump" property the
+# description_actual override relies on. The instruction does two things: (1) make the resume
+# authoritative ground truth for role_requirements_fit, and (2) REQUIRE an
+# application_competitiveness factor — the employer's-eye view of how likely a callback is — so the
+# breakdown always quantifies how much the "would they even respond?" judgment moved the rating.
+_RESUME_INSTRUCTION = (
+    "\n\n"
+    "----------------------------------------------------------------------\n"
+    "CANDIDATE RESUME (verbatim)\n\n"
+    "The text below is the candidate's ACTUAL resume. Treat it as authoritative, ground-truth "
+    "evidence of their real experience and qualifications — where it and the self-description "
+    "above disagree, the resume wins. Use it for two judgments:\n"
+    "1. role_requirements_fit — judge whether the candidate genuinely meets the posting's stated "
+    "requirements against this concrete evidence, not the self-description alone.\n"
+    f"2. {RESUME_COMPETITIVENESS_DIMENSION} — take the EMPLOYER'S point of view: given THIS resume "
+    "versus what the posting asks for, how likely is the candidate to get a positive response (a "
+    "recruiter screen / callback) rather than be filtered out of the applicant pool? Clearly above "
+    "the bar is positive; under-qualified, missing hard requirements, or an obvious stretch is "
+    "negative. This is a distinct question from whether the role is a good fit FOR the candidate — "
+    "it is whether the candidate is competitive FOR the role.\n"
+    f'You MUST ALWAYS include an "{RESUME_COMPETITIVENESS_DIMENSION}" entry in the factors array '
+    "(signed -2..+2, same convention as the other dimensions) — it is REQUIRED here, never "
+    "optional — so the breakdown makes explicit how much the employer's-eye view of the "
+    'candidate\'s competitiveness moved this rating. Its note should be a terse phrase (e.g. '
+    '"strong match, likely screen" or "missing required clearance").\n\n'
+    "Resume:\n"
+)
+
+
+def compose_candidate_prompt(prompt: str, resume_text: "str | None") -> str:
+    """Fold a candidate resume into the candidate-profile prompt, or return the prompt unchanged.
+
+    When ``resume_text`` is empty/None the prompt is returned verbatim — so a search without a
+    resume produces byte-identical scoring input (and prompt_hash) to before this feature existed,
+    and ONLY searches that configure a resume re-score. When present, the resume is appended under
+    a delimited header (_RESUME_INSTRUCTION) that marks it authoritative for role_requirements_fit
+    and mandates the application_competitiveness factor. It stays in the candidate-prompt slot
+    (not _SYSTEM_BOILERPLATE) precisely so that opt-in property holds; it's still inside the
+    ephemeral-cached system block, so the resume text is cached across a scoring run. Pure, so it's
+    unit-testable without an API call."""
+    resume = (resume_text or "").strip()
+    if not resume:
+        return prompt
+    return prompt + _RESUME_INSTRUCTION + resume
+
 # Boilerplate prepended to every system prompt before the candidate description.
 # The single-line-JSON instruction keeps the reply tiny and trivially parseable; the
 # one-plain-sentence rule keeps the `reason` a legible verdict rather than a leaked scratchpad

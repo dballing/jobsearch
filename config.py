@@ -34,6 +34,9 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from resume import ResumeError, extract_resume_text
+from viability import compose_candidate_prompt
+
 # Search id used for (a) the implicit single search in Path A and (b) the backfill of
 # pre-multi-search DB rows. A named search can later adopt those rows via adopts_legacy.
 DEFAULT_SEARCH_ID = "__default__"
@@ -172,6 +175,43 @@ def _build_label_names(searches: list[Search]) -> dict[str, str]:
     return names
 
 
+def _apply_resume(config: dict, base_dir: Path) -> "Path | None":
+    """If ``config``'s ``[viability]`` names a ``resume_file``, extract its text and fold it into
+    the viability prompt (see :func:`viability.compose_candidate_prompt`), returning the resolved
+    resume path so the caller can register it for mtime-based reload. Returns ``None`` when no
+    resume is configured.
+
+    The path is resolved relative to ``base_dir`` — the directory of the file that declared
+    ``[viability]`` (the canonical config in Path A, the per-search file in Path B) — so a resume
+    lives naturally alongside the search it belongs to; an absolute path is used as-is. A
+    configured-but-unreadable resume raises :class:`ConfigError` (loud, not fail-soft: pointing at
+    a resume means you intend to use it — see resume.py). Mutates ``config`` in place, rebinding
+    only ``config['viability']`` to a fresh dict so no shared/source dict is altered underneath a
+    caller."""
+    vcfg = config.get("viability")
+    if not isinstance(vcfg, dict):
+        return None
+    rel = vcfg.get("resume_file")
+    if not rel:
+        return None
+    resume_path = Path(rel)
+    if not resume_path.is_absolute():
+        resume_path = base_dir / resume_path
+    try:
+        text = extract_resume_text(resume_path)
+    except ResumeError as exc:
+        raise ConfigError(str(exc)) from exc
+    # Copy the sub-dict before mutating so we never alter a caller's `shared`/`sdict` in place
+    # (in Path A `config` IS `shared`; in Path B `config['viability']` is aliased from `sdict`).
+    new_vcfg = dict(vcfg)
+    new_vcfg["prompt"] = compose_candidate_prompt(vcfg.get("prompt", ""), text)
+    # Kept for transparency/debugging and tests; not itself hashed (scoring_hash_for_config reads
+    # only `prompt`, into which the resume is already folded), so this extra key is inert.
+    new_vcfg["resume_text"] = text
+    config["viability"] = new_vcfg
+    return resume_path
+
+
 def load_config(path) -> AppConfig:
     """Load the canonical config at ``path`` into an :class:`AppConfig`.
 
@@ -190,7 +230,11 @@ def load_config(path) -> AppConfig:
     source_files = [path]
 
     if not manifest:
-        # Path A: the whole config is one implicit search.
+        # Path A: the whole config is one implicit search. A resume_file (relative to the
+        # canonical config) is folded into its viability prompt and watched for reload.
+        resume_path = _apply_resume(shared, path.parent)
+        if resume_path is not None:
+            source_files.append(resume_path)
         searches = [Search(id=DEFAULT_SEARCH_ID, name=DEFAULT_SEARCH_NAME,
                            config=shared, tasks=list(shared.get("tasks", []) or []))]
     else:
@@ -229,6 +273,10 @@ def load_config(path) -> AppConfig:
                     f"{sfile}: search {sid!r} redeclares global stanza(s) {sorted(clash)} — "
                     f"those belong only in {path.name}.")
             effective = {**shared, **sdict}
+            # A resume_file in this search's [viability] is resolved relative to the search
+            # file's own directory and folded into its viability prompt (per-search: each lens
+            # can point at a resume tailored to that kind of role).
+            resume_path = _apply_resume(effective, sfile.parent)
             adopts = bool(entry.get("adopts_legacy", False))
             if adopts:
                 adopters.append(sid)
@@ -236,6 +284,8 @@ def load_config(path) -> AppConfig:
                                    tasks=list(effective.get("tasks", []) or []),
                                    adopts_legacy=adopts))
             source_files.append(sfile)
+            if resume_path is not None:
+                source_files.append(resume_path)
         if len(adopters) > 1:
             raise ConfigError(
                 f"{path}: at most one search may set adopts_legacy=true (got {adopters}).")

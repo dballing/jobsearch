@@ -4,5 +4,10 @@ anthropic>=0.25
 markdown>=3.5
 bleach>=6.0
 
+# Resume extraction for [viability].resume_file — only needed if you point it at a PDF/DOCX
+# (a .md/.txt resume needs neither). Imported lazily; absence is a clear error, not a crash.
+pypdf>=4.0
+python-docx>=1.0
+
 # Testing (dev-only)
 pytest>=8

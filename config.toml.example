@@ -56,6 +56,23 @@ uploads_dir = "uploads"
 # shops, no more than 10% travel."
 # """
 #
+# Optional: a resume file. When set, its text is folded into the candidate profile above as
+# authoritative, ground-truth evidence of your ACTUAL experience — so the scorer judges
+# `role_requirements_fit` against your real background (not just the self-description), and adds
+# a REQUIRED `application_competitiveness` factor: the employer's-eye view of how likely you are
+# to get a positive response (a screen/callback) rather than be filtered out. That's a distinct
+# question from whether the role fits YOU, and its signed −2..+2 contribution shows how much it
+# moved the rating. Path is resolved relative to THIS file (so in a multi-search setup it lives
+# beside the per-search config); an absolute path works too. Formats: .md/.txt (read directly),
+# .pdf (needs `pypdf`), .docx (needs `python-docx`) — the last two are only required if you use
+# them. The resume's TEXT is part of the staleness hash, so editing it re-scores; a missing or
+# unreadable file is a loud config error (not silently ignored). Per-search: each lens can point
+# at a resume tailored to that kind of role. Common "letter-spaced" PDF headers (e.g. a title
+# stored as "P R O F E S S I O N A L  S U M M A R Y") are auto-repaired; other garble (multi-column
+# layouts, tables) may survive — run `./preview_resume.sh <file>` to see the exact text the scorer
+# will use.
+# resume_file = "resume.md"
+#
 # Optional: geographic preferences. When set, each job's location(s) are matched
 # against this by a focused, single-purpose AI call, and only the resulting verdict
 # ("Geographic fit: PREFERRED/GOOD/ACCEPTABLE/POOR", best→worst) is fed to the main
