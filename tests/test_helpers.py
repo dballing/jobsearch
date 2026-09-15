@@ -221,3 +221,57 @@ def test_content_preserved_rejects_dropped_content():
     orig = "Sentence one is here. " * 20
     dropped = "Sentence one is here. " * 10  # half the content gone
     assert reformat.content_preserved(orig, dropped) is False
+
+
+# ── app._viability_factors (deterministic render order) ───────────────────────
+# The scorer emits factors in whatever order it likes and may append extra axes beyond the six
+# fixed FACTOR_DIMENSIONS; the preview panel must render them in a stable order so "the bottom
+# line is always the bottom line" regardless of the model's whim.
+def _dims(raw):
+    """Just the dimension names, in render order, from a factors JSON string."""
+    return [f["dimension"] for f in app._viability_factors(raw)]
+
+
+def test_viability_factors_orders_fixed_dims_canonically_regardless_of_input():
+    import json
+    from viability import FACTOR_DIMENSIONS
+    # Feed the six fixed dims reversed; they must come back in canonical order.
+    shuffled = list(reversed(FACTOR_DIMENSIONS))
+    raw = json.dumps([{"dimension": d, "score": 0} for d in shuffled])
+    assert _dims(raw) == list(FACTOR_DIMENSIONS)
+
+
+def test_viability_factors_pins_application_competitiveness_last():
+    import json
+    from viability import FACTOR_DIMENSIONS, RESUME_COMPETITIVENESS_DIMENSION
+    # Model emits the bottom-line axis FIRST; it must be pushed to the very bottom.
+    raw = json.dumps(
+        [{"dimension": RESUME_COMPETITIVENESS_DIMENSION, "score": 1}]
+        + [{"dimension": d, "score": 0} for d in FACTOR_DIMENSIONS]
+    )
+    assert _dims(raw) == list(FACTOR_DIMENSIONS) + [RESUME_COMPETITIVENESS_DIMENSION]
+
+
+def test_viability_factors_sorts_unknown_extras_alphabetically_between():
+    import json
+    from viability import FACTOR_DIMENSIONS, RESUME_COMPETITIVENESS_DIMENSION
+    # Two unknown model-chosen axes emitted out of alphabetical order, plus the pinned bottom line.
+    raw = json.dumps([
+        {"dimension": "work_life_balance", "score": 1},
+        {"dimension": RESUME_COMPETITIVENESS_DIMENSION, "score": 2},
+        {"dimension": "role_interest_fit", "score": 1},
+        {"dimension": "growth_opportunity", "score": 0},
+    ])
+    # Fixed dims first (only role_interest_fit present), then unknowns alphabetically, then the
+    # bottom-line axis last — fully deterministic no matter the emitted order.
+    assert _dims(raw) == [
+        "role_interest_fit", "growth_opportunity", "work_life_balance",
+        RESUME_COMPETITIVENESS_DIMENSION,
+    ]
+
+
+def test_viability_factors_returns_none_for_empty_or_malformed():
+    assert app._viability_factors(None) is None
+    assert app._viability_factors("") is None
+    assert app._viability_factors("not json") is None
+    assert app._viability_factors("[]") is None

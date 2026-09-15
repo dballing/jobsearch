@@ -32,7 +32,8 @@ from viability import (
     _work_arrangement, FACTOR_DIMENSIONS, GEO_UNSUPPORTED_ARRANGEMENT, MANUAL_GEO_FIT_CHOICES,
     assess_location_fit, clamp_viability_for_geo, CURRENCY_SYMBOLS, currency_symbol,
     description_is_truncated, effective_description, geo_note, has_description_override,
-    manual_geo_verdict, parse_factors, score_job, scoring_hash_for_config,
+    manual_geo_verdict, parse_factors, RESUME_COMPETITIVENESS_DIMENSION, score_job,
+    scoring_hash_for_config,
 )
 
 # Currency codes offerable as a manual salary-currency override (drives the editor dropdown and
@@ -935,9 +936,12 @@ def get_hotlist(db: sqlite3.Connection) -> set[str]:
 def _viability_factors(raw: object) -> "list[dict] | None":
     """Parse a stored ``viability_factors`` JSON string into an ordered list for the preview panel.
 
-    Reuses viability.parse_factors for defensive normalization, then orders the four fixed
-    FACTOR_DIMENSIONS first (in their canonical order) followed by any extra model-surfaced axes in
-    the order the model reported them — so the panel always shows the comparable dimensions first.
+    Reuses viability.parse_factors for defensive normalization, then imposes a fully deterministic
+    render order so the panel reads the same for every job regardless of the order the model happened
+    to emit the factors in ("the bottom line is always the bottom line"): the six fixed
+    FACTOR_DIMENSIONS first in their canonical order, then any other model-chosen extras
+    alphabetically (a stable home rather than the model's whim), and finally the mandatory
+    employer's-eye application_competitiveness axis pinned last as the bottom-line summary.
     Returns None when there's nothing to show (unscored, reject-listed, an older score, or malformed
     JSON) so the panel simply omits the breakdown section."""
     if not raw:
@@ -949,10 +953,19 @@ def _viability_factors(raw: object) -> "list[dict] | None":
     factors = parse_factors(data)
     if not factors:
         return None
-    order = {dim: i for i, dim in enumerate(FACTOR_DIMENSIONS)}
-    # sorted() is stable: fixed dims sort into canonical order by their index; every extra maps to
-    # the same trailing key, so extras keep the model's reported order, placed after the fixed set.
-    return sorted(factors, key=lambda f: order.get(f["dimension"], len(order)))
+    fixed = {dim: i for i, dim in enumerate(FACTOR_DIMENSIONS)}
+
+    def order_key(f: dict) -> tuple:
+        """Three ranked buckets, each fully deterministic: (0) fixed dims by canonical index;
+        (1) unknown model-chosen extras alphabetically; (2) application_competitiveness last."""
+        dim = f["dimension"]
+        if dim in fixed:
+            return (0, fixed[dim], "")
+        if dim == RESUME_COMPETITIVENESS_DIMENSION:
+            return (2, 0, "")
+        return (1, 0, dim)
+
+    return sorted(factors, key=order_key)
 
 
 def process_job_row(row: sqlite3.Row | dict, hotlist: "set[str] | frozenset" = frozenset(),
