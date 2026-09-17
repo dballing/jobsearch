@@ -397,9 +397,31 @@ def test_score_job_survives_a_malformed_factors_block():
 
 
 def test_score_job_failure_is_a_four_tuple():
-    # An unparseable reply returns the 4-tuple of Nones the callers unpack.
+    # An unparseable reply returns the 4-tuple callers unpack — no rating, but the usage is kept
+    # because the call was billed (the ai_usage ledger must count failed-but-answered calls).
     client = _FakeClient("I cannot produce JSON.")
-    assert viability.score_job(client, "p", {"title": "T", "company": "C"},
+    rating, reason, factors, usage = viability.score_job(
+        client, "p", {"title": "T", "company": "C"}, model="claude-haiku-4-5")
+    assert (rating, reason, factors) == (None, None, None)
+    assert usage is not None
+
+
+def test_score_job_invalid_rating_still_returns_usage():
+    client = _FakeClient('{"rating": "stellar", "reason": "x"}')
+    rating, _, _, usage = viability.score_job(
+        client, "p", {"title": "T", "company": "C"}, model="claude-haiku-4-5")
+    assert rating is None and usage is not None
+
+
+def test_score_job_api_error_returns_no_usage():
+    # No response at all (request raised) → nothing was billed, so usage is None.
+    class _Boom:
+        messages = None
+        def __init__(self):
+            self.messages = self
+        def create(self, **kwargs):
+            raise RuntimeError("network down")
+    assert viability.score_job(_Boom(), "p", {"title": "T", "company": "C"},
                                model="claude-haiku-4-5") == (None, None, None, None)
 
 
@@ -643,13 +665,16 @@ def test_assess_location_fit_omits_description_when_disabled():
 
 
 def test_assess_location_fit_rejects_invalid_fit():
+    # No verdict, but the answered call was billed → its usage is still returned for the ledger.
     client = _FakeClient('{"fit": "maybe", "match": "somewhere"}')
-    assert viability.assess_location_fit(client, "prefs", {"location": "Cary, NC"}) == (None, None, None)
+    fit, match, usage = viability.assess_location_fit(client, "prefs", {"location": "Cary, NC"})
+    assert (fit, match) == (None, None) and usage is not None
 
 
 def test_assess_location_fit_unparseable_reply():
     client = _FakeClient("I could not determine the fit.")
-    assert viability.assess_location_fit(client, "prefs", {"location": "Cary, NC"}) == (None, None, None)
+    fit, match, usage = viability.assess_location_fit(client, "prefs", {"location": "Cary, NC"})
+    assert (fit, match) == (None, None) and usage is not None
 
 
 def test_assess_location_fit_skips_when_nothing_to_judge():

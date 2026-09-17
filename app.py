@@ -24,6 +24,7 @@ from pathlib import Path
 from flask import (Flask, abort, g, has_request_context, make_response, render_template,
                    request, send_file, url_for)
 from werkzeug.utils import secure_filename
+import ai_usage
 import fx_rates
 from config import AppConfig, ConfigError, DEFAULT_SEARCH_ID, load_config
 from ingest import (adopt_legacy, append_history, backfill_description_truncated,
@@ -664,6 +665,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # Per-lens state table (create + one-time backfill of the dormant per-lens jobs columns
     # into __default__ rows). Shared helper so app/ingest/rescore migrate it identically.
     ensure_job_search_state(conn)
+    # Per-call AI cost ledger (shared DDL in ai_usage.py; app writes to it from the manual-add
+    # scorer and reads it for the stats modal's AI cost section).
+    ai_usage.ensure_ai_usage_table(conn)
     # One-time single→multi adoption (Path B only; no-op/warn-free for the single __default__
     # search). Writes at startup like the other migrations here — gated + idempotent.
     # A one-time, structural migration — reads the startup config (current_config() equals it at
@@ -1886,7 +1890,8 @@ def stats():
     counts by label and by viability, and a stale-score count (active jobs only)."""
     db = get_db()
     # Stats are per-lens: every count scopes to the current search's members via the join.
-    join = _jss_join(_current_search_id())
+    sid = _current_search_id()
+    join = _jss_join(sid)
     total = db.execute(f"SELECT COUNT(*) FROM jobs {join}").fetchone()[0]
     by_status = {
         r["status"]: r["cnt"]
@@ -1942,7 +1947,13 @@ def stats():
         "ghosted":    ghosted_n,
         "polite_pct": round(rejected_n / negatives * 100, 1) if negatives else None,
     }
+    search = current_config().get_search(sid)
     return {
+        # Which lens these numbers describe — the modal's "this lens" tab is labelled with it.
+        # _current_search_id never returns the combined ALL_SEARCHES view (it falls back to the
+        # default lens), so naming it keeps that fallback visible rather than silently implied.
+        "search_id": sid,
+        "search_name": search.name if search else sid,
         "total": total,
         "by_status": by_status,
         "new_last_7_days": new_7d,
@@ -2030,6 +2041,36 @@ def stats_viability_by_day():
         params,
     ).fetchall()
     return viability_day_series([(r["day"], r["viability"], r["cnt"]) for r in rows])
+
+
+# Trailing windows offered by the stats modal's AI-cost toggle (None = all time). All are computed
+# in one response so switching windows is instant client-side.
+_COST_WINDOWS = {"all": None, "90": 90, "30": 30}
+
+
+@app.route("/stats/cost")
+def stats_cost():
+    """JSON for the stats modal's "AI cost" section, from the ai_usage ledger.
+
+    Unlike the other stats routes this is deliberately NOT scoped to the current lens: comparing
+    lenses side by side is the point (and so it reads the same under the "All searches" view).
+    `current` is returned only so the UI can highlight the lens you're viewing. See ai_usage for
+    the accounting definitions (additive spend, tracked-job denominators, trailing windows)."""
+    db = get_db()
+    cfg = current_config()
+    return {
+        "daily":   ai_usage.daily_spend_by_lens(db, days=30),
+        "lenses":  {key: ai_usage.lens_cost_summary(db, applied_statuses=_APPLIED_FAMILY,
+                                                    window_days=days)
+                    for key, days in _COST_WINDOWS.items()},
+        "trend":   ai_usage.trailing_cost_per_applied_series(db, applied_statuses=_APPLIED_FAMILY,
+                                                             window_days=30, span_days=90),
+        # Display names/colors for every configured lens; a ledger lens since removed from config
+        # falls back to its raw id client-side.
+        "names":   {s.id: s.name for s in cfg.searches},
+        "colors":  _lens_colors(),
+        "current": _current_view_id(),
+    }
 
 
 @app.route("/job/<job_id>")
@@ -2605,12 +2646,19 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
         # neither applies, which is the signal to run the AI location call. See the helper.
         fit, gnote, manual_geo_poor = manual_geo_verdict(dict(row))
         if fit is None and location_prompt:
-            fit, match, _gu = assess_location_fit(
+            fit, match, gusage = assess_location_fit(
                 client, location_prompt, dict(row), model=geo_model,
                 include_description=geo_uses_description, effort=geo_effort)
             gnote = geo_note(fit, match)
-        rating, reason, factors, _usage = score_job(client, prompt, dict(row), model=model,
-                                                     geo_note=gnote, effort=effort)
+            ai_usage.record_usage(db, feature="location", model=geo_model, usage=gusage,
+                                  search_id=sid, job_id=job_id)
+        rating, reason, factors, usage = score_job(client, prompt, dict(row), model=model,
+                                                   geo_note=gnote, effort=effort)
+        ai_usage.record_usage(db, feature="viability", model=model, usage=usage,
+                              search_id=sid, job_id=job_id)
+        # Commit the ledger rows now: the failure return below skips the success-path commit,
+        # and a billed-but-unusable reply must still be counted.
+        db.commit()
         # A POOR geographic fit is disqualifying — clamp to low (the main scorer discounts it).
         # The clamp rewrites only rating/reason; factors stay as the model reported them.
         rating, reason = clamp_viability_for_geo(fit, rating, reason, manual=manual_geo_poor)

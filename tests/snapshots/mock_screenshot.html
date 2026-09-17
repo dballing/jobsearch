@@ -97,10 +97,24 @@
   <div class="modal fade" id="statsModal" tabindex="-1" aria-labelledby="statsModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered modal-lg">
       <div class="modal-content">
-        <div class="modal-header">
+        <div class="modal-header border-bottom-0 pb-0">
           <h6 class="modal-title fw-semibold" id="statsModalLabel">Database Stats</h6>
           <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
         </div>
+        <ul class="nav nav-tabs px-3 mt-2" role="tablist">
+          <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="statsTabLens" data-bs-toggle="tab" data-bs-target="#statsPaneLens"
+                    type="button" role="tab" aria-controls="statsPaneLens" aria-selected="true">This lens</button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" id="statsTabGlobal" data-bs-toggle="tab" data-bs-target="#statsPaneGlobal"
+                    type="button" role="tab" aria-controls="statsPaneGlobal" aria-selected="false">All lenses</button>
+          </li>
+        </ul>
+        <div class="tab-content">
+        <div class="tab-pane fade show active" id="statsPaneLens" role="tabpanel" aria-labelledby="statsTabLens">
+        
+        <div id="statsLensFallbackNote" class="alert alert-secondary py-2 small mx-3 mt-3 mb-0" style="display:none"></div>
         <div class="modal-body" id="statsModalBody">
           <div class="text-center py-4"><div class="spinner-border text-secondary" role="status"></div></div>
         </div>
@@ -126,6 +140,35 @@
             ⚠️ Fewer than 7 days of ingestion history available — chart may not be representative yet.
           </div>
           <canvas id="statsChart" height="120"></canvas>
+        </div>
+        </div>
+        <div class="tab-pane fade" id="statsPaneGlobal" role="tabpanel" aria-labelledby="statsTabGlobal">
+        
+        <div class="modal-body" id="statsGlobalBody">
+          <div class="text-center py-4"><div class="spinner-border text-secondary" role="status"></div></div>
+        </div>
+        
+        <div class="modal-footer flex-column align-items-stretch pt-3" id="statsCostSection" style="display:none!important">
+          <div class="d-flex align-items-center justify-content-between mb-2 flex-wrap gap-2">
+            <span class="small fw-semibold text-muted">AI cost <span class="fw-normal" id="costSince"></span></span>
+            <div class="btn-group btn-group-sm" role="group" id="costWindowToggle" aria-label="Cost window">
+              <input type="radio" class="btn-check" name="costWindow" id="costWindowAll" value="all" checked>
+              <label class="btn btn-outline-secondary" for="costWindowAll" title="Everything since tracking began">All time</label>
+              <input type="radio" class="btn-check" name="costWindow" id="costWindow90" value="90">
+              <label class="btn btn-outline-secondary" for="costWindow90" title="Trailing 90 days">90d</label>
+              <input type="radio" class="btn-check" name="costWindow" id="costWindow30" value="30">
+              <label class="btn btn-outline-secondary" for="costWindow30" title="Trailing 30 days">30d</label>
+            </div>
+          </div>
+          <div id="costTable" class="table-responsive"></div>
+          <div id="costUnpricedNote" class="text-muted small" style="display:none"></div>
+          <div class="small fw-semibold text-muted mt-3 mb-1">Daily AI spend by lens <span class="fw-normal">(last 30d)</span></div>
+          <div style="height:200px"><canvas id="statsCostDailyChart"></canvas></div>
+          <div class="small fw-semibold text-muted mt-3 mb-1">Trailing 30-day cost per application <span class="fw-normal">(last 90d)</span></div>
+          <div style="height:200px" id="costTrendWrap"><canvas id="statsCostTrendChart"></canvas></div>
+          <div id="costTrendNote" class="text-muted small text-center py-3" style="display:none">Trend appears after 30 days of tracking (and at least one application).</div>
+        </div>
+        </div>
         </div>
       </div>
     </div>
@@ -2989,19 +3032,178 @@ Solid fit; re-score pending.">medium</span>
   document.querySelectorAll('#viabModeToggle input[name="viabMode"]').forEach(r =>
     r.addEventListener('change', e => renderViabChart(e.target.value)));
 
-  // Open the stats modal: fetch /stats (totals + breakdowns) and /stats/history (7-day
-  // activity), render the summary, and draw the activity chart.
+  // ── AI cost section ─────────────────────────────────────────────────────────────────────
+  let _statsCostData       = null;  // the whole /stats/cost payload (all windows preloaded)
+  let _statsCostDailyChart = null;
+  let _statsCostTrendChart = null;
+
+  // Dollar formatting: sub-dollar figures need more precision to be meaningful (a single score is
+  // fractions of a cent), so show 4 decimals below $1 and cents above. null → em dash; an exact
+  // zero is a plain muted "$0" so empty buckets don't read as a wall of $0.0000.
+  const fmtUsd = x => x == null ? '<span class="text-muted">—</span>'
+    : x === 0 ? '<span class="text-muted">$0</span>'
+    : '$' + (Math.abs(x) < 1 ? x.toFixed(4) : x.toFixed(2));
+  const lensName  = sid => (_statsCostData.names || {})[sid] || sid;
+  const lensColor = (sid, i) => (_statsCostData.colors || {})[sid]
+    || ['#34568b', '#6b4c9a', '#94571a', '#146b5e', '#9c3559', '#445a94'][i % 6];
+
+  // Render the per-lens cost table for one window key ('all' | '90' | '30'). Combined totals are
+  // the primary figures; the initial/tuning split sits under Total as muted secondary text so a
+  // high number can be explained at a glance without cluttering the default view.
+  function renderCostTable(win) {
+    const lenses = (_statsCostData.lenses || {})[win] || {};
+    const sids = Object.keys(lenses).sort((a, b) => lensName(a).localeCompare(lensName(b)));
+    const rows = sids.map(sid => {
+      const e = lenses[sid];
+      const cur = sid === _statsCostData.current ? ' class="table-active"' : '';
+      const bv = e.by_viability || {};
+      const split = (e.initial_usd || e.rescore_usd)
+        ? `<div class="text-muted small text-nowrap">${fmtUsd(e.initial_usd)} initial · ${fmtUsd(e.rescore_usd)} tuning</div>` : '';
+      return `<tr${cur}>
+        <td>${escHtml(lensName(sid))}</td>
+        <td class="text-end">${fmtUsd(e.total_usd)}${split}</td>
+        <td class="text-end">${fmtUsd(e.cost_per_applied)} <span class="text-muted small">(n=${e.applied_jobs})</span></td>
+        <td class="text-end">${fmtUsd(e.cost_per_high)} <span class="text-muted small">(n=${e.high_jobs})</span></td>
+        <td class="text-end">${fmtUsd(bv.high)}</td>
+        <td class="text-end">${fmtUsd(bv.medium)}</td>
+        <td class="text-end">${fmtUsd(bv.low)}</td>
+        <td class="text-end">${fmtUsd(bv.other)}</td>
+      </tr>`;
+    }).join('');
+    document.getElementById('costTable').innerHTML = `
+      <table class="table table-sm table-borderless mb-0 small">
+        <thead><tr class="text-muted">
+          <th>Lens</th><th class="text-end">Total</th>
+          <th class="text-end" title="Spend ÷ tracked jobs you applied to">Per applied</th>
+          <th class="text-end" title="Spend ÷ tracked jobs rated High">Per High</th>
+          <th class="text-end" title="Spend on jobs currently rated High">High</th>
+          <th class="text-end">Medium</th><th class="text-end">Low</th>
+          <th class="text-end" title="Unscored / failed">Other</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    const unpriced = sids.reduce((n, sid) => n + (lenses[sid].unpriced_calls || 0), 0);
+    const note = document.getElementById('costUnpricedNote');
+    note.style.display = unpriced ? '' : 'none';
+    note.textContent = unpriced
+      ? `⚠️ ${unpriced} call${unpriced === 1 ? '' : 's'} used a model with no pricing data — totals are understated.` : '';
+  }
+  document.querySelectorAll('#costWindowToggle input[name="costWindow"]').forEach(r =>
+    r.addEventListener('change', e => renderCostTable(e.target.value)));
+
+  // Show/populate the whole cost section from a /stats/cost payload; hidden when nothing is tracked.
+  function renderCostSection(c) {
+    const section = document.getElementById('statsCostSection');
+    _statsCostData = c;
+    const all = (c.lenses || {}).all || {};
+    const sids = Object.keys(all);
+    if (!sids.length) { section.style.setProperty('display', 'none', 'important'); return; }
+    section.style.removeProperty('display');
+    const since = sids.map(s => all[s].first_ts).filter(Boolean).sort()[0];
+    document.getElementById('costSince').textContent = since ? `(tracking since ${since.slice(0, 10)})` : '';
+    renderCostTable(document.querySelector('#costWindowToggle input:checked')?.value || 'all');
+
+    // Daily spend, stacked by lens.
+    if (_statsCostDailyChart) _statsCostDailyChart.destroy();
+    _statsCostDailyChart = new Chart(document.getElementById('statsCostDailyChart'), {
+      type: 'bar',
+      data: { labels: c.daily.days, datasets: Object.keys(c.daily.series).map((sid, i) => ({
+        label: lensName(sid), data: c.daily.series[sid], backgroundColor: lensColor(sid, i) })) },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { position: 'bottom' },
+                   // index mode lists every lens for the hovered day; the footer sums them so the
+                   // day's total is read directly instead of added up by hand.
+                   tooltip: { callbacks: {
+                     label:  t => `${t.dataset.label}: $${t.parsed.y.toFixed(4)}`,
+                     footer: items => `Total: $${items.reduce((n, t) => n + t.parsed.y, 0).toFixed(4)}`,
+                   } } },
+        scales: { x: { stacked: true },
+                  y: { stacked: true, beginAtZero: true, ticks: { callback: v => '$' + v } } },
+      },
+    });
+
+    // Trailing cost-per-application trend. spanGaps:false so undefined windows (no applications,
+    // or not yet a full window of tracking) show as gaps rather than a misleading zero.
+    if (_statsCostTrendChart) { _statsCostTrendChart.destroy(); _statsCostTrendChart = null; }
+    const trendSids = Object.keys(c.trend.series || {});
+    document.getElementById('costTrendWrap').style.display = trendSids.length ? '' : 'none';
+    document.getElementById('costTrendNote').style.display = trendSids.length ? 'none' : '';
+    if (trendSids.length) {
+      _statsCostTrendChart = new Chart(document.getElementById('statsCostTrendChart'), {
+        type: 'line',
+        data: { labels: c.trend.days, datasets: trendSids.map((sid, i) => ({
+          label: lensName(sid), data: c.trend.series[sid], spanGaps: false, pointRadius: 0,
+          borderColor: lensColor(sid, i), backgroundColor: lensColor(sid, i) })) },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: { legend: { position: 'bottom' },
+                     tooltip: { callbacks: { label: t => `${t.dataset.label}: $${t.parsed.y.toFixed(2)}` } } },
+          scales: { y: { beginAtZero: true, ticks: { callback: v => '$' + v } } },
+        },
+      });
+    }
+  }
+
+  // Whether the page is the combined "All searches" view. That view has no per-lens stats of its
+  // own (the lens tab falls back to the default lens), so the modal opens on the All-lenses tab.
+  const _statsViewIsAll = false;
+  // Which tabs have been fetched during the current open — reset by showStats so every open
+  // reflects fresh data, but switching back and forth within one open doesn't refetch.
+  let _statsLoaded = {};
+
+  // Fetch + render one tab's data the first time it's shown in this open.
+  function loadStatsTab(tab) {
+    if (_statsLoaded[tab]) return;
+    _statsLoaded[tab] = true;
+    if (tab === 'lens') loadLensStats(); else loadGlobalStats();
+  }
+  // Load lazily on tab switch. 'shown' (not 'show') so the pane is visible before Chart.js sizes
+  // its canvases. Bound once at page load; the tab buttons are static.
+  document.getElementById('statsTabLens').addEventListener('shown.bs.tab', () => loadStatsTab('lens'));
+  document.getElementById('statsTabGlobal').addEventListener('shown.bs.tab', () => loadStatsTab('global'));
+
+  // Open the stats modal on the tab matching the current view (All lenses from the combined view,
+  // else This lens) and load that tab. Spinners are reset so a reopen never flashes stale numbers.
   function showStats() {
+    const spinner = '<div class="text-center py-4"><div class="spinner-border text-secondary" role="status"></div></div>';
+    document.getElementById('statsModalBody').innerHTML = spinner;
+    document.getElementById('statsGlobalBody').innerHTML = spinner;
+    document.getElementById('statsGlobalBody').style.display = '';
+    ['statsChartSection', 'statsViabilityChartSection', 'statsCostSection'].forEach(id =>
+      document.getElementById(id).style.setProperty('display', 'none', 'important'));
+    _statsLoaded = {};
+    const tab = _statsViewIsAll ? 'global' : 'lens';
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('statsModal')).show();
+    const btn = document.getElementById(tab === 'global' ? 'statsTabGlobal' : 'statsTabLens');
+    if (btn.classList.contains('active')) {
+      loadStatsTab(tab);   // already the active tab → 'shown.bs.tab' won't fire, so load directly
+    } else {
+      bootstrap.Tab.getOrCreateInstance(btn).show();   // fires 'shown.bs.tab' → loads
+    }
+  }
+
+  // "This lens" tab: fetch /stats (totals + breakdowns), /stats/history (7-day activity) and
+  // /stats/viability_by_day, render the summary, and draw the lens's charts.
+  function loadLensStats() {
     const body         = document.getElementById('statsModalBody');
     const chartSection = document.getElementById('statsChartSection');
     const chartWarning = document.getElementById('statsChartWarning');
-    body.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-secondary" role="status"></div></div>';
-    chartSection.style.display = 'none';
-    bootstrap.Modal.getOrCreateInstance(document.getElementById('statsModal')).show();
 
     Promise.all([fetch('/stats'), fetch('/stats/history'), fetch('/stats/viability_by_day')])
       .then(rs => { if (rs.some(r => !r.ok)) throw new Error(); return Promise.all(rs.map(r => r.json())); })
       .then(([s, h, v]) => {
+        // Name the tab after the lens these numbers describe, and from the combined view say
+        // explicitly that this is a fallback lens rather than a combined total.
+        document.getElementById('statsTabLens').textContent = s.search_name || 'This lens';
+        const fallback = document.getElementById('statsLensFallbackNote');
+        fallback.style.display = _statsViewIsAll ? '' : 'none';
+        if (_statsViewIsAll) {
+          fallback.textContent = `The "All searches" view has no combined job stats — showing ${s.search_name}. `
+            + 'Pick a lens in the navbar to see another.';
+        }
         // "By status" breakdown. Some statuses are effectively variants of another — autoskipped
         // is an auto-applied skip, ghosted a silent rejection — so each folds into a combined row
         // (label + summed count) rather than a near-duplicate line. Order mirrors the lifecycle.
@@ -3134,6 +3336,29 @@ Solid fit; re-score pending.">medium</span>
       })
       .catch(() => {
         body.innerHTML = '<div class="alert alert-danger m-3">Failed to load stats.</div>';
+        _statsLoaded.lens = false;   // let re-selecting the tab retry
+      });
+  }
+
+  // "All lenses" tab: the AI-cost ledger across every search (GET /stats/cost).
+  function loadGlobalStats() {
+    const body = document.getElementById('statsGlobalBody');
+    fetch('/stats/cost')
+      .then(r => { if (!r.ok) throw new Error(); return r.json(); })
+      .then(c => {
+        const tracked = Object.keys(((c.lenses || {}).all) || {}).length > 0;
+        // The body only holds the spinner / empty-state note; the cost section renders beside it.
+        body.style.display = tracked ? 'none' : '';
+        if (!tracked) {
+          body.innerHTML = '<div class="text-muted small text-center py-4">No AI calls recorded yet — '
+            + 'cost tracking starts with the next ingest or rescore.</div>';
+        }
+        renderCostSection(c);
+      })
+      .catch(() => {
+        body.style.display = '';
+        body.innerHTML = '<div class="alert alert-danger m-3">Failed to load cost stats.</div>';
+        _statsLoaded.global = false;   // let re-selecting the tab retry
       });
   }
   </script>

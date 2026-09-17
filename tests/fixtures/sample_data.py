@@ -172,6 +172,19 @@ def build_sample_db(conn) -> None:
         "VALUES (?, ?, ?, ?)",
         ("sample", "run_sample", "2026-06-15T12:00:00Z", "2026-06-15T12:05:00Z"),
     )
+    # A few AI-cost ledger rows (fixed ts/cost) so the stats "AI cost" route has realistic data:
+    # an initial score + reformat for an applied-family job, a later rescore of it, and an initial
+    # score of a new High job. Explicit cost_usd keeps them independent of MODEL_PRICING changes.
+    conn.executemany(
+        "INSERT INTO ai_usage (ts, search_id, job_id, feature, model, input_tokens, output_tokens, "
+        "cost_usd) VALUES (?, '__default__', ?, ?, 'claude-haiku-4-5', ?, ?, ?)",
+        [
+            ("2026-06-10 08:05:00", "ln_root",    "reformat",  2000, 800, 0.006),
+            ("2026-06-10 08:10:00", "ln_root",    "viability", 3000, 100, 0.0035),
+            ("2026-06-14 01:00:00", "ln_root",    "viability", 3000, 100, 0.0035),
+            ("2026-06-15 01:00:00", "ln_new_hot", "viability", 3000, 120, 0.0036),
+        ],
+    )
     # Hotlist Pacific Trident Global → its 'new' job (ln_new_hot) renders tinted. name_key is
     # the lower-cased effective company name (see app._company_key).
     if _table_exists(conn, "company_hotlist"):

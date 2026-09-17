@@ -822,8 +822,10 @@ def assess_location_fit(
     candidates must reside in <states>", relocation requirements — live in the prose, not the
     structured fields; without it the call would call a state-restricted "remote" role remote.
     All value judgments live in location_prompt; this function contributes only the plumbing.
-    Returns (fit, match, usage) with fit in GEO_FITS, or (None, None, None) on any failure so
-    the caller falls back to sending the raw location list.
+    Returns (fit, match, usage) with fit in GEO_FITS, or (None, None, usage) on any failure so
+    the caller falls back to sending the raw location list. usage is still the billed usage when
+    the API answered but the reply was unusable (so the cost ledger isn't undercounted), and None
+    only when no response came back at all.
 
     The candidate's location_prompt is identical for every job in a run, so it goes in the
     (ephemeral-cached) system block; the per-job location text + description are uncached.
@@ -854,6 +856,7 @@ def assess_location_fit(
     # this avoids the same scratchpad-in-output problem the main scorer had); Haiku/older →
     # thinking disabled with a tiny budget (a trivial one-line JSON verdict), effort ignored.
     cfg = _thinking_call_config(model, effort, disabled_max_tokens=128, adaptive_max_tokens=2048)
+    message = None
     try:
         message = client.messages.create(
             model=model,
@@ -869,15 +872,17 @@ def assess_location_fit(
         raw = next((b.text for b in message.content if getattr(b, "type", "") == "text"), "").strip()
         m = re.search(r'\{.*\}', raw, re.DOTALL)
         if not m:
-            return None, None, None
+            return None, None, message.usage
         data = json.loads(m.group())
         fit = str(data.get("fit", "")).lower().strip()
         match = str(data.get("match", "")).strip()
         if fit not in GEO_FITS:
-            return None, None, None
+            return None, None, message.usage
         return fit, match, message.usage
     except Exception:
-        return None, None, None
+        # A failure after the API answered (e.g. malformed JSON) was still billed — hand back
+        # its usage for the cost ledger; a failed request itself has no response, so None.
+        return None, None, getattr(message, "usage", None)
 
 
 def _scorer_thinking(model: str) -> dict:
@@ -951,9 +956,10 @@ def score_job(
     Returns (rating, reason, factors, usage): rating is 'low'/'medium'/'high', reason is a
     one-sentence justification, factors is the parsed self-reported factor breakdown (a list of
     {dimension, score, note} dicts, or None when the model omitted/mangled it), and usage is the
-    Anthropic token-usage object (for cost tallying). Returns (None, None, None, None) on any
+    Anthropic token-usage object (for cost tallying). Returns (None, None, None, usage) on any
     failure — unparseable response, invalid rating, or API error — so the caller can skip the job
-    and move on. Note that factors are supplementary: a valid rating+reason with a missing/bad
+    and move on; usage is the billed usage when the API answered (a bad reply still costs money,
+    and the ai_usage ledger must count it) and None only when no response came back. Note that factors are supplementary: a valid rating+reason with a missing/bad
     breakdown still succeeds (factors=None), since the breakdown must never sink the core score.
 
     geo_note, when provided (from geo_note(*assess_location_fit(...))), is a pre-assessed
@@ -970,6 +976,7 @@ def score_job(
     """
     system_text = _SYSTEM_BOILERPLATE + f"Candidate description:\n{viability_prompt}"
     cfg = _thinking_call_config(model, effort, disabled_max_tokens=256, adaptive_max_tokens=3072)
+    message = None
     try:
         message = client.messages.create(
             system=[{
@@ -990,17 +997,19 @@ def score_job(
         # backticks or stray prose — grab the first {...} block.
         m = re.search(r'\{.*\}', raw, re.DOTALL)
         if not m:
-            return None, None, None, None  # 4-tuple: caller unpacks (rating, reason, factors, usage)
+            # 4-tuple: caller unpacks (rating, reason, factors, usage); usage kept since it was billed.
+            return None, None, None, message.usage
         data = json.loads(m.group())
         rating = str(data.get("rating", "")).lower().strip()
         reason = str(data.get("reason", "")).strip()
         # Reject anything that isn't a recognized rating with a non-empty reason.
         if rating not in VIABILITY_RATINGS or not reason:
-            return None, None, None, None
+            return None, None, None, message.usage
         # Factors are supplementary transparency — a bad/absent breakdown yields None but never
         # invalidates an otherwise-good rating (see parse_factors).
         factors = parse_factors(data.get("factors"))
         return rating, reason, factors, message.usage
     except Exception:
-        # Any failure (API error, malformed JSON, missing content) → skip this job.
-        return None, None, None, None
+        # Any failure (API error, malformed JSON, missing content) → skip this job. If the API
+        # did answer, its usage was billed, so pass it on for the ledger; else None.
+        return None, None, None, getattr(message, "usage", None)

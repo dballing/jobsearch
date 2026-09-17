@@ -124,6 +124,7 @@ def reformat_description(client, text: str, model: str = "claude-haiku-4-5",
         # temperature 0 minimizes content drift and run-to-run variance (so a rejected result is
         # more likely to reproduce when debugging). Not accepted on reasoning models (400).
         engine = {"temperature": 0}
+    message = None
     try:
         message = client.messages.create(
             model=model,
@@ -155,4 +156,6 @@ def reformat_description(client, text: str, model: str = "claude-haiku-4-5",
     except Exception:
         # Any failure (network, rate limit, malformed response) degrades to no-reformat;
         # the caller falls back to the heuristic renderer, so a broad catch is correct here.
-        return None, None
+        # If the API did answer before the failure, that call was billed — surface its usage
+        # so the token tally and ai_usage ledger still count it.
+        return None, getattr(message, "usage", None)

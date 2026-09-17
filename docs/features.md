@@ -200,6 +200,49 @@ Navigation: previous/next week, a date picker (jump to the week containing any d
 
 ---
 
+### Stats modal
+
+The bar-chart icon in the navbar opens the stats modal. It has two tabs so it's always clear what scope a number covers:
+
+- **This lens** (labelled with the lens name): totals, counts by status / viability / label, application-pipeline timing, viability by day, and 7-day ingest activity, all for the current search. The combined "All searches" view has no per-lens numbers of its own, so from there this tab shows the default lens and says so.
+- **All lenses**: [AI cost](#ai-cost), with every search side by side.
+
+The modal opens on **This lens**, or on **All lenses** from the "All searches" view. Each tab loads its data the first time you open it.
+
+### AI cost
+
+The stats modal's **All lenses** tab shows AI cost, built from a per-call ledger (`ai_usage` table). Every billed Anthropic call records its tokens and an estimated USD cost, tagged with the search lens and job that caused it:
+
+| Call | Recorded when | Charged to |
+|------|---------------|------------|
+| Viability score | every scoring call (rescore batch or the manual-add "Score viability now") | the lens being scored |
+| Location sub-call | every real call (a within-run cache hit is free and not recorded) | the lens being scored |
+| Description reformat | every real AI call during ingest (exact-match cache hits are free) | the lens whose ingest triggered it; a later lens picking up the same posting gets it free |
+
+Calls that were billed but returned an unusable reply are counted too. `compare_scoring.py` is a dev harness and stays read-only (not recorded).
+
+It covers every lens at once, and the row for the lens you're viewing is highlighted, so lenses can be compared side by side.
+
+- **Spend is additive.** A job scored three times contributes three calls, each on the day it ran. A prompt edit that re-scores everything is real money and shows up as such.
+- **Total**: all spend in the lens. The muted line under it splits it into **initial** (the first call of each kind for a job in that lens) and **tuning** (every later call of that kind — prompt edits, version bumps, `--force`). The split explains a high total without changing it.
+- **Per applied**: total spend ÷ the number of **tracked** jobs in the lens whose status is in the applied family (applied, interviewing, offered, rejected, ghosted, withdrawn). "Tracked" means the job has ledger spend in that lens. Older jobs, whose cost was never recorded, are left out so they can't make the figure look falsely cheap.
+- **Per High**: total spend ÷ tracked jobs currently rated High (and scored since tracking began).
+- **High / Medium / Low / Other**: spend grouped by each job's **current** rating in that lens. A job scored High and later rescored Low files all its spend under Low. Other = unscored or failed.
+
+**Window toggle — All time / 90d / 30d.** All time is the absolute cost of finding these jobs. The trailing windows show the running cost lately, so up-front tuning spend ages out once a lens settles:
+
+- spend = calls made in the last N days (including rescores of older jobs);
+- per applied = that spend ÷ tracked jobs whose **applied date** falls in the window. It's a rate, so a batch of recent jobs you haven't reviewed yet doesn't inflate it;
+- per High = that spend ÷ tracked High jobs first scored in the window;
+- initial vs tuning is still decided by each job's whole history.
+
+**Charts:** daily spend stacked by lens (last 30 days), and a **trailing 30-day cost per application** line per lens over the last 90 days, for watching a lens settle after tuning. A day with no applications in its window is a gap, not a zero. A lens's line starts only once it has 30 days of tracking, because a partial window would understate spend.
+
+Notes:
+- Days are UTC, like the other stats charts.
+- Costs are **estimates** from `ai_config.MODEL_PRICING`, priced when the call was made (a later price change doesn't rewrite history). They won't match the Anthropic invoice to the cent. Calls on a model with no pricing data are flagged as understating the total.
+- There's no backfill: earlier runs only logged aggregate totals, so tracking starts from the first recorded call. Until then the tab just says nothing has been recorded yet.
+
 ## Re-ingestion behavior
 
 When a job already exists in the database and appears again in a subsequent ingest run:

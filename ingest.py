@@ -27,6 +27,7 @@ from config import ConfigError, load_config, migrate_config_to_basics
 
 from ai_config import (DEFAULT_EFFORT, format_token_summary, resolve_ai_settings,
                        resolve_effort, warn_effort_ignored)
+from ai_usage import SCHEMA as AI_USAGE_SCHEMA, ensure_ai_usage_table, record_usage
 from reformat import content_preserved, description_hash, reformat_description
 from runlock import acquire_run_lock
 
@@ -162,7 +163,7 @@ CREATE TABLE IF NOT EXISTS job_search_state (
     PRIMARY KEY (job_id, search_id)
 );
 CREATE INDEX IF NOT EXISTS idx_jss_search ON job_search_state(search_id, status);
-"""
+""" + AI_USAGE_SCHEMA  # per-call AI cost ledger (DDL owned by ai_usage.py; see that module)
 
 # Legacy/default search id — the single implicit search (Path A) and the id every
 # pre-multi-search row is backfilled under. Mirrors config.DEFAULT_SEARCH_ID (kept here
@@ -297,6 +298,7 @@ def open_db(path: str) -> sqlite3.Connection:
     )
     conn.commit()
     ensure_job_search_state(conn)
+    ensure_ai_usage_table(conn)
     return conn
 
 
@@ -1256,11 +1258,16 @@ class DescriptionFormatter:
         return self.client is not None
 
     def format(self, conn: sqlite3.Connection, description: str,
-               desc_hash: str | None, label: str = "") -> str | None:
+               desc_hash: str | None, label: str = "", *,
+               search_id: str | None = None, job_id: str | None = None) -> str | None:
         """Return formatted Markdown for a description, or None.
 
         `label` (e.g. "<job_id> (<title>)") is used only in the rejected/failed
         log lines so it's clear which posting fell back to the heuristic renderer.
+
+        `search_id`/`job_id` attribute a real AI call's cost in the ai_usage ledger. The
+        formatted text is shared across lenses, but the call is charged to the lens whose
+        ingest triggered it (a later lens picking up the same posting gets it free).
 
         Skips the AI call on an exact-match cache hit (run-local dict, then a
         cross-run DB lookup keyed on hash + exact text). On a miss, calls the AI
@@ -1288,6 +1295,10 @@ class DescriptionFormatter:
             self.tok_output += getattr(usage, "output_tokens",               0) or 0
             self.tok_write  += getattr(usage, "cache_creation_input_tokens", 0) or 0
             self.tok_read   += getattr(usage, "cache_read_input_tokens",     0) or 0
+            # Recorded regardless of whether the output is accepted below — a discarded or
+            # truncated reformat was still billed. Cache hits (above) never reach here.
+            record_usage(conn, feature="reformat", model=self.model, usage=usage,
+                         search_id=search_id, job_id=job_id)
         if md and content_preserved(description, md):
             self._cache[desc_hash] = md
             self.via_ai += 1
@@ -1442,7 +1453,8 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
                         c["orphan_merges"] += 1
             formatted = (
                 formatter.format(conn, desc, desc_hash,
-                                 f"{fields['job_id']} ({fields['title']})")
+                                 f"{fields['job_id']} ({fields['title']})",
+                                 search_id=search_id, job_id=fields["job_id"])
                 if formatter else None
             )
             conn.execute(
@@ -1589,7 +1601,8 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
             if desc_changed:
                 formatted = (
                     formatter.format(conn, desc, desc_hash,
-                                     f"{fields['job_id']} ({fields['title']})")
+                                     f"{fields['job_id']} ({fields['title']})",
+                                     search_id=search_id, job_id=fields["job_id"])
                     if formatter else None
                 )
             else:

@@ -84,6 +84,14 @@ def test_stats_route_returns_pipeline_keys():
     assert set(data["outcome_split"]) == {"rejected", "ghosted", "polite_pct"}
 
 
+def test_stats_route_names_the_lens_it_describes():
+    # The modal's per-lens tab is labelled from these; with no ?search= it's the default lens.
+    data = app.app.test_client().get("/stats").get_json()
+    default = app.current_config().default_search()
+    assert data["search_id"] == default.id
+    assert data["search_name"] == default.name
+
+
 # ── viability_day_series: aligned per-day high/medium/low arrays ───────────────
 def test_viability_day_series_aligns_and_fills_zeros():
     rows = [

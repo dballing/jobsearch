@@ -64,6 +64,7 @@ import anthropic
 from config import ConfigError, load_config
 from ai_config import (format_token_summary, resolve_ai_settings, resolve_effort,
                        resolve_geo_effort, resolve_geo_model, warn_effort_ignored)
+from ai_usage import ensure_ai_usage_table, record_usage
 from ingest import (adopt_legacy, append_history, backfill_description_truncated,
                     DEFAULT_SEARCH_ID, ensure_job_search_state)
 from runlock import acquire_run_lock
@@ -209,6 +210,7 @@ def open_db(path: str) -> sqlite3.Connection:
         backfill_description_truncated(conn)
     # Per-lens state table (create + backfill), shared with app/ingest so it can't drift.
     ensure_job_search_state(conn)
+    ensure_ai_usage_table(conn)
     return conn
 
 
@@ -865,6 +867,10 @@ def main() -> None:
                     client, location_prompt, job, model=geo_model,
                     include_description=geo_uses_description, effort=geo_effort)
                 geo_cache[geo_key] = (fit, match)
+                # Ledger the real call only — a geo_cache hit above cost nothing. Attributed to
+                # the job that triggered it; jobs reusing the cached verdict carry no geo cost.
+                record_usage(conn, feature="location", model=geo_model, usage=gusage,
+                             search_id=search_id, job_id=row["job_id"])
                 if gusage is not None:
                     geo_input  += getattr(gusage, "input_tokens",                0) or 0
                     geo_output += getattr(gusage, "output_tokens",               0) or 0
@@ -880,20 +886,29 @@ def main() -> None:
         # returned them (its location factor already reflects the POOR verdict it was handed).
         rating, reason = clamp_viability_for_geo(fit, rating, reason, manual=manual_geo_poor)
 
+        # Tally + ledger the scoring call whether or not it produced a usable rating: a reply we
+        # couldn't parse was still billed (score_job returns its usage on that path), so counting
+        # only successes undercounted real spend in both the log summary and the ledger.
+        record_usage(conn, feature="viability", model=model, usage=usage,
+                     search_id=search_id, job_id=row["job_id"])
+        if usage is not None:
+            tok_input  += getattr(usage, "input_tokens",                0) or 0
+            tok_output += getattr(usage, "output_tokens",               0) or 0
+            tok_write  += getattr(usage, "cache_creation_input_tokens", 0) or 0
+            tok_read   += getattr(usage, "cache_read_input_tokens",     0) or 0
+
         if rating is None:
             if args.verbose:
                 print("FAILED")
             failed += 1
+            # Commit so the failed call's ledger rows (geo + scoring) survive even if this is the
+            # last job — the success path commits below, but this branch previously wrote nothing.
+            conn.commit()
         else:
             tally[rating] = tally.get(rating, 0) + 1
             did_autoskip = False
             did_promote  = False
             did_trunc_exempt = False
-            if usage is not None:
-                tok_input  += getattr(usage, "input_tokens",                0) or 0
-                tok_output += getattr(usage, "output_tokens",               0) or 0
-                tok_write  += getattr(usage, "cache_creation_input_tokens", 0) or 0
-                tok_read   += getattr(usage, "cache_read_input_tokens",     0) or 0
             conn.execute(
                 "UPDATE job_search_state SET viability = ?, viability_reason = ?, "
                 "viability_factors = ?, viability_prompt_hash = ?, needs_rescored = 0 "
