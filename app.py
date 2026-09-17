@@ -747,6 +747,26 @@ def inject_nav_timestamps() -> dict:
     }
 
 
+@app.context_processor
+def inject_stats_tabs() -> dict:
+    """Expose the stats modal's tab set to every page that extends base.html (the jobs list AND
+    the weekly report), not just the index route that passes `searches` for the lens picker.
+
+    The modal is uniform regardless of where it's opened: one tab per configured lens plus
+    "All lenses" (even in single-search mode — its content isn't a subset of the lens tab, so it
+    stays a separate tab rather than being merged in). Only the initially-selected tab depends
+    on the caller: the lens being viewed, or "All lenses" from the combined view."""
+    try:
+        cfg = current_config()
+        return {
+            "stats_lenses":  [{"id": s.id, "name": s.name} for s in cfg.searches],
+            "stats_view_id": _current_view_id(),
+            "stats_all_id":  ALL_SEARCHES,
+        }
+    except Exception:  # never let the modal's metadata break page rendering
+        return {"stats_lenses": [], "stats_view_id": "", "stats_all_id": ALL_SEARCHES}
+
+
 def search_token_where(q: str, columns: list[str]) -> tuple[str, list]:
     """Build a free-text search clause: split ``q`` into tokens (quoted phrases stay whole)
     and require every token to substring-match at least one of ``columns`` (AND across
@@ -1947,13 +1967,10 @@ def stats():
         "ghosted":    ghosted_n,
         "polite_pct": round(rejected_n / negatives * 100, 1) if negatives else None,
     }
-    search = current_config().get_search(sid)
     return {
-        # Which lens these numbers describe — the modal's "this lens" tab is labelled with it.
-        # _current_search_id never returns the combined ALL_SEARCHES view (it falls back to the
-        # default lens), so naming it keeps that fallback visible rather than silently implied.
+        # Which lens these numbers describe (the modal passes ?search= per tab; this echoes the
+        # resolved id so a mismatch — e.g. an unknown id falling back to the default — is visible).
         "search_id": sid,
-        "search_name": search.name if search else sid,
         "total": total,
         "by_status": by_status,
         "new_last_7_days": new_7d,

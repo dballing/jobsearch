@@ -84,12 +84,21 @@ def test_stats_route_returns_pipeline_keys():
     assert set(data["outcome_split"]) == {"rejected", "ghosted", "polite_pct"}
 
 
-def test_stats_route_names_the_lens_it_describes():
-    # The modal's per-lens tab is labelled from these; with no ?search= it's the default lens.
-    data = app.app.test_client().get("/stats").get_json()
+def test_stats_route_echoes_the_lens_it_describes():
+    # With no ?search= (and no cookie) it's the default lens; an explicit valid id is honoured.
+    client = app.app.test_client()
     default = app.current_config().default_search()
-    assert data["search_id"] == default.id
-    assert data["search_name"] == default.name
+    assert client.get("/stats").get_json()["search_id"] == default.id
+    assert client.get(f"/stats?search={default.id}").get_json()["search_id"] == default.id
+
+
+def test_stats_tabs_context_lists_every_lens():
+    # The modal's tab set comes from a context processor so every page extending base.html gets it.
+    with app.app.test_request_context("/"):
+        ctx = app.inject_stats_tabs()
+    assert [l["id"] for l in ctx["stats_lenses"]] == [s.id for s in app.current_config().searches]
+    assert ctx["stats_view_id"] == app.current_config().default_search().id
+    assert ctx["stats_all_id"] == app.ALL_SEARCHES
 
 
 # ── viability_day_series: aligned per-day high/medium/low arrays ───────────────

@@ -202,12 +202,12 @@ Navigation: previous/next week, a date picker (jump to the week containing any d
 
 ### Stats modal
 
-The bar-chart icon in the navbar opens the stats modal. It has two tabs so it's always clear what scope a number covers:
+The bar-chart icon in the navbar opens the stats modal. It looks the same wherever you open it: **one tab per search lens, then All lenses**. With a single search, that's just the lens tab and All lenses.
 
-- **This lens** (labelled with the lens name): totals, counts by status / viability / label, application-pipeline timing, viability by day, and 7-day ingest activity, all for the current search. The combined "All searches" view has no per-lens numbers of its own, so from there this tab shows the default lens and says so.
-- **All lenses**: [AI cost](#ai-cost), with every search side by side.
+- **A lens tab** (named for the search): totals, counts by status / viability / label, application-pipeline timing, viability by day (with its label filter), and 7-day ingest activity, all for that lens. Any lens can be viewed from here without switching lenses in the navbar.
+- **All lenses**: [AI cost](#ai-cost), with every search side by side. It stays a separate tab even with one search, because its content isn't part of a lens tab.
 
-The modal opens on **This lens**, or on **All lenses** from the "All searches" view. Each tab loads its data the first time you open it.
+The modal opens on the lens you're viewing, or on **All lenses** from the "All searches" view. Each tab loads its data the first time you select it, and switching back to a tab you've already opened doesn't refetch until the modal is closed and reopened.
 
 ### AI cost
 

@@ -123,13 +123,17 @@
   </div>
   {% endif %}
 
-  {# Stats modal, split into two tabs so it's always clear what scope a number covers:
-       * "This lens" (labelled with the lens name) — GET /stats, /stats/history,
-         /stats/viability_by_day, all scoped to the current search.
+  {# Stats modal — uniform wherever it's opened: one tab per configured lens, then "All lenses".
+       * A lens tab — GET /stats, /stats/history, /stats/viability_by_day with an explicit
+         ?search=<id>. All lens tabs share ONE pane (#statsPaneLens) that re-renders for the
+         selected lens, rather than N copies of every table and chart.
        * "All lenses" — GET /stats/cost, the AI-cost ledger across every search side by side.
-     Each tab fetches its own data the first time it's shown per open (showStats/loadStatsTab),
-     so opening the modal only pays for the tab you land on, and charts are drawn into a visible
-     pane (Chart.js sizes wrongly into a hidden one). #}
+         Kept as its own tab even with a single lens: its content isn't a subset of a lens tab.
+     Only the initially-selected tab depends on the caller (the lens being viewed, or All lenses
+     from the combined view). Tabs are switched by selectStatsTab (not Bootstrap's tab plugin,
+     which can't have several buttons share one pane), and each tab's data is fetched the first
+     time it's selected per open, then drawn into the now-visible pane (Chart.js sizes wrongly
+     into a hidden one). #}
   <div class="modal fade" id="statsModal" tabindex="-1" aria-labelledby="statsModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered modal-lg">
       <div class="modal-content">
@@ -137,21 +141,20 @@
           <h6 class="modal-title fw-semibold" id="statsModalLabel">Database Stats</h6>
           <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
         </div>
-        <ul class="nav nav-tabs px-3 mt-2" role="tablist">
+        <ul class="nav nav-tabs px-3 mt-2" role="tablist" id="statsTabs">
+          {% for lens in stats_lenses %}
           <li class="nav-item" role="presentation">
-            <button class="nav-link active" id="statsTabLens" data-bs-toggle="tab" data-bs-target="#statsPaneLens"
-                    type="button" role="tab" aria-controls="statsPaneLens" aria-selected="true">This lens</button>
+            <button class="nav-link" type="button" role="tab" data-stats-tab="{{ lens.id }}"
+                    aria-controls="statsPaneLens" aria-selected="false">{{ lens.name }}</button>
           </li>
+          {% endfor %}
           <li class="nav-item" role="presentation">
-            <button class="nav-link" id="statsTabGlobal" data-bs-toggle="tab" data-bs-target="#statsPaneGlobal"
-                    type="button" role="tab" aria-controls="statsPaneGlobal" aria-selected="false">All lenses</button>
+            <button class="nav-link" type="button" role="tab" data-stats-tab="{{ stats_all_id }}"
+                    aria-controls="statsPaneGlobal" aria-selected="false">All lenses</button>
           </li>
         </ul>
         <div class="tab-content">
-        <div class="tab-pane fade show active" id="statsPaneLens" role="tabpanel" aria-labelledby="statsTabLens">
-        {# Shown only when opened from the combined "All searches" view, which has no per-lens
-           numbers of its own — says which concrete lens this tab fell back to. #}
-        <div id="statsLensFallbackNote" class="alert alert-secondary py-2 small mx-3 mt-3 mb-0" style="display:none"></div>
+        <div class="tab-pane" id="statsPaneLens" role="tabpanel">
         <div class="modal-body" id="statsModalBody">
           <div class="text-center py-4"><div class="spinner-border text-secondary" role="status"></div></div>
         </div>
@@ -179,7 +182,7 @@
           <canvas id="statsChart" height="120"></canvas>
         </div>
         </div>{# /statsPaneLens #}
-        <div class="tab-pane fade" id="statsPaneGlobal" role="tabpanel" aria-labelledby="statsTabGlobal">
+        <div class="tab-pane" id="statsPaneGlobal" role="tabpanel">
         {# Spinner while loading; replaced by an empty-ledger note when nothing is tracked yet. #}
         <div class="modal-body" id="statsGlobalBody">
           <div class="text-center py-4"><div class="spinner-border text-secondary" role="status"></div></div>
@@ -1181,10 +1184,13 @@
   // current #/% mode. Re-fetches per label so each series carries only its own active days.
   function loadViabChart(label) {
     _viabLabel = label;
-    const q = label ? '?label=' + encodeURIComponent(label) : '';
+    // Carry the lens tab being viewed (not the navbar cookie lens) so the filter applies to it.
+    const lens = _statsTab;
+    const q = '?search=' + encodeURIComponent(lens) + (label ? '&label=' + encodeURIComponent(label) : '');
     fetch('/stats/viability_by_day' + q)
       .then(r => r.json())
       .then(v => {
+        if (_statsTab !== lens) return;   // switched tabs mid-fetch — don't draw another lens's data
         _statsViabData = v;
         renderViabChart(document.querySelector('#viabModeToggle input:checked')?.value || 'pct');
       })
@@ -1363,63 +1369,77 @@
     }
   }
 
-  // Whether the page is the combined "All searches" view. That view has no per-lens stats of its
-  // own (the lens tab falls back to the default lens), so the modal opens on the All-lenses tab.
-  const _statsViewIsAll = {{ 'true' if (all_searches_id and current_search == all_searches_id) else 'false' }};
-  // Which tabs have been fetched during the current open — reset by showStats so every open
-  // reflects fresh data, but switching back and forth within one open doesn't refetch.
-  let _statsLoaded = {};
+  // Tab keys are lens ids plus this sentinel for "All lenses" (the combined-view id, so the page's
+  // current view id selects the right initial tab directly).
+  const _STATS_ALL      = {{ stats_all_id|tojson }};
+  const _statsViewId    = {{ stats_view_id|tojson }};
+  const _STATS_SPINNER  = '<div class="text-center py-4"><div class="spinner-border text-secondary" role="status"></div></div>';
+  let _statsTab         = null;  // key of the selected tab
+  // Per-open caches: each lens's fetched [stats, history, viability] and whether the global tab has
+  // loaded. Reset by showStats so every open shows fresh data, while flipping between tabs within
+  // one open re-renders from memory instead of refetching.
+  let _statsLensCache   = {};
+  let _statsGlobalLoaded = false;
 
-  // Fetch + render one tab's data the first time it's shown in this open.
-  function loadStatsTab(tab) {
-    if (_statsLoaded[tab]) return;
-    _statsLoaded[tab] = true;
-    if (tab === 'lens') loadLensStats(); else loadGlobalStats();
-  }
-  // Load lazily on tab switch. 'shown' (not 'show') so the pane is visible before Chart.js sizes
-  // its canvases. Bound once at page load; the tab buttons are static.
-  document.getElementById('statsTabLens').addEventListener('shown.bs.tab', () => loadStatsTab('lens'));
-  document.getElementById('statsTabGlobal').addEventListener('shown.bs.tab', () => loadStatsTab('global'));
-
-  // Open the stats modal on the tab matching the current view (All lenses from the combined view,
-  // else This lens) and load that tab. Spinners are reset so a reopen never flashes stale numbers.
-  function showStats() {
-    const spinner = '<div class="text-center py-4"><div class="spinner-border text-secondary" role="status"></div></div>';
-    document.getElementById('statsModalBody').innerHTML = spinner;
-    document.getElementById('statsGlobalBody').innerHTML = spinner;
-    document.getElementById('statsGlobalBody').style.display = '';
-    ['statsChartSection', 'statsViabilityChartSection', 'statsCostSection'].forEach(id =>
-      document.getElementById(id).style.setProperty('display', 'none', 'important'));
-    _statsLoaded = {};
-    const tab = _statsViewIsAll ? 'global' : 'lens';
-    bootstrap.Modal.getOrCreateInstance(document.getElementById('statsModal')).show();
-    const btn = document.getElementById(tab === 'global' ? 'statsTabGlobal' : 'statsTabLens');
-    if (btn.classList.contains('active')) {
-      loadStatsTab(tab);   // already the active tab → 'shown.bs.tab' won't fire, so load directly
+  // Select a tab: mark its button active, show the matching pane, then load/render its data. All
+  // lens tabs share #statsPaneLens, which is re-rendered for the chosen lens.
+  function selectStatsTab(key) {
+    _statsTab = key;
+    const isAll = key === _STATS_ALL;
+    document.querySelectorAll('#statsTabs [data-stats-tab]').forEach(b => {
+      const on = b.dataset.statsTab === key;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    document.getElementById('statsPaneLens').classList.toggle('active', !isAll);
+    document.getElementById('statsPaneLens').classList.toggle('show', !isAll);
+    document.getElementById('statsPaneGlobal').classList.toggle('active', isAll);
+    document.getElementById('statsPaneGlobal').classList.toggle('show', isAll);
+    if (isAll) {
+      if (!_statsGlobalLoaded) { _statsGlobalLoaded = true; loadGlobalStats(); }
     } else {
-      bootstrap.Tab.getOrCreateInstance(btn).show();   // fires 'shown.bs.tab' → loads
+      loadLensStats(key);
     }
   }
+  document.querySelectorAll('#statsTabs [data-stats-tab]').forEach(b =>
+    b.addEventListener('click', () => selectStatsTab(b.dataset.statsTab)));
 
-  // "This lens" tab: fetch /stats (totals + breakdowns), /stats/history (7-day activity) and
-  // /stats/viability_by_day, render the summary, and draw the lens's charts.
-  function loadLensStats() {
+  // Open the stats modal on the tab matching the current view — the lens being viewed, or All
+  // lenses from the combined view — resetting spinners/caches so a reopen never shows stale numbers.
+  function showStats() {
+    document.getElementById('statsGlobalBody').innerHTML = _STATS_SPINNER;
+    document.getElementById('statsGlobalBody').style.display = '';
+    document.getElementById('statsCostSection').style.setProperty('display', 'none', 'important');
+    _statsLensCache = {};
+    _statsGlobalLoaded = false;
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('statsModal')).show();
+    const keys = [...document.querySelectorAll('#statsTabs [data-stats-tab]')].map(b => b.dataset.statsTab);
+    selectStatsTab(keys.includes(_statsViewId) ? _statsViewId : keys[0]);
+  }
+
+  // A lens tab: fetch /stats (totals + breakdowns), /stats/history (7-day activity) and
+  // /stats/viability_by_day for `sid` — each with an explicit ?search= so the tab, not the navbar's
+  // sticky lens cookie, decides the scope — then render the summary and the lens's charts. Uses the
+  // per-open cache when this lens was already fetched.
+  function loadLensStats(sid) {
     const body         = document.getElementById('statsModalBody');
     const chartSection = document.getElementById('statsChartSection');
     const chartWarning = document.getElementById('statsChartWarning');
+    const q = '?search=' + encodeURIComponent(sid);
 
-    Promise.all([fetch('/stats'), fetch('/stats/history'), fetch('/stats/viability_by_day')])
-      .then(rs => { if (rs.some(r => !r.ok)) throw new Error(); return Promise.all(rs.map(r => r.json())); })
+    let data = _statsLensCache[sid];
+    if (!data) {
+      // Not fetched yet: blank the shared pane first so the previous lens's numbers don't linger.
+      body.innerHTML = _STATS_SPINNER;
+      ['statsChartSection', 'statsViabilityChartSection'].forEach(id =>
+        document.getElementById(id).style.setProperty('display', 'none', 'important'));
+      data = Promise.all([fetch('/stats' + q), fetch('/stats/history' + q), fetch('/stats/viability_by_day' + q)])
+        .then(rs => { if (rs.some(r => !r.ok)) throw new Error(); return Promise.all(rs.map(r => r.json())); });
+      _statsLensCache[sid] = data;
+    }
+    data
       .then(([s, h, v]) => {
-        // Name the tab after the lens these numbers describe, and from the combined view say
-        // explicitly that this is a fallback lens rather than a combined total.
-        document.getElementById('statsTabLens').textContent = s.search_name || 'This lens';
-        const fallback = document.getElementById('statsLensFallbackNote');
-        fallback.style.display = _statsViewIsAll ? '' : 'none';
-        if (_statsViewIsAll) {
-          fallback.textContent = `The "All searches" view has no combined job stats — showing ${s.search_name}. `
-            + 'Pick a lens in the navbar to see another.';
-        }
+        if (_statsTab !== sid) return;   // user moved to another tab while this was loading
         // "By status" breakdown. Some statuses are effectively variants of another — autoskipped
         // is an auto-applied skip, ghosted a silent rejection — so each folds into a combined row
         // (label + summed count) rather than a near-duplicate line. Order mirrors the lifecycle.
@@ -1548,11 +1568,15 @@
               scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } },
             },
           });
+        } else {
+          // The pane is shared across lens tabs — hide a chart left over from another lens.
+          chartSection.style.setProperty('display', 'none', 'important');
         }
       })
       .catch(() => {
+        delete _statsLensCache[sid];   // let re-selecting the tab retry
+        if (_statsTab !== sid) return;
         body.innerHTML = '<div class="alert alert-danger m-3">Failed to load stats.</div>';
-        _statsLoaded.lens = false;   // let re-selecting the tab retry
       });
   }
 
@@ -1574,7 +1598,7 @@
       .catch(() => {
         body.style.display = '';
         body.innerHTML = '<div class="alert alert-danger m-3">Failed to load cost stats.</div>';
-        _statsLoaded.global = false;   // let re-selecting the tab retry
+        _statsGlobalLoaded = false;   // let re-selecting the tab retry
       });
   }
   </script>
