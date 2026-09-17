@@ -176,13 +176,23 @@ def build_sample_db(conn) -> None:
     # an initial score + reformat for an applied-family job, a later rescore of it, and an initial
     # score of a new High job. Explicit cost_usd keeps them independent of MODEL_PRICING changes.
     conn.executemany(
-        "INSERT INTO ai_usage (ts, search_id, job_id, feature, model, input_tokens, output_tokens, "
+        "INSERT INTO spend_ledger (ts, search_id, job_id, feature, model, input_tokens, output_tokens, "
         "cost_usd) VALUES (?, '__default__', ?, ?, 'claude-haiku-4-5', ?, ?, ?)",
         [
             ("2026-06-10 08:05:00", "ln_root",    "reformat",  2000, 800, 0.006),
             ("2026-06-10 08:10:00", "ln_root",    "viability", 3000, 100, 0.0035),
             ("2026-06-14 01:00:00", "ln_root",    "viability", 3000, 100, 0.0035),
             ("2026-06-15 01:00:00", "ln_new_hot", "viability", 3000, 120, 0.0036),
+        ],
+    )
+    # Apify rows alongside them: a pro-rated share on a job, and a day's unattributed overhead
+    # (runs that returned nothing), so the cost table exercises both shapes.
+    conn.executemany(
+        "INSERT INTO spend_ledger (ts, search_id, job_id, feature, model, cost_usd) "
+        "VALUES (?, '__default__', ?, 'apify', 'sample-task', ?)",
+        [
+            ("2026-06-10 08:00:00", "ln_root", 0.0020),
+            ("2026-06-15 23:59:00", None,      0.0008),
         ],
     )
     # Hotlist Pacific Trident Global → its 'new' job (ln_new_hot) renders tinted. name_key is

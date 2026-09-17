@@ -959,8 +959,9 @@ def score_job(
     Anthropic token-usage object (for cost tallying). Returns (None, None, None, usage) on any
     failure — unparseable response, invalid rating, or API error — so the caller can skip the job
     and move on; usage is the billed usage when the API answered (a bad reply still costs money,
-    and the ai_usage ledger must count it) and None only when no response came back. Note that factors are supplementary: a valid rating+reason with a missing/bad
-    breakdown still succeeds (factors=None), since the breakdown must never sink the core score.
+    and the spend ledger must count it) and None only when no response came back. Note that
+    factors are supplementary: a valid rating+reason with a missing/bad breakdown still succeeds
+    (factors=None), since the breakdown must never sink the core score.
 
     geo_note, when provided (from geo_note(*assess_location_fit(...))), is a pre-assessed
     geographic-fit verdict that replaces the raw location list in the message so the model

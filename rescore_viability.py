@@ -64,7 +64,7 @@ import anthropic
 from config import ConfigError, load_config
 from ai_config import (format_token_summary, resolve_ai_settings, resolve_effort,
                        resolve_geo_effort, resolve_geo_model, warn_effort_ignored)
-from ai_usage import ensure_ai_usage_table, record_usage
+from spend import ensure_spend_ledger, record_usage
 from ingest import (adopt_legacy, append_history, backfill_description_truncated,
                     DEFAULT_SEARCH_ID, ensure_job_search_state)
 from runlock import acquire_run_lock
@@ -210,7 +210,7 @@ def open_db(path: str) -> sqlite3.Connection:
         backfill_description_truncated(conn)
     # Per-lens state table (create + backfill), shared with app/ingest so it can't drift.
     ensure_job_search_state(conn)
-    ensure_ai_usage_table(conn)
+    ensure_spend_ledger(conn)
     return conn
 
 

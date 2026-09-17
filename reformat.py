@@ -157,5 +157,5 @@ def reformat_description(client, text: str, model: str = "claude-haiku-4-5",
         # Any failure (network, rate limit, malformed response) degrades to no-reformat;
         # the caller falls back to the heuristic renderer, so a broad catch is correct here.
         # If the API did answer before the failure, that call was billed — surface its usage
-        # so the token tally and ai_usage ledger still count it.
+        # so the token tally and spend ledger still count it.
         return None, getattr(message, "usage", None)

@@ -150,7 +150,7 @@
         
         <div class="modal-footer flex-column align-items-stretch pt-3" id="statsCostSection" style="display:none!important">
           <div class="d-flex align-items-center justify-content-between mb-2 flex-wrap gap-2">
-            <span class="small fw-semibold text-muted">AI cost <span class="fw-normal" id="costSince"></span></span>
+            <span class="small fw-semibold text-muted">Cost <span class="fw-normal" id="costSince"></span></span>
             <div class="btn-group btn-group-sm" role="group" id="costWindowToggle" aria-label="Cost window">
               <input type="radio" class="btn-check" name="costWindow" id="costWindowAll" value="all" checked>
               <label class="btn btn-outline-secondary" for="costWindowAll" title="Everything since tracking began">All time</label>
@@ -162,7 +162,7 @@
           </div>
           <div id="costTable" class="table-responsive"></div>
           <div id="costUnpricedNote" class="text-muted small" style="display:none"></div>
-          <div class="small fw-semibold text-muted mt-3 mb-1">Daily AI spend by lens <span class="fw-normal">(last 30d)</span></div>
+          <div class="small fw-semibold text-muted mt-3 mb-1">Daily spend by lens <span class="fw-normal">(last 30d)</span></div>
           <div style="height:200px"><canvas id="statsCostDailyChart"></canvas></div>
           <div class="small fw-semibold text-muted mt-3 mb-1">Trailing 30-day cost per application <span class="fw-normal">(last 90d)</span></div>
           <div style="height:200px" id="costTrendWrap"><canvas id="statsCostTrendChart"></canvas></div>
@@ -3035,7 +3035,7 @@ Solid fit; re-score pending.">medium</span>
   document.querySelectorAll('#viabModeToggle input[name="viabMode"]').forEach(r =>
     r.addEventListener('change', e => renderViabChart(e.target.value)));
 
-  // ── AI cost section ─────────────────────────────────────────────────────────────────────
+  // ── Cost section (AI calls + Apify runs) ────────────────────────────────────────────────
   let _statsCostData       = null;  // the whole /stats/cost payload (all windows preloaded)
   let _statsCostDailyChart = null;
   let _statsCostTrendChart = null;
@@ -3062,9 +3062,12 @@ Solid fit; re-score pending.">medium</span>
       const bv = e.by_viability || {};
       const split = (e.initial_usd || e.rescore_usd)
         ? `<div class="text-muted small text-nowrap">${fmtUsd(e.initial_usd)} initial · ${fmtUsd(e.rescore_usd)} tuning</div>` : '';
+      // Where the money went: AI calls vs Apify scraping. The initial/tuning line above splits
+      // the AI half only (re-scraping a known posting is monitoring, not re-deciding it).
+      const mix = `AI ${fmtUsd(e.ai_usd).replace(/<[^>]+>/g, '')} · Apify ${fmtUsd(e.apify_usd).replace(/<[^>]+>/g, '')}`;
       return `<tr${cur}>
         <td>${escHtml(lensName(sid))}</td>
-        <td class="text-end">${fmtUsd(e.total_usd)}${split}</td>
+        <td class="text-end" title="${escHtml(mix)}">${fmtUsd(e.total_usd)}${split}</td>
         <td class="text-end">${fmtUsd(e.cost_per_applied)} <span class="text-muted small">(n=${e.applied_jobs})</span></td>
         <td class="text-end">${fmtUsd(e.cost_per_high)} <span class="text-muted small">(n=${e.high_jobs})</span></td>
         <td class="text-end">${fmtUsd(bv.high)}</td>
@@ -3076,12 +3079,12 @@ Solid fit; re-score pending.">medium</span>
     document.getElementById('costTable').innerHTML = `
       <table class="table table-sm table-borderless mb-0 small">
         <thead><tr class="text-muted">
-          <th>Lens</th><th class="text-end">Total</th>
+          <th>Lens</th><th class="text-end" title="AI calls + Apify runs; hover a total for the split">Total</th>
           <th class="text-end" title="Spend ÷ tracked jobs you applied to">Per applied</th>
           <th class="text-end" title="Spend ÷ tracked jobs rated High">Per High</th>
           <th class="text-end" title="Spend on jobs currently rated High">High</th>
           <th class="text-end">Medium</th><th class="text-end">Low</th>
-          <th class="text-end" title="Unscored / failed">Other</th>
+          <th class="text-end" title="Unscored / failed jobs, plus Apify runs that returned nothing">Other</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
@@ -3371,7 +3374,7 @@ Solid fit; re-score pending.">medium</span>
         // The body only holds the spinner / empty-state note; the cost section renders beside it.
         body.style.display = tracked ? 'none' : '';
         if (!tracked) {
-          body.innerHTML = '<div class="text-muted small text-center py-4">No AI calls recorded yet — '
+          body.innerHTML = '<div class="text-muted small text-center py-4">No spend recorded yet — '
             + 'cost tracking starts with the next ingest or rescore.</div>';
         }
         renderCostSection(c);

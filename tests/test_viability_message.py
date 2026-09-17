@@ -398,7 +398,7 @@ def test_score_job_survives_a_malformed_factors_block():
 
 def test_score_job_failure_is_a_four_tuple():
     # An unparseable reply returns the 4-tuple callers unpack — no rating, but the usage is kept
-    # because the call was billed (the ai_usage ledger must count failed-but-answered calls).
+    # because the call was billed (the spend_ledger ledger must count failed-but-answered calls).
     client = _FakeClient("I cannot produce JSON.")
     rating, reason, factors, usage = viability.score_job(
         client, "p", {"title": "T", "company": "C"}, model="claude-haiku-4-5")

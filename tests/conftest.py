@@ -73,7 +73,7 @@ def sample_app_db():
 
     def _clear():
         con = sqlite3.connect(path)
-        for t in ("jobs", "job_search_state", "ingest_state", "company_hotlist", "ai_usage"):
+        for t in ("jobs", "job_search_state", "ingest_state", "company_hotlist", "spend_ledger"):
             try:
                 con.execute(f"DELETE FROM {t}")
             except sqlite3.OperationalError:

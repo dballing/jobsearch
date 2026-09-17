@@ -205,33 +205,36 @@ Navigation: previous/next week, a date picker (jump to the week containing any d
 The bar-chart icon in the navbar opens the stats modal. It looks the same wherever you open it: **one tab per search lens, then All lenses**. With a single search, that's just the lens tab and All lenses.
 
 - **A lens tab** (named for the search): totals, counts by status / viability / label, application-pipeline timing, viability by day (with its label filter), and 7-day ingest activity, all for that lens. Any lens can be viewed from here without switching lenses in the navbar.
-- **All lenses**: [AI cost](#ai-cost), with every search side by side. It stays a separate tab even with one search, because its content isn't part of a lens tab.
+- **All lenses**: [cost](#cost), with every search side by side. It stays a separate tab even with one search, because its content isn't part of a lens tab.
 
 The modal opens on the lens you're viewing, or on **All lenses** from the "All searches" view. Each tab loads its data the first time you select it, and switching back to a tab you've already opened doesn't refetch until the modal is closed and reopened.
 
-### AI cost
+### Cost
 
-The stats modal's **All lenses** tab shows AI cost, built from a per-call ledger (`ai_usage` table). Every billed Anthropic call records its tokens and an estimated USD cost, tagged with the search lens and job that caused it:
+The stats modal's **All lenses** tab shows what the job hunt costs — Anthropic calls and Apify scraping — from one ledger (`spend_ledger` table). Each entry records a USD cost tagged with the lens, and where possible the job, that caused it:
 
-| Call | Recorded when | Charged to |
-|------|---------------|------------|
+| Spend | Recorded when | Charged to |
+|-------|---------------|------------|
 | Viability score | every scoring call (rescore batch or the manual-add "Score viability now") | the lens being scored |
 | Location sub-call | every real call (a within-run cache hit is free and not recorded) | the lens being scored |
 | Description reformat | every real AI call during ingest (exact-match cache hits are free) | the lens whose ingest triggered it; a later lens picking up the same posting gets it free |
+| Apify run | every ingested run, from the `usageTotalUsd` already on the run object (no extra API call) | split evenly across the items the run returned; see below |
 
-Calls that were billed but returned an unusable reply are counted too. `compare_scoring.py` is a dev harness and stays read-only (not recorded).
+AI calls that were billed but returned an unusable reply are counted too. `compare_scoring.py` is a dev harness and stays read-only (not recorded).
+
+**How an Apify run is split.** Every item the run returned takes an equal share, *including* re-sightings of postings already known — watching for changes is precisely what the run paid for, so a posting that stays listed keeps accruing a little. Two cases have no job to charge: items that produced no row (skipped ATS duplicates) and runs that returned nothing at all, which on a frequent schedule is most of them. Their share goes to one **unattributed row per lens per day**, so the lens total stays exact while per-job figures stay honest. If two lenses ingest the same run (a shared task with no schedule scoping), the charge is split between them, since Apify billed it once.
 
 It covers every lens at once, and the row for the lens you're viewing is highlighted, so lenses can be compared side by side.
 
 - **Spend is additive.** A job scored three times contributes three calls, each on the day it ran. A prompt edit that re-scores everything is real money and shows up as such.
-- **Total**: all spend in the lens. The muted line under it splits it into **initial** (the first call of each kind for a job in that lens) and **tuning** (every later call of that kind — prompt edits, version bumps, `--force`). The split explains a high total without changing it.
+- **Total**: all spend in the lens, AI and Apify together — hover it for the split between the two. The muted line under it splits the **AI** half into **initial** (the first call of each kind for a job in that lens) and **tuning** (every later call of that kind — prompt edits, version bumps, `--force`). The split explains a high total without changing it.
 - **Per applied**: total spend ÷ the number of **tracked** jobs in the lens whose status is in the applied family (applied, interviewing, offered, rejected, ghosted, withdrawn). "Tracked" means the job has ledger spend in that lens. Older jobs, whose cost was never recorded, are left out so they can't make the figure look falsely cheap.
 - **Per High**: total spend ÷ tracked jobs currently rated High (and scored since tracking began).
-- **High / Medium / Low / Other**: spend grouped by each job's **current** rating in that lens. A job scored High and later rescored Low files all its spend under Low. Other = unscored or failed.
+- **High / Medium / Low / Other**: spend grouped by each job's **current** rating in that lens. A job scored High and later rescored Low files all its spend under Low. Other = unscored or failed jobs, plus the unattributed Apify rows.
 
 **Window toggle — All time / 90d / 30d.** All time is the absolute cost of finding these jobs. The trailing windows show the running cost lately, so up-front tuning spend ages out once a lens settles:
 
-- spend = calls made in the last N days (including rescores of older jobs);
+- spend = everything recorded in the last N days (including rescores and re-scrapes of older jobs);
 - per applied = that spend ÷ tracked jobs whose **applied date** falls in the window. It's a rate, so a batch of recent jobs you haven't reviewed yet doesn't inflate it;
 - per High = that spend ÷ tracked High jobs first scored in the window;
 - initial vs tuning is still decided by each job's whole history.
@@ -240,8 +243,9 @@ It covers every lens at once, and the row for the lens you're viewing is highlig
 
 Notes:
 - Days are UTC, like the other stats charts.
-- Costs are **estimates** from `ai_config.MODEL_PRICING`, priced when the call was made (a later price change doesn't rewrite history). They won't match the Anthropic invoice to the cent. Calls on a model with no pricing data are flagged as understating the total.
-- There's no backfill: earlier runs only logged aggregate totals, so tracking starts from the first recorded call. Until then the tab just says nothing has been recorded yet.
+- AI costs are **estimates** from `ai_config.MODEL_PRICING`, priced when the call was made (a later price change doesn't rewrite history). They won't match the Anthropic invoice to the cent. Calls on a model with no pricing data are flagged as understating the total. Apify figures are that platform's own reported charge for the run.
+- **Nothing is backfilled, deliberately.** Apify keeps run history, so past runs *could* be imported — but the jobs they found have no AI cost recorded, so importing them would load long-idle jobs with scraping cost they never had scoring cost for, and every cost-per-job figure would be skewed. Tracking therefore starts from the first recorded call, and the tab says so until then.
+- Ingest prints its Apify charge per task and for the whole run, mirroring the AI token-cost lines.
 
 ## Re-ingestion behavior
 

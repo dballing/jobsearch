@@ -24,7 +24,7 @@ from pathlib import Path
 from flask import (Flask, abort, g, has_request_context, make_response, render_template,
                    request, send_file, url_for)
 from werkzeug.utils import secure_filename
-import ai_usage
+import spend
 import fx_rates
 from config import AppConfig, ConfigError, DEFAULT_SEARCH_ID, load_config
 from ingest import (adopt_legacy, append_history, backfill_description_truncated,
@@ -665,9 +665,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # Per-lens state table (create + one-time backfill of the dormant per-lens jobs columns
     # into __default__ rows). Shared helper so app/ingest/rescore migrate it identically.
     ensure_job_search_state(conn)
-    # Per-call AI cost ledger (shared DDL in ai_usage.py; app writes to it from the manual-add
-    # scorer and reads it for the stats modal's AI cost section).
-    ai_usage.ensure_ai_usage_table(conn)
+    # Spend ledger (shared DDL in spend.py; app writes to it from the manual-add scorer and
+    # reads it for the stats modal's All-lenses tab). Also renames the pre-Apify `ai_usage` table.
+    spend.ensure_spend_ledger(conn)
     # One-time single→multi adoption (Path B only; no-op/warn-free for the single __default__
     # search). Writes at startup like the other migrations here — gated + idempotent.
     # A one-time, structural migration — reads the startup config (current_config() equals it at
@@ -2067,20 +2067,20 @@ _COST_WINDOWS = {"all": None, "90": 90, "30": 30}
 
 @app.route("/stats/cost")
 def stats_cost():
-    """JSON for the stats modal's "AI cost" section, from the ai_usage ledger.
+    """JSON for the stats modal's "All lenses" tab: AI + Apify spend, from the spend ledger.
 
     Unlike the other stats routes this is deliberately NOT scoped to the current lens: comparing
     lenses side by side is the point (and so it reads the same under the "All searches" view).
-    `current` is returned only so the UI can highlight the lens you're viewing. See ai_usage for
+    `current` is returned only so the UI can highlight the lens you're viewing. See spend_ledger for
     the accounting definitions (additive spend, tracked-job denominators, trailing windows)."""
     db = get_db()
     cfg = current_config()
     return {
-        "daily":   ai_usage.daily_spend_by_lens(db, days=30),
-        "lenses":  {key: ai_usage.lens_cost_summary(db, applied_statuses=_APPLIED_FAMILY,
+        "daily":   spend.daily_spend_by_lens(db, days=30),
+        "lenses":  {key: spend.lens_cost_summary(db, applied_statuses=_APPLIED_FAMILY,
                                                     window_days=days)
                     for key, days in _COST_WINDOWS.items()},
-        "trend":   ai_usage.trailing_cost_per_applied_series(db, applied_statuses=_APPLIED_FAMILY,
+        "trend":   spend.trailing_cost_per_applied_series(db, applied_statuses=_APPLIED_FAMILY,
                                                              window_days=30, span_days=90),
         # Display names/colors for every configured lens; a ledger lens since removed from config
         # falls back to its raw id client-side.
@@ -2667,11 +2667,11 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
                 client, location_prompt, dict(row), model=geo_model,
                 include_description=geo_uses_description, effort=geo_effort)
             gnote = geo_note(fit, match)
-            ai_usage.record_usage(db, feature="location", model=geo_model, usage=gusage,
+            spend.record_usage(db, feature="location", model=geo_model, usage=gusage,
                                   search_id=sid, job_id=job_id)
         rating, reason, factors, usage = score_job(client, prompt, dict(row), model=model,
                                                    geo_note=gnote, effort=effort)
-        ai_usage.record_usage(db, feature="viability", model=model, usage=usage,
+        spend.record_usage(db, feature="viability", model=model, usage=usage,
                               search_id=sid, job_id=job_id)
         # Commit the ledger rows now: the failure return below skips the success-path commit,
         # and a billed-but-unusable reply must still be counted.

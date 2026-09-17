@@ -27,7 +27,8 @@ from config import ConfigError, load_config, migrate_config_to_basics
 
 from ai_config import (DEFAULT_EFFORT, format_token_summary, resolve_ai_settings,
                        resolve_effort, warn_effort_ignored)
-from ai_usage import SCHEMA as AI_USAGE_SCHEMA, ensure_ai_usage_table, record_usage
+from spend import (SCHEMA as SPEND_SCHEMA, ensure_spend_ledger, record_apify_run,
+                   record_usage)
 from reformat import content_preserved, description_hash, reformat_description
 from runlock import acquire_run_lock
 
@@ -163,7 +164,7 @@ CREATE TABLE IF NOT EXISTS job_search_state (
     PRIMARY KEY (job_id, search_id)
 );
 CREATE INDEX IF NOT EXISTS idx_jss_search ON job_search_state(search_id, status);
-""" + AI_USAGE_SCHEMA  # per-call AI cost ledger (DDL owned by ai_usage.py; see that module)
+""" + SPEND_SCHEMA  # per-call AI cost ledger (DDL owned by spend.py; see that module)
 
 # Legacy/default search id — the single implicit search (Path A) and the id every
 # pre-multi-search row is backfilled under. Mirrors config.DEFAULT_SEARCH_ID (kept here
@@ -298,7 +299,7 @@ def open_db(path: str) -> sqlite3.Connection:
     )
     conn.commit()
     ensure_job_search_state(conn)
-    ensure_ai_usage_table(conn)
+    ensure_spend_ledger(conn)
     return conn
 
 
@@ -1265,7 +1266,7 @@ class DescriptionFormatter:
         `label` (e.g. "<job_id> (<title>)") is used only in the rejected/failed
         log lines so it's clear which posting fell back to the heuristic renderer.
 
-        `search_id`/`job_id` attribute a real AI call's cost in the ai_usage ledger. The
+        `search_id`/`job_id` attribute a real AI call's cost in the spend ledger. The
         formatted text is shared across lenses, but the call is charged to the lens whose
         ingest triggered it (a later lens picking up the same posting gets it free).
 
@@ -1347,7 +1348,8 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
            inherit_canonical_status: bool = True,
            company_aliases: "dict | None" = None,
            formatter: "DescriptionFormatter | None" = None,
-           search_id: str = DEFAULT_SEARCH_ID) -> Counter:
+           search_id: str = DEFAULT_SEARCH_ID,
+           item_job_ids: "list | None" = None) -> Counter:
     """Process one run's items for one search. Returns a Counter with these keys:
         inserted_clean / inserted_grouped / inserted_expired  — new postings, by kind
         updated / unchanged / skipped_ats                     — existing / skipped
@@ -1357,8 +1359,17 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
     status/applied_at/history live in this ``search_id``'s ``job_search_state`` row (created on
     first membership). The same posting seen under two searches is one `jobs` row with two state
     rows. Automatic fuzzy dedup is restricted to this search's members.
+
+    ``item_job_ids``, when given, is filled with one entry per item — the job id it mapped to, or
+    None for an item that produced no job row (an ATS duplicate, or one missing an id). It's an
+    out-param rather than a second return value so existing callers/tests keep their shape; the
+    run loop uses it to pro-rate that Apify run's charge over the items it paid for.
     """
     c: Counter = Counter()
+
+    def seen(job_id: str | None) -> None:
+        if item_job_ids is not None:
+            item_job_ids.append(job_id)
 
     # Upsert each item. For each: skip ATS dupes; extract our field dict; then branch on
     # whether the job_id already exists — new rows go through fuzzy-dedup + INSERT, existing
@@ -1367,11 +1378,14 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
     for item in items:
         if exclude_ats_dups and item.get("ats_duplicate") is True:
             c["skipped_ats"] += 1
+            seen(None)   # paid for, but attributable to no job
             continue
         fields = extract_fields_careersite(item) if actor_type == "careersite" else extract_fields_linkedin(item)
         if not fields["job_id"]:
             print(f"  WARNING: item missing job_id, skipping: {list(item.keys())}", file=sys.stderr)
+            seen(None)
             continue
+        seen(fields["job_id"])
 
         # Normalize the company name before anything reads it, so the canonical spelling
         # is what gets stored, deduped, grouped, searched, and scored. Done per item (not
@@ -1936,6 +1950,7 @@ def main() -> None:
     if not args.dry_run and app_cfg.is_multi_search:
         adopt_legacy(conn, app_cfg.adopter.id if app_cfg.adopter else None)
     grand_total: Counter = Counter()
+    grand_cost = 0.0            # total Apify charge across every task this run
     start_time = datetime.now(timezone.utc)
     dry_run_note = " (DRY RUN)" if args.dry_run else ""
     print(f"Starting ingestion at {start_time.strftime('%Y-%m-%d %H:%M:%S %Z')}{dry_run_note}")
@@ -1945,6 +1960,14 @@ def main() -> None:
     # its owning search — the name matters in logs when several searches share one Apify task.
     task_specs: list[tuple[str, str, dict]] = [
         (s.id, s.name, t) for s in app_cfg.searches for t in s.tasks]
+
+    # How many lenses ingest the SAME run of a given task. Apify bills a run once, but an
+    # unscoped task listed under several searches is processed by each of them — so its charge is
+    # split that many ways in the spend ledger instead of being counted once per lens. A
+    # schedule-scoped task doesn't share runs (each lens ingests only its own schedule's), so it
+    # stays a divisor of 1.
+    _unscoped_task_lenses: Counter = Counter(
+        t["name"] for _, _, t in task_specs if not t.get("schedule_name"))
 
     # If any task scopes to a schedule, resolve the configured schedule_name once to the opaque
     # id Apify stamps on runs (meta.scheduleId). The config field is the console-friendly NAME
@@ -2052,6 +2075,7 @@ def main() -> None:
                 print(f"  Catching up: {len(pending)} runs to process.")
 
             task_total: Counter = Counter()
+            task_cost = 0.0        # Apify charge for this task's runs (this lens's share)
             for run in pending:
                 run_time = run["startedAt"][:16].replace("T", " ")
                 # Resolve the label for this specific run.
@@ -2065,22 +2089,38 @@ def main() -> None:
                     label = default_label
                 items = fetch_dataset_items(run["defaultDatasetId"], api_token)
                 print(f"  Run {run_time} [{label}]: {len(items)} items retrieved")
+                run_item_jobs: list = []
                 result = ingest(
                     conn, items, label, actor_type, exclude_ats_dups, reset_on_change,
                     fuzzy_dedup, fuzzy_desc_threshold, fuzzy_title_threshold,
                     fuzzy_title_word_threshold, fuzzy_title_id_gate, inherit_canonical_status,
                     company_aliases=company_alias_map,
-                    formatter=formatter, search_id=search_id,
+                    formatter=formatter, search_id=search_id, item_job_ids=run_item_jobs,
                 )
                 print(f"    {summary_compact(result, reset_on_change)}")
                 task_total += result
                 record_state(conn, skey, run,
                              _new_total(result), result["updated"], result["unchanged"])
+                # Pro-rate what Apify charged for this run across the postings it returned.
+                # usageTotalUsd rides on the run objects already fetched, so this costs no extra
+                # API call; a run that returned nothing becomes lens overhead (see record_apify_run).
+                divisor = max(_unscoped_task_lenses.get(task_name, 1), 1)
+                record_apify_run(
+                    conn, search_id=search_id, task_name=task_name,
+                    cost_usd=run.get("usageTotalUsd"), item_job_ids=run_item_jobs,
+                    divisor=divisor,
+                )
+                task_cost += (run.get("usageTotalUsd") or 0) / divisor
 
             if len(pending) > 1:
                 print(f"  Task total: {summary_compact(task_total, reset_on_change)}")
+            # Apify's own charge for what we just ingested — the scraping half of the running
+            # cost the stats modal reports (the AI half is summarized by the formatter/rescore).
+            if task_cost:
+                print(f"    Apify: ${task_cost:.4f}")
 
             grand_total += task_total
+            grand_cost  += task_cost
 
         except requests.RequestException as exc:
             # Any network-layer failure for this task — an HTTP error from the Apify API, or
@@ -2102,6 +2142,9 @@ def main() -> None:
     desc_summary = formatter.summary()
     if desc_summary:
         print("  " + desc_summary)
+    # Scraping cost for the whole ingest, mirroring the AI cost line above it.
+    if grand_cost:
+        print(f"  Apify usage: ${grand_cost:.4f}")
     print()
 
 
