@@ -257,6 +257,17 @@ def test_summary_denominators_count_only_tracked_jobs(ledger):
     assert a["high_jobs"] == 1 and a["cost_per_high"] == pytest.approx(1.20)
 
 
+def test_summary_excludes_applications_that_predate_tracking(ledger):
+    # A months-old application that only got a ledger row because it was rescored today must not
+    # count: its own discovery/scoring cost was never recorded, so counting it would deflate the
+    # ratio the same way backfilling would. Here j1's spend starts 2026-06-01.
+    _jss(ledger, "old_app", "a", status="rejected", applied_at="2026-01-05 09:00:00")
+    _row(ledger, "2026-09-16 08:00:00", "a", "old_app", "viability", 0.10)
+    a = spend.lens_cost_summary(ledger, applied_statuses=APPLIED, now=NOW)["a"]
+    assert a["applied_jobs"] == 1          # j1 only — the January application is out
+    assert a["total_usd"] == pytest.approx(1.30)   # its spend still counts in the numerator
+
+
 def test_summary_is_per_lens_and_none_on_zero_denominator(ledger):
     b = spend.lens_cost_summary(ledger, applied_statuses=APPLIED, now=NOW)["b"]
     assert b["total_usd"] == pytest.approx(1.00)

@@ -221,7 +221,9 @@ def lens_cost_summary(conn: sqlite3.Connection, *, applied_statuses, window_days
     Denominators only count TRACKED jobs (any ledger row in the lens) so pre-ledger jobs, whose
     cost was never recorded, can't make the ratio look falsely cheap:
       * all-time applied: current status in `applied_statuses` (the applied family — "ever applied";
-        a job moved back to an early status drops out).
+        a job moved back to an early status drops out) AND applied_at at or after the lens's first
+        ledger row, so an application predating tracking — whose cost was never recorded — can't
+        silently deflate the ratio.
       * windowed applied: additionally applied_at inside the window. A spend-rate ÷ application-
         rate ratio, so it isn't inflated by recent jobs you haven't reviewed yet.
       * high: currently rated High and has a viability-scoring row; windowed, that FIRST scoring
@@ -291,12 +293,20 @@ def lens_cost_summary(conn: sqlite3.Connection, *, applied_statuses, window_days
         e["by_viability"][bucket] += usd
 
     placeholders = ", ".join("?" for _ in applied_statuses) or "NULL"
+    # The application must also postdate the lens's first ledger row. "Tracked" alone isn't
+    # enough: one rescore today gives a months-old application a ledger row, and counting it
+    # would divide today's spend by an application whose own discovery/scoring cost was never
+    # recorded — understating cost per application exactly as a backfill would. In a window this
+    # is implied by the window bound; all-time needs it stated.
     for sid, n in conn.execute(
         f"""SELECT t.search_id, COUNT(*) FROM
                 (SELECT DISTINCT search_id, job_id FROM spend_ledger
                  WHERE search_id IS NOT NULL AND job_id IS NOT NULL) t
             JOIN job_search_state jss ON jss.job_id = t.job_id AND jss.search_id = t.search_id
-            WHERE jss.status IN ({placeholders}) {window_clause('jss.applied_at')}
+            JOIN (SELECT search_id, MIN(ts) AS since FROM spend_ledger
+                  WHERE search_id IS NOT NULL GROUP BY search_id) s ON s.search_id = t.search_id
+            WHERE jss.status IN ({placeholders}) AND jss.applied_at >= s.since
+                  {window_clause('jss.applied_at')}
             GROUP BY t.search_id""",
         applied_statuses + win_params,
     ):
