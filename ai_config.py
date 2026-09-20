@@ -41,17 +41,25 @@ def is_reasoning_model(model: str) -> bool:
 # Source: https://platform.claude.com/docs/en/about-claude/models/overview (2026-07-02).
 # Per-model entries list only input/output $/1M; cache_write is 1.25x input (5-min TTL)
 # and cache_read is 0.1x input, so they're derived rather than hand-typed.
-def _pricing(input_per_m: float, output_per_m: float) -> dict[str, float]:
+def _pricing(input_per_m: float, output_per_m: float,
+             cache_read_mult: float = 0.10) -> dict[str, float]:
+    """The 0.1x cache-read multiplier is the standard across the lineup but NOT universal —
+    Fable/Mythos 5.1 bill cache hits at 0.025x — so it's overridable per model. Deriving it
+    blindly would have priced those two 4x high on every cached call; the live drift check now
+    compares the cache columns too, so a future exception fails the suite instead of lurking."""
     return {
         "input":       input_per_m / 1_000_000,
         "output":      output_per_m / 1_000_000,
         "cache_write": input_per_m * 1.25 / 1_000_000,
-        "cache_read":  input_per_m * 0.10 / 1_000_000,
+        "cache_read":  input_per_m * cache_read_mult / 1_000_000,
     }
 
 
 MODEL_PRICING: dict[str, dict[str, float]] = {
-    # Current models (latest generation).
+    # Current models (latest generation). The .1 refreshes keep Fable 5's base rates but cut
+    # cache hits to 0.025x input (a footnote on the pricing page, not a column).
+    "claude-fable-5-1":  _pricing(10.00, 50.00, cache_read_mult=0.025),
+    "claude-mythos-5-1": _pricing(10.00, 50.00, cache_read_mult=0.025),  # Glasswing-only twin of Fable 5.1
     "claude-fable-5":    _pricing(10.00, 50.00),
     "claude-mythos-5":   _pricing(10.00, 50.00),  # Project Glasswing only; same specs/price as Fable 5
     "claude-opus-5":     _pricing(5.00, 25.00),

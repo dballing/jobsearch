@@ -43,14 +43,15 @@ def display_to_model_id(display: str) -> str:
     return name.lower().replace(" ", "-").replace(".", "-")
 
 
-def parse_model_pricing_table(markdown: str) -> "dict[str, tuple[float, float]]":
-    """Extract {model_id: (input_per_mtok, output_per_mtok)} from the page's 'Model pricing' table.
+def parse_model_pricing_table(markdown: str) -> "dict[str, dict[str, float]]":
+    """Extract {model_id: {input, cache_write, cache_read, output}} in $/MTok from the page's
+    'Model pricing' table — the same four keys MODEL_PRICING stores, so they compare directly.
 
     Scoped to the one table whose header carries 'base input', so the half-price Batch table
     (and every other table on the page) is ignored — matching on those would produce spurious
     mismatches. Returns {} when that table can't be found, which the caller treats as
     'couldn't parse, skip' rather than a failure."""
-    prices: "dict[str, tuple[float, float]]" = {}
+    prices: "dict[str, dict[str, float]]" = {}
     in_table = False
     for line in markdown.splitlines():
         s = line.strip()
@@ -71,26 +72,60 @@ def parse_model_pricing_table(markdown: str) -> "dict[str, tuple[float, float]]"
         cells = [c.strip() for c in s.strip("|").split("|")]
         if len(cells) < 6:               # Model | Base Input | 5m | 1h | Hits | Output
             continue
-        inp, out = parse_price(cells[1]), parse_price(cells[-1])
-        if inp is not None and out is not None:
-            prices[display_to_model_id(cells[0])] = (inp, out)
+        # The 1h cache-write column (cells[3]) is skipped: MODEL_PRICING only knows the 5m TTL,
+        # which is what every call site uses.
+        rates = {"input":       parse_price(cells[1]),
+                 "cache_write": parse_price(cells[2]),
+                 "cache_read":  parse_price(cells[4]),
+                 "output":      parse_price(cells[-1])}
+        if all(v is not None for v in rates.values()):
+            prices[display_to_model_id(cells[0])] = rates
     return prices
 
 
-def compare_to_repo(live: "dict[str, tuple[float, float]]") -> "list[str]":
-    """Return a mismatch line for every model priced in BOTH the repo and the live table whose
-    base input/output rate disagrees. Models present on only one side are ignored: a repo-only
-    model is a repo bug caught elsewhere (it wouldn't be on the live page to compare), and a
-    live-only model is simply one we don't use. Rounded to 4dp to shrug off float noise."""
+def parse_retired_model_ids(markdown: str) -> "set[str]":
+    """Model ids the page marks '(retired…)' in their display name. They stay listed for the
+    clouds that still serve them, but we can't call them, so they're excluded from the
+    'unpriced model' nag — otherwise it would grow a permanent tail of models we'll never use.
+    Their *prices* are still compared if we happen to carry one."""
+    retired = set()
+    # Scanned off the raw rows, not the parsed ids, because display_to_model_id deliberately
+    # strips the '([retired …])' parenthetical that carries the signal. Rows from the other
+    # model tables (batch etc.) name the same models, so matching them too is harmless.
+    for line in markdown.splitlines():
+        s = line.strip()
+        if s.startswith("|") and "retired" in s.lower():
+            retired.add(display_to_model_id(s.strip("|").split("|")[0].strip()))
+    return retired
+
+
+def missing_from_repo(live: "dict[str, dict[str, float]]", retired: "set[str]") -> "list[str]":
+    """Live, callable models that MODEL_PRICING doesn't price. Anything we can call but can't
+    price silently costs $0 in the spend ledger, which understates every cost figure — so these
+    get surfaced for adding rather than ignored."""
+    return sorted(m for m in live if m not in MODEL_PRICING and m not in retired)
+
+
+def compare_to_repo(live: "dict[str, dict[str, float]]") -> "list[str]":
+    """Return a mismatch line for every rate that disagrees, across every model priced in BOTH
+    the repo and the live table. All four billed rates are checked, not just base input/output:
+    ai_config derives cache_write/cache_read from input by a multiplier that is standard but not
+    universal (Fable/Mythos 5.1 bill cache hits at 0.025x, a footnote the table itself doesn't
+    show), so a derived-but-wrong cache rate is exactly the kind of quiet error worth catching.
+
+    A model on only one side is not a mismatch: a repo-only model has nothing to compare against,
+    and a live-only one is reported separately by missing_from_repo. Rounded to 4dp for float
+    noise."""
     problems = []
     for model, pricing in MODEL_PRICING.items():
         if model not in live:
             continue
-        repo = (round(pricing["input"] * 1_000_000, 4), round(pricing["output"] * 1_000_000, 4))
-        live_pair = (round(live[model][0], 4), round(live[model][1], 4))
-        if repo != live_pair:
-            problems.append(
-                f"{model}: repo ${repo[0]}/${repo[1]} vs live ${live_pair[0]}/${live_pair[1]} per MTok")
+        for rate in ("input", "cache_write", "cache_read", "output"):
+            repo_rate = round(pricing[rate] * 1_000_000, 4)
+            live_rate = round(live[model][rate], 4)
+            if repo_rate != live_rate:
+                problems.append(
+                    f"{model} {rate}: repo ${repo_rate} vs live ${live_rate} per MTok")
     return problems
 
 

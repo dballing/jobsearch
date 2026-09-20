@@ -48,11 +48,13 @@ def test_display_to_model_id_maps_names_and_strips_notes():
 
 def test_parse_reads_base_table_not_batch_table():
     prices = pc.parse_model_pricing_table(SAMPLE)
-    # Base rates from the Model-pricing table — NOT the $2.50/$12.50 batch row below it.
-    assert prices["claude-opus-5"] == (5.0, 25.0)
-    assert prices["claude-fable-5"] == (10.0, 50.0)
-    assert prices["claude-sonnet-5"] == (2.0, 10.0)
-    assert prices["claude-opus-4-1"] == (15.0, 75.0)
+    # Base rates from the Model-pricing table — NOT the $2.50/$12.50 batch row below it. All four
+    # billed columns are read; the 1h cache-write column is deliberately not one of them.
+    assert prices["claude-opus-5"] == {"input": 5.0, "cache_write": 6.25,
+                                       "cache_read": 0.50, "output": 25.0}
+    assert prices["claude-fable-5"]["output"] == 50.0
+    assert prices["claude-sonnet-5"]["input"] == 2.0
+    assert prices["claude-opus-4-1"]["cache_read"] == 1.50
 
 
 def test_parse_anchor_survives_header_recasing():
@@ -87,18 +89,50 @@ def test_format_change_yields_no_known_models():
     assert set(live) & set(pc.MODEL_PRICING) == set()
 
 
+def _as_live(pricing: dict) -> dict:
+    """MODEL_PRICING ($/token) in the parser's shape ($/MTok), i.e. a live table that agrees."""
+    return {m: {k: round(v * 1e6, 4) for k, v in p.items()} for m, p in pricing.items()}
+
+
 def test_compare_passes_on_agreement_and_flags_drift():
-    agree = {m: (round(p["input"] * 1e6, 4), round(p["output"] * 1e6, 4))
-             for m, p in pc.MODEL_PRICING.items()}
+    agree = _as_live(pc.MODEL_PRICING)
     assert pc.compare_to_repo(agree) == []
-    drifted = dict(agree, **{"claude-opus-5": (6.0, 30.0)})
+    drifted = dict(agree, **{"claude-opus-5": dict(agree["claude-opus-5"], input=6.0)})
     problems = pc.compare_to_repo(drifted)
-    assert len(problems) == 1 and "claude-opus-5" in problems[0]
+    assert len(problems) == 1 and "claude-opus-5 input" in problems[0]
+
+
+def test_compare_checks_cache_rates_not_just_input_output():
+    """ai_config derives cache_write/cache_read from input by a multiplier that isn't universal
+    (Fable/Mythos 5.1 bill hits at 0.025x). A wrong derived cache rate bills real money, so the
+    guard must catch it even when base input/output agree."""
+    live = _as_live(pc.MODEL_PRICING)
+    live["claude-opus-5"]["cache_read"] = 0.99          # base rates still agree
+    problems = pc.compare_to_repo(live)
+    assert len(problems) == 1 and "claude-opus-5 cache_read" in problems[0]
 
 
 def test_compare_ignores_models_not_in_both():
-    # A live-only model we don't price must not trip the check.
-    assert pc.compare_to_repo({"claude-future-9": (1.0, 2.0)}) == []
+    # A live-only model we don't price must not trip the *drift* check (missing_from_repo
+    # reports it instead).
+    assert pc.compare_to_repo({"claude-future-9": {"input": 1.0, "cache_write": 1.25,
+                                                   "cache_read": 0.1, "output": 2.0}}) == []
+
+
+def test_missing_from_repo_reports_unpriced_live_models():
+    """A callable model we don't price bills as $0 in the spend ledger, understating every cost
+    figure — so it has to surface. The real page is the fixture's source: every model it lists as
+    current is priced here."""
+    live = dict(_as_live(pc.MODEL_PRICING), **{"claude-future-9": {}, "claude-gone-1": {}})
+    assert pc.missing_from_repo(live, retired=set()) == ["claude-future-9", "claude-gone-1"]
+    # ...but a model the page marks retired can't be called, so it isn't nagged about.
+    assert pc.missing_from_repo(live, retired={"claude-gone-1"}) == ["claude-future-9"]
+
+
+def test_retired_ids_parsed_from_display_notes():
+    """display_to_model_id strips the '([retired …])' note, so the retired set must come off the
+    raw rows. SAMPLE marks Opus 4.1 retired and nothing else."""
+    assert pc.parse_retired_model_ids(SAMPLE) == {"claude-opus-4-1"}
 
 
 # ── redirect recorder (hermetic) ──────────────────────────────────────────────
@@ -208,5 +242,16 @@ def test_live_pricing_matches_repo():
             "pricing_check.parse_model_pricing_table / display_to_model_id.",
             stacklevel=2)
         pytest.skip("pricing page format changed (no known models parsed) — see warning above")
+    missing = pc.missing_from_repo(live, pc.parse_retired_model_ids(markdown))
+    if missing:
+        # Not a failure: a model launching is Anthropic's event, not a repo defect, and hard-failing
+        # would turn an unrelated announcement into a red suite mid-commit. But an unpriced model
+        # bills as $0 if anything ever points at it, so it shouldn't pass in silence either.
+        warnings.warn(
+            "Anthropic prices models that ai_config.MODEL_PRICING doesn't: "
+            + ", ".join(missing)
+            + ". Add them (check the page's footnotes for a non-standard cache multiplier) so "
+              "spend on them isn't silently counted as $0.",
+            stacklevel=2)
     problems = pc.compare_to_repo(live)
     assert not problems, "MODEL_PRICING drifted from live Anthropic pricing:\n  " + "\n  ".join(problems)

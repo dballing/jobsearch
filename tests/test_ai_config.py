@@ -53,9 +53,20 @@ def test_current_models_are_priced():
     """Every model the app might be configured to use must be in MODEL_PRICING, or
     estimate_cost returns None and the cost line silently disappears. Opus 5 in particular
     was missing — the table jumped from Fable 5 straight to Opus 4.8."""
-    for model in ("claude-fable-5", "claude-opus-5", "claude-opus-4-8",
+    for model in ("claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-opus-4-8",
                   "claude-sonnet-5", "claude-haiku-4-5"):
         assert model in MODEL_PRICING, model
+
+
+def test_fable_5_1_cache_hits_use_the_cheaper_multiplier():
+    """Fable/Mythos 5.1 bill cache hits at 0.025x base input, not the 0.1x the rest of the lineup
+    uses — a footnote on the pricing page rather than a column. Deriving the standard multiplier
+    would overcharge every cached call 4x, which for a cache-heavy workload is most of the bill."""
+    assert estimate_cost("claude-fable-5-1", cache_read=1_000_000) == 0.25
+    assert estimate_cost("claude-mythos-5-1", cache_read=1_000_000) == 0.25
+    # Base rates are unchanged from Fable 5, and the standard 0.1x still applies elsewhere.
+    assert estimate_cost("claude-fable-5-1", input=1_000_000) == 10.00
+    assert estimate_cost("claude-fable-5", cache_read=1_000_000) == 1.00
 
 
 def test_opus_5_priced_at_5_and_25_per_million():
