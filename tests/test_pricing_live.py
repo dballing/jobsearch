@@ -55,6 +55,25 @@ def test_parse_reads_base_table_not_batch_table():
     assert prices["claude-opus-4-1"] == (15.0, 75.0)
 
 
+def test_parse_anchor_survives_header_recasing():
+    """Regression: the live page renamed the column 'Base Input Tokens' -> 'Base input tokens',
+    which lost the (then case-sensitive) anchor and left the drift check silently validating
+    nothing. Casing is editorial, not a pricing signal, so the anchor must ignore it."""
+    recased = SAMPLE.replace("Base Input Tokens", "Base input tokens")
+    assert pc.parse_model_pricing_table(recased) == pc.parse_model_pricing_table(SAMPLE)
+
+
+def test_parse_anchor_not_fooled_by_other_input_columns():
+    """The looser anchor must still start on the base-rate table only. These are the other
+    model-table headers on the live page; anchoring on one would read half-price batch rates (or
+    per-tool surcharges) as base pricing — a mismatch that looks like real drift."""
+    for header in ("| Model | Batch input | Batch output |",
+                   "| Model | Additional input tokens |",
+                   "| Model | Input | Output |"):
+        table = f"{header}\n| --- | --- |\n| Claude Opus 5 | $2.50 / MTok | $12.50 / MTok |\n"
+        assert pc.parse_model_pricing_table(table) == {}
+
+
 def test_parse_returns_empty_when_table_absent():
     assert pc.parse_model_pricing_table("no pricing table here") == {}
 

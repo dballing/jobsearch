@@ -46,18 +46,22 @@ def display_to_model_id(display: str) -> str:
 def parse_model_pricing_table(markdown: str) -> "dict[str, tuple[float, float]]":
     """Extract {model_id: (input_per_mtok, output_per_mtok)} from the page's 'Model pricing' table.
 
-    Scoped to the one table whose header carries 'Base Input Tokens', so the half-price Batch
-    table (and every other table on the page) is ignored — matching on those would produce
-    spurious mismatches. Returns {} when that table can't be found, which the caller treats as
+    Scoped to the one table whose header carries 'base input', so the half-price Batch table
+    (and every other table on the page) is ignored — matching on those would produce spurious
+    mismatches. Returns {} when that table can't be found, which the caller treats as
     'couldn't parse, skip' rather than a failure."""
     prices: "dict[str, tuple[float, float]]" = {}
     in_table = False
     for line in markdown.splitlines():
         s = line.strip()
         if not in_table:
-            # The Model-pricing header is the anchor; the Batch table's header ('Batch input')
-            # doesn't contain this string, so we never start capturing there.
-            if s.startswith("|") and "Base Input Tokens" in s:
+            # The Model-pricing header is the anchor. Matched case-insensitively and without the
+            # trailing 'tokens' because the page has already re-cased this header once ('Base
+            # Input Tokens' -> 'Base input tokens'), which silently blanked the check; prose
+            # capitalization is editorial churn, not a pricing change, so don't depend on it.
+            # Still unambiguous: the other model tables head their columns 'Batch input',
+            # 'Additional input tokens' or plain 'Input', none of which contain 'base input'.
+            if s.startswith("|") and "base input" in s.lower():
                 in_table = True
             continue
         if not s.startswith("|"):
