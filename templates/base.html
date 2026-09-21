@@ -88,6 +88,12 @@
           {% endif %}
         </div>
         {% endif %}
+        {# Home: bare "/" so it drops any filter/sort/group query args and lands on the default
+           listing. The brand text links here too, but sub-pages (e.g. the weekly report) read as
+           standalone documents, so the icon makes the way back obvious from the controls cluster. #}
+        <a href="/" class="btn btn-sm btn-outline-secondary" title="Back to job listings">
+          <i class="bi bi-house"></i>
+        </a>
         <button id="themeToggle" class="btn btn-sm btn-outline-secondary" title="Toggle dark mode">
           <i class="bi bi-moon"></i>
         </button>
