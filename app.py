@@ -1174,6 +1174,31 @@ def fetch_sub_rows(db: sqlite3.Connection, group_key: str,
     return [process_job_row(r, hotlist, fx) for r in rows]
 
 
+def build_grouped_jobs(db: sqlite3.Connection, headers: list, where: str, params: list,
+                       hotlist: "set[str] | frozenset" = frozenset(),
+                       fx: "dict[str, float] | None" = None) -> list[dict]:
+    """Build one display row per grouped header, dropping any group left with no visible members.
+
+    The headers and their sub-rows come from two separate queries with no transaction between
+    them, so a writer (ingest's auto-ghost/close/reset, or a fuzzy relink that re-points
+    canonical_id) can land in the gap: the header was counted under the old state, but by the
+    time we fetch its members none still match the filter. That group has nothing to show, and
+    rendering it anyway produced a row with no job_id, no title and no locations_count — which
+    the template then blew up on ('dict object' has no attribute 'locations_count').
+
+    Dropping it is right on the merits, not just defensive: the group genuinely has no rows in
+    this view any more. The page's `total` (a separate COUNT) can be one high for that request;
+    not worth a transaction to fix, since the next load recomputes both consistently.
+    """
+    jobs = []
+    for h in headers:
+        sub_rows = fetch_sub_rows(db, h["group_key"], where, params, hotlist, fx)
+        if not sub_rows:
+            continue
+        jobs.append(build_grouped_job(h, sub_rows))
+    return jobs
+
+
 def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
     """Assemble the display dict for one grouped (matched-jobs) header row.
 
@@ -1281,8 +1306,13 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
         "group_posted":     _group_earliest_date(sub_rows, "posted_date"),
         "group_first_seen": _group_earliest_date(sub_rows, "first_seen"),
     }
-    if not multi and sub_rows:
-        s = sub_rows[0]
+    if not multi:
+        # A single-posting group renders through the flat-row template, which reads these keys
+        # unconditionally — so fill them even when sub_rows came back empty (see
+        # build_grouped_jobs: a writer can empty a group between the two queries). Callers drop
+        # such groups, but keeping this total means no caller can produce a dict that the
+        # template explodes on.
+        s = sub_rows[0] if sub_rows else {}
         job.update({
             "job_id":           s.get("job_id"),
             "job_url":          s.get("job_url"),
@@ -1294,7 +1324,7 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
             "locations_all":    s.get("locations_all", ""),
             "locations_count":  s.get("locations_count", 1),
             "refreshed_at":     s.get("refreshed_at"),
-            "salary_display":   s["salary_display"],
+            "salary_display":   s.get("salary_display", ""),
             # The USD-equivalent hover must ride along too — the single-row template renders
             # salary_text(job.salary_display, job.salary_usd_display) like a flat row, so without
             # this a non-USD single-posting group shows no tooltip (the grouped-header path uses
@@ -1302,11 +1332,11 @@ def build_grouped_job(header: sqlite3.Row, sub_rows: list[dict]) -> dict:
             "salary_usd_display": s.get("salary_usd_display"),
             "salary_min":       s.get("salary_min"),
             "salary_max":       s.get("salary_max"),
-            "labels":           s["labels"],
+            "labels":           s.get("labels", []),
             "source":           s.get("source", "linkedin"),
-            "source_display":   s["source_display"],
+            "source_display":   s.get("source_display", ""),
             "status":           s.get("status", "new"),
-            "status_color":     s["status_color"],
+            "status_color":     s.get("status_color", "secondary"),
             "applied_at":       s.get("applied_at"),
             "posted_date":      s.get("posted_date", ""),
             "first_seen":       s.get("first_seen", ""),
@@ -1554,10 +1584,7 @@ def index():
                 headers = db.execute(
                     GROUPED_HEADERS_EMP.format(join=join, where=where, having=having, order=order),
                     params + hparams + [-1, 0]).fetchall()
-                emp_jobs = [
-                    build_grouped_job(h, fetch_sub_rows(db, h["group_key"], where, params, hotlist, fx))
-                    for h in headers
-                ]
+                emp_jobs = build_grouped_jobs(db, headers, where, params, hotlist, fx)
                 job_count = sum(j["location_count"] for j in emp_jobs)
             else:
                 ewhere, eparams = employer_where(where, params, employer)
@@ -1574,10 +1601,7 @@ def index():
         total   = db.execute(GROUPED_COUNT.format(join=join, where=where), params).fetchone()[0]
         headers = db.execute(GROUPED_HEADERS.format(join=join, where=where, order=order),
                              params + [limit, offset]).fetchall()
-        jobs = [
-            build_grouped_job(h, fetch_sub_rows(db, h["group_key"], where, params, hotlist, fx))
-            for h in headers
-        ]
+        jobs = build_grouped_jobs(db, headers, where, params, hotlist, fx)
     else:
         total = db.execute(FLAT_COUNT.format(join=join, where=where), params).fetchone()[0]
         rows  = db.execute(FLAT_SELECT.format(join=join, where=where, order=order),
