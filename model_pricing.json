@@ -64,6 +64,11 @@
       "input": 5.00,
       "output": 25.00
     },
+    "claude-sonnet-5-5": {
+      "input": 2.00,
+      "output": 10.00,
+      "note": "Launched 2026-09-29 at the same headline rates as Sonnet 5 (the 'up to 30% cheaper per task' claim is about tokens used at Medium effort, not the per-token price). A point release, not a snapshot, so it needs its own entry — it must never inherit Sonnet 5's."
+    },
     "claude-sonnet-5": {
       "input": 2.00,
       "output": 10.00,
