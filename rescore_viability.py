@@ -62,8 +62,9 @@ from pathlib import Path
 import anthropic
 
 from config import ConfigError, load_config
-from ai_config import (format_token_summary, resolve_ai_settings, resolve_effort,
-                       resolve_geo_effort, resolve_geo_model, warn_effort_ignored)
+from ai_config import (UnpricedModelError, base_model_id, format_token_summary, require_priced_models,
+                       resolve_ai_settings, resolve_effort, resolve_geo_effort,
+                       resolve_geo_model, warn_effort_ignored)
 from spend import ensure_spend_ledger, record_usage
 from ingest import (adopt_legacy, append_history, backfill_description_truncated,
                     DEFAULT_SEARCH_ID, ensure_job_search_state)
@@ -112,12 +113,16 @@ def check_model_currency(all_models: list, configured_model: str) -> None:
     try:
         model_ids  = {m.id for m in all_models}
 
-        # The models API returns dated IDs (e.g. claude-haiku-4-5-20251001) but
-        # not undated aliases (e.g. claude-haiku-4-5).  Treat a configured model
-        # as available if it matches exactly OR is a prefix of an available ID.
+        # The models API returns dated IDs (e.g. claude-haiku-4-5-20251001) but not undated
+        # aliases (e.g. claude-haiku-4-5). Treat a configured model as available if it matches
+        # exactly OR an available ID is a dated *snapshot* of it. Matching on a bare prefix
+        # instead (the previous rule) silently swallowed point releases: claude-sonnet-5-5
+        # starts with "claude-sonnet-5-", so a config on claude-sonnet-5 was read as an alias
+        # for its own successor and the "newer model" notice below never fired — the exact case
+        # this function exists to catch. base_model_id's 8-digit-date rule is the discriminator.
         def matches_available(name: str) -> bool:
             return any(
-                mid == name or mid.startswith(name + "-")
+                mid == name or base_model_id(mid) == name
                 for mid in model_ids
             )
 
@@ -147,8 +152,11 @@ def check_model_currency(all_models: list, configured_model: str) -> None:
 
         if family_models:
             newest = family_models[0].id
-            # Not newer if configured model IS the newest or is an alias for it.
-            if not (newest == configured_model or newest.startswith(configured_model + "-")):
+            # Not newer if the configured model IS the newest, or newest is merely a dated
+            # snapshot of the undated alias we're configured with. Deliberately asymmetric: a
+            # config pinned to a *dated* id stays eligible for the notice, so a newer snapshot
+            # of the same base model still gets reported.
+            if not (newest == configured_model or base_model_id(newest) == configured_model):
                 print(
                     f"Note: a newer model is available in this family: "
                     f"'{newest}' (you are using '{configured_model}'). "
@@ -586,6 +594,15 @@ def main() -> None:
         app_cfg = load_config(config_path)
     except ConfigError as exc:
         sys.exit(str(exc))
+
+    # Refuse to spend before any billed work happens. An unpriced model would score normally and
+    # write $0 ledger rows that are indistinguishable from free ones afterwards — and since rows
+    # are priced at call time, the real cost can't be reconstructed once the run is over. Checked
+    # here on the parent, so a fan-out never starts children that would each die the same way.
+    try:
+        require_priced_models([(s.id, s.config) for s in app_cfg.searches])
+    except UnpricedModelError as exc:
+        sys.exit(f"ERROR: {exc}")
 
     # Multi-search fan-out: with no explicit --search on a Path-B config, score EVERY configured
     # search — each in its own child process. The writer lock is process-scoped (fcntl.flock,

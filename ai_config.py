@@ -8,6 +8,7 @@ for both so the two features stay consistent.
 """
 
 import os
+import re
 import sys
 
 # Fallback model when neither the feature section nor [ai] specifies one. Haiku is the
@@ -75,6 +76,30 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
     "claude-sonnet-4-6": _pricing(3.00, 15.00),
     "claude-sonnet-4-5": _pricing(3.00, 15.00),
 }
+
+
+# A dated snapshot ID is a base model plus an 8-digit date (claude-sonnet-5-20260101). That
+# suffix shape is the ONLY thing distinguishing a pin of the same model from a *point release*
+# (claude-sonnet-5-5), which is a genuinely different model that may bill differently — Opus 5.5
+# undercuts Opus 5 by 20%. Plain prefix matching conflates the two and would silently price a
+# point release at its predecessor's rates, which is exactly the error this check exists to stop.
+_SNAPSHOT_SUFFIX = re.compile(r"-\d{8}$")
+
+
+def base_model_id(model: str) -> str:
+    """`model` lowercased with a dated-snapshot suffix stripped (unchanged if it has none)."""
+    return _SNAPSHOT_SUFFIX.sub("", (model or "").lower())
+
+
+def pricing_for(model: str) -> "dict[str, float] | None":
+    """The MODEL_PRICING entry for `model`, or None when it isn't priced.
+
+    A dated snapshot inherits its base model's rates — it IS that model, pinned. Everything
+    else must be priced explicitly, so a new point release surfaces as unpriced rather than
+    quietly inheriting the older sibling's numbers.
+    """
+    m = (model or "").lower()
+    return MODEL_PRICING.get(m) or MODEL_PRICING.get(base_model_id(m))
 
 
 def resolve_ai_settings(config: dict, section: str) -> tuple[str | None, str]:
@@ -168,6 +193,66 @@ def resolve_geo_model(config: dict, geo_uses_description: bool) -> str:
     return (config.get("ai", {}) or {}).get("model") or DEFAULT_MODEL
 
 
+class UnpricedModelError(Exception):
+    """A configured model has no MODEL_PRICING entry, so its calls would ledger at $0.
+
+    Fatal rather than a warning because the spend ledger is the only record of what a lens
+    costs, rows are priced at call time, and an unpriced model's $0 rows are indistinguishable
+    from free ones afterwards — by the time anyone notices, the real cost is unrecoverable.
+    """
+
+
+def configured_models(config: dict) -> "dict[str, list[str]]":
+    """Every model one search's config could send a billed call to → the config keys selecting it.
+
+    The location sub-call appears under both of its resolutions because which one applies is a
+    per-job property (it escalates to the viability model when the call reads the description),
+    so both are reachable from a single config and both must be priced.
+    """
+    surfaces = [
+        (resolve_ai_settings(config, "viability")[1],   "[viability].model"),
+        (resolve_ai_settings(config, "descriptions")[1], "[descriptions].model"),
+        (resolve_geo_model(config, True),  "[viability].location_model (reading the description)"),
+        (resolve_geo_model(config, False), "[viability].location_model"),
+    ]
+    out: dict[str, list[str]] = {}
+    for model, where in surfaces:
+        out.setdefault(model, [])
+        if where not in out[model]:
+            out[model].append(where)
+    return out
+
+
+def unpriced_models(config: dict) -> "dict[str, list[str]]":
+    """The subset of configured_models() with no pricing entry. Empty dict ⇒ all priced."""
+    return {m: where for m, where in configured_models(config).items() if pricing_for(m) is None}
+
+
+def require_priced_models(items: "list[tuple[str, dict]]") -> None:
+    """Raise UnpricedModelError if any (search_id, config) pair selects an unpriced model.
+
+    Takes the pairs rather than an AppConfig so this stays a leaf module testable with plain
+    dicts. Entry points pass ``[(s.id, s.config) for s in app_cfg.searches]``.
+    """
+    problems: list[str] = []
+    for search_id, config in items:
+        for model, where in sorted(unpriced_models(config).items()):
+            problems.append(f"  {model!r} — selected by {', '.join(where)} in search {search_id!r}")
+    if not problems:
+        return
+    raise UnpricedModelError(
+        "no pricing is configured for these models, so their calls would be recorded as $0 "
+        "in the spend ledger:\n" + "\n".join(problems)
+        + "\n\nFix by either:\n"
+          "  - switching the config to a model listed in ai_config.MODEL_PRICING, or\n"
+          "  - adding the model to ai_config.MODEL_PRICING with its published rates\n"
+          "    (check the pricing page's footnotes for a non-standard cache-read multiplier).\n"
+          "A dated snapshot (e.g. claude-sonnet-5-20260101) inherits its base model's rates "
+          "automatically; a point release (e.g. claude-sonnet-5-5) is a distinct model and "
+          "needs its own entry."
+    )
+
+
 def estimate_cost(model: str, *, input: int = 0, output: int = 0,
                   cache_write: int = 0, cache_read: int = 0) -> float | None:
     """Estimated USD cost for a token tally, or None if the model is unpriced.
@@ -177,7 +262,7 @@ def estimate_cost(model: str, *, input: int = 0, output: int = 0,
     Returns None (rather than 0) for an unknown model so the caller can distinguish
     "no pricing data" from "genuinely free" and omit the cost line entirely.
     """
-    pricing = MODEL_PRICING.get(model)
+    pricing = pricing_for(model)
     if not pricing:
         return None
     return (

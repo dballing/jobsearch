@@ -2629,13 +2629,24 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
     # focused location sub-call and feed its verdict to the scorer in place of raw locations.
     location_prompt = vcfg.get("location_prompt", "").strip()
     geo_uses_description = bool(vcfg.get("location_use_description", True))
-    from ai_config import resolve_ai_settings, resolve_effort, resolve_geo_effort, resolve_geo_model
+    from ai_config import (pricing_for, resolve_ai_settings, resolve_effort, resolve_geo_effort,
+                           resolve_geo_model)
     api_key, model = resolve_ai_settings(cfg, "viability")
     if not api_key:
         return False, "no Anthropic API key configured"
     # When the sub-call reads the description this escalates to the viability model — haiku
     # false-POORs remote jobs on noisy descriptions (see resolve_geo_model).
     geo_model = resolve_geo_model(cfg, geo_uses_description)
+    # Same refuse-before-spending rule the batch entry points enforce at startup, but scoped to
+    # this request: the app hot-reloads config, so a config edit naming an unpriced model must
+    # not take the whole UI down — only the routes that would bill against it. Checked against
+    # the two models THIS route calls, not the whole config, so an unpriced [descriptions].model
+    # (which ingest bills for, not us) doesn't block a scoring request.
+    unpriced = sorted({m for m in (model, geo_model) if pricing_for(m) is None})
+    if unpriced:
+        return False, (f"no pricing configured for {', '.join(unpriced)} — scoring would be "
+                       "recorded as $0. Add the model to ai_config.MODEL_PRICING, or switch "
+                       "to a priced model.")
     # Thinking effort for the scorer and geo sub-call (applied only on reasoning models; see
     # viability._thinking_call_config). Resolved the same way rescore_viability does.
     effort     = resolve_effort(cfg, "viability")[0]

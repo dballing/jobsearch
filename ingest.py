@@ -25,8 +25,9 @@ import requests
 
 from config import ConfigError, load_config, migrate_config_to_basics
 
-from ai_config import (DEFAULT_EFFORT, format_token_summary, resolve_ai_settings,
-                       resolve_effort, warn_effort_ignored)
+from ai_config import (DEFAULT_EFFORT, UnpricedModelError, format_token_summary,
+                       require_priced_models, resolve_ai_settings, resolve_effort,
+                       warn_effort_ignored)
 from spend import (SCHEMA as SPEND_SCHEMA, ensure_spend_ledger, record_apify_run,
                    record_usage)
 from reformat import content_preserved, description_hash, reformat_description
@@ -1884,6 +1885,16 @@ def main() -> None:
         app_cfg = load_config(config_path)
     except ConfigError as exc:
         sys.exit(str(exc))
+
+    # Same pre-spend gate as rescore: ingest bills for description reformatting, and an unpriced
+    # model there would write $0 ledger rows that can't be repriced after the fact. Checked for
+    # every search even though ingest only calls the [descriptions] model — a config whose
+    # viability model is unpriced is broken for the rescore that cron chains onto this run, and
+    # failing now is cheaper than failing after a full fetch.
+    try:
+        require_priced_models([(s.id, s.config) for s in app_cfg.searches])
+    except UnpricedModelError as exc:
+        sys.exit(f"ERROR: {exc}")
 
     # Globals are shared across all searches (one DB, one alias namespace, one API key).
     shared = app_cfg.shared

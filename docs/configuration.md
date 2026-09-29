@@ -191,6 +191,21 @@ effort  = "medium"                        # default thinking effort (reasoning m
 then `[ai]`, then the built-in default / `ANTHROPIC_API_KEY`. This is backward
 compatible — an `api_key`/`model` left under `[viability]` still works as an override.
 
+**Every configured model must be priced, or the run refuses to start.** `ingest.py` and
+`rescore_viability.py` check each search's models against `ai_config.MODEL_PRICING` after
+loading config and exit with an error before spending anything; the app's on-demand rescore
+refuses that one request the same way (it keeps serving, since config is hot-reloaded). This
+is deliberate: an unpriced model still scores jobs, but its [spend ledger](features.md) rows
+are written at $0 and are indistinguishable from genuinely free ones afterwards — and because
+rows are priced at call time, the real cost can't be reconstructed later. The error names the
+model, the config key and the search, and gives both fixes: switch to a listed model, or add
+the new one to `MODEL_PRICING` with its published rates (check the pricing page's *footnotes*
+for a non-standard cache-read multiplier — Fable/Mythos 5.1 bill cache hits at 0.025×, not the
+usual 0.1×). A **dated snapshot** (`claude-sonnet-5-20260101`) needs no entry: it's the same
+model pinned, so it inherits its base model's rates. A **point release** (`claude-sonnet-5-5`)
+does need one — it's a distinct model that may bill differently, so it is never allowed to
+inherit its predecessor's numbers.
+
 **`effort` — how it's applied.** Effort controls how much a *reasoning* model (Claude 4.6+/5,
 e.g. `claude-sonnet-5`) thinks before answering. It parallels `model`: an `effort` sits alongside
 every `model` knob (`[ai]`, `[viability]` + its `location_effort`, `[descriptions]`), with the same

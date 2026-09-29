@@ -75,6 +75,31 @@ def test_currency_notes_newer_sibling(capsys):
     assert "newer model is available" in capsys.readouterr().out
 
 
+def test_currency_notes_point_release_in_same_family(capsys):
+    """A point release (claude-sonnet-5 → claude-sonnet-5-5) must be reported.
+
+    Regression: the old exact-or-bare-prefix rule read 'claude-sonnet-5-5-…' as a dated alias
+    of 'claude-sonnet-5' (it does start with 'claude-sonnet-5-') and stayed silent about the
+    successor — the one thing this check is for. Only an 8-digit suffix means 'same model'.
+    """
+    models = [_Model("claude-sonnet-5-20260101", created_at=1),
+              _Model("claude-sonnet-5-5-20260929", created_at=2)]
+    rv.check_model_currency(models, "claude-sonnet-5")
+    out = capsys.readouterr()
+    assert "newer model is available" in out.out and "claude-sonnet-5-5" in out.out
+    assert out.err == ""          # a successor is advisory, not a 'model unavailable' warning
+
+
+def test_currency_point_release_does_not_mask_availability(capsys):
+    """A point release alone must NOT satisfy the availability check for its predecessor.
+
+    If only claude-sonnet-5-5 is served, a config on claude-sonnet-5 is genuinely broken and
+    has to say so rather than treat the successor as the configured model.
+    """
+    rv.check_model_currency([_Model("claude-sonnet-5-5-20260929")], "claude-sonnet-5")
+    assert "not available" in capsys.readouterr().err
+
+
 def test_currency_never_raises_on_bad_list():
     """The check stays non-fatal: a malformed list can't crash the run."""
     rv.check_model_currency([object()], "claude-sonnet-5")  # object() has no .id → guarded

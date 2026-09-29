@@ -1,9 +1,12 @@
 """Model/key resolution in ai_config — especially resolve_geo_model, which escalates the
 location sub-call to a capable model when it reads job descriptions — plus the pricing table."""
 
-from ai_config import (DEFAULT_EFFORT, DEFAULT_MODEL, MODEL_PRICING, effective_effort,
-                       estimate_cost, is_reasoning_model, resolve_effort, resolve_geo_effort,
-                       resolve_geo_model)
+import pytest
+
+from ai_config import (DEFAULT_EFFORT, DEFAULT_MODEL, MODEL_PRICING, UnpricedModelError,
+                       base_model_id, configured_models, effective_effort, estimate_cost,
+                       is_reasoning_model, pricing_for, require_priced_models, resolve_effort,
+                       resolve_geo_effort, resolve_geo_model, unpriced_models)
 
 
 # ── effort resolution (parallels the model resolution) ────────────────────────
@@ -119,3 +122,80 @@ def test_escalation_falls_back_to_ai_model_then_default():
 
 def test_default_when_nothing_configured():
     assert resolve_geo_model({}, False) == DEFAULT_MODEL
+
+
+# ── unpriced-model gate ───────────────────────────────────────────────────────
+# A configured model with no MODEL_PRICING entry bills at $0 in the spend ledger, and rows are
+# priced at call time, so the real cost can't be reconstructed afterwards. The entry points
+# refuse to run rather than spend silently; these cover the resolution rules behind that.
+def test_base_model_id_strips_only_a_dated_suffix():
+    assert base_model_id("claude-sonnet-5-20260101") == "claude-sonnet-5"
+    assert base_model_id("claude-sonnet-5") == "claude-sonnet-5"
+    assert base_model_id("CLAUDE-SONNET-5") == "claude-sonnet-5"   # normalized
+    assert base_model_id("") == ""
+    assert base_model_id(None) == ""
+    # A point release is NOT a date — it must survive intact or it inherits the wrong rates.
+    assert base_model_id("claude-sonnet-5-5") == "claude-sonnet-5-5"
+    # Near-misses on the 8-digit shape stay untouched.
+    assert base_model_id("claude-sonnet-5-2026010") == "claude-sonnet-5-2026010"
+    assert base_model_id("claude-sonnet-5-202601011") == "claude-sonnet-5-202601011"
+
+
+def test_pricing_for_dated_snapshot_inherits_its_base_model():
+    """A pinned snapshot IS the base model, so it prices identically rather than as unknown."""
+    assert pricing_for("claude-sonnet-5-20260101") == MODEL_PRICING["claude-sonnet-5"]
+    assert estimate_cost("claude-sonnet-5-20260101", input=1_000_000) == \
+           estimate_cost("claude-sonnet-5", input=1_000_000)
+
+
+def test_pricing_for_point_release_does_not_inherit_predecessor():
+    """The whole point of the gate: claude-opus-5-5 must not quietly bill at claude-opus-5's
+    rates (it is 20% cheaper), so an unpriced point release resolves to None, not a guess."""
+    assert "claude-opus-5-5" not in MODEL_PRICING, "remove this guard once 5.5 is priced"
+    assert pricing_for("claude-opus-5-5") is None
+    assert estimate_cost("claude-opus-5-5", input=1_000_000) is None
+
+
+def test_configured_models_covers_every_billable_surface():
+    """All four model-bearing config keys are reported, including both location resolutions —
+    which one applies is per-job, so both are reachable and both must be priced."""
+    cfg = {"ai": {"model": "claude-haiku-4-5"},
+           "viability": {"model": "claude-sonnet-5"},
+           "descriptions": {"model": "claude-opus-5"}}
+    found = configured_models(cfg)
+    # viability model, descriptions model, and the geo sub-call's two resolutions
+    # (escalated → the viability model; plain → [ai].model).
+    assert set(found) == {"claude-sonnet-5", "claude-opus-5", "claude-haiku-4-5"}
+    assert "[descriptions].model" in found["claude-opus-5"]
+    assert any("location_model" in w for w in found["claude-haiku-4-5"])
+
+
+def test_unpriced_models_flags_only_the_unpriced():
+    priced = {"ai": {"model": "claude-haiku-4-5"}, "viability": {"model": "claude-sonnet-5"}}
+    assert unpriced_models(priced) == {}
+    broken = {"ai": {"model": "claude-haiku-4-5"}, "viability": {"model": "claude-sonnet-5-5"}}
+    assert list(unpriced_models(broken)) == ["claude-sonnet-5-5"]
+
+
+def test_require_priced_models_passes_when_all_priced():
+    require_priced_models([("__default__", {"viability": {"model": "claude-sonnet-5"}})])
+
+
+def test_require_priced_models_names_model_search_and_remediation():
+    """The error has to be actionable on its own: which model, which lens, and both fixes."""
+    with pytest.raises(UnpricedModelError) as exc:
+        require_priced_models([
+            ("midatl_tpm", {"viability": {"model": "claude-sonnet-5"}}),      # fine
+            ("europe_tpm", {"viability": {"model": "claude-sonnet-5-5"}}),    # unpriced
+        ])
+    msg = str(exc.value)
+    assert "claude-sonnet-5-5" in msg and "europe_tpm" in msg
+    assert "[viability].model" in msg
+    assert "MODEL_PRICING" in msg          # remediation: add the model
+    assert "switching the config" in msg   # remediation: or use a priced one
+    assert "midatl_tpm" not in msg         # the healthy lens isn't dragged into the error
+
+
+def test_require_priced_models_accepts_a_dated_snapshot_pin():
+    """Pinning a snapshot is legitimate config, not an error — it inherits the base rates."""
+    require_priced_models([("s", {"viability": {"model": "claude-sonnet-5-20260101"}})])
