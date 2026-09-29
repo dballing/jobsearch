@@ -293,6 +293,12 @@ _SYSTEM_BOILERPLATE = (
 # re-scores on its own. A global bump would needlessly re-score the whole DB for jobs whose
 # effective description is unchanged, so — consistent with those existing overrides — it holds.
 #
+# NOT a version bump: the second manual POOR-geography flag (GEO_BAD_FEED_LOCATION, "the feed put
+# this posting in the wrong city"). Like the first, it's a per-job work_arrangement_actual override
+# — it changes what the model sees only for a job the user hand-flags, and flagging it sets
+# needs_rescored, so that job re-scores on its own. The older flag's geo note was deliberately left
+# byte-identical (see _MANUAL_GEO_POOR_FLAGS) so no already-scored job's input drifts.
+#
 # v17: build_score_message now renders the salary in its real currency (currency_symbol on the
 # feed's salary_currency / the salary_currency_actual override) instead of hardcoding "$". This
 # changes what the model sees for every non-USD (or currency-overridden) posting — a €/£ band was
@@ -704,12 +710,64 @@ def geo_note(fit: str | None, match: str | None) -> str | None:
 # dropdown flags the job as a deterministic POOR geographic fit; see is_manual_geo_poor.
 GEO_UNSUPPORTED_ARRANGEMENT = "Remote (unsupported location)"
 
+# The other manual geographic dead end: the feed's *location itself* is wrong, and the real
+# location is one the candidate can't work. Scrapers resolve ambiguous place names badly —
+# "Washington, United States" becomes Washington DC when the job is actually in Seattle WA — so
+# every location judgment downstream (the sub-call's tier, the scorer's location factor, the
+# row's displayed city) is made about a place the job isn't in. No amount of AI reasoning fixes
+# that: the input data is false, and only a human reading the posting can see it. So this flag
+# doesn't ask for a re-assessment, it records the conclusion — a deterministic POOR verdict,
+# handled exactly like GEO_UNSUPPORTED_ARRANGEMENT (see manual_geo_poor_flag), just with its own
+# honest reason wording. It is emphatically NOT for a mis-geocoded location that's still
+# workable; that's a job for the ACCEPTABLE override (MANUAL_GEO_FIT_CHOICES).
+GEO_BAD_FEED_LOCATION = "Feed location incorrect (unviable location)"
+
+# Every manual POOR-geography flag, mapped to (geo note, clamp reason suffix). Both members are
+# pseudo work-arrangement values riding the work-arrangement dropdown (see app.WORK_ARRANGEMENTS);
+# both mean "POOR, decided by hand, don't bill a location call". They get distinct suffix wording
+# rather than one generic phrasing because the stored reason is the only record of *why* a job was
+# forced low — "remote-only elsewhere" and "the feed lied about where this is" are different
+# findings, and conflating them would make a months-old score unreadable.
+#
+# A None note means "use the generic geo_note('poor', '')". That's deliberate for the older flag:
+# giving it a tailored note would change what the model is sent for every job already carrying it,
+# i.e. silent input drift that only a global _SCORING_INPUT_VERSION bump (re-scoring the whole DB)
+# would honestly cover. The new flag has no scored history to disturb, and the generic note —
+# "none of the listed locations matches the candidate's preferences" — would be an outright lie
+# for it (the listed location isn't merely unattractive, it's not the job's location), so it
+# carries its own.
+_MANUAL_GEO_POOR_FLAGS = {
+    GEO_UNSUPPORTED_ARRANGEMENT: (
+        None,
+        " [Forced to LOW: manually flagged as remote-only in a location the candidate can't work "
+        "from — the remote option is geographically unavailable, which is disqualifying.]",
+    ),
+    GEO_BAD_FEED_LOCATION: (
+        "POOR — manually flagged: the location this posting was ingested with is incorrect, and "
+        "the job's real location is not workable for the candidate",
+        " [Forced to LOW: manually flagged as a feed location error — the location this posting "
+        "was ingested with is not where the job is, and the real location is not workable for "
+        "the candidate, which is disqualifying.]",
+    ),
+}
+
+
+def manual_geo_poor_flag(job: dict) -> str | None:
+    """The manual POOR-geography flag carried in a job's work-arrangement override, or None.
+
+    Returns the flag verbatim (a key of _MANUAL_GEO_POOR_FLAGS) so the caller can pick the
+    matching note/suffix — the two flags clamp identically but must be attributed differently.
+    Pure, so it's unit-testable without the DB."""
+    value = str(job.get("work_arrangement_actual") or "").strip()
+    return value if value in _MANUAL_GEO_POOR_FLAGS else None
+
 
 def is_manual_geo_poor(job: dict) -> bool:
-    """True when the job's manual work-arrangement override is the 'remote in an unsupported
-    location' flag (GEO_UNSUPPORTED_ARRANGEMENT). The caller treats this as a POOR geographic
-    verdict without an AI location call. Pure, so it's unit-testable without the DB."""
-    return str(job.get("work_arrangement_actual") or "").strip() == GEO_UNSUPPORTED_ARRANGEMENT
+    """True when the job's manual work-arrangement override is one of the deterministic
+    POOR-geography flags (GEO_UNSUPPORTED_ARRANGEMENT / GEO_BAD_FEED_LOCATION). The caller
+    treats this as a POOR geographic verdict without an AI location call. Kept as a boolean
+    convenience over manual_geo_poor_flag for callers that only need "is it flagged"."""
+    return manual_geo_poor_flag(job) is not None
 
 
 # The manual "I'd take this job at this location" override — the positive counterpart to the
@@ -735,26 +793,30 @@ def manual_geo_fit(job: dict) -> str | None:
     return v if v in GEO_FITS else None
 
 
-def manual_geo_verdict(job: dict) -> "tuple[str | None, str | None, bool]":
+def manual_geo_verdict(job: dict) -> "tuple[str | None, str | None, str | None]":
     """Resolve any *manual* geographic verdict for a job, before the (billed) AI location call.
 
     Returns (fit, gnote, manual_poor):
       - An ACCEPTABLE override (manual_geo_fit) WINS over everything: (that tier, its note,
-        False) — the candidate has asserted the location is workable.
-      - Else the 'remote in an unsupported location' flag (is_manual_geo_poor): a deterministic
-        POOR verdict → ('poor', its note, True).
-      - Else (None, None, False): no manual verdict, so the caller should run assess_location_fit.
-    A `fit` of None is the sole signal to fall through to the AI call. manual_poor is echoed so
-    the caller passes it to clamp_viability_for_geo for the honest 'manual flag' reason suffix —
-    and, since the override branch returns manual_poor=False, an ACCEPTABLE override also
-    suppresses the low-clamp a coexisting POOR flag would otherwise apply. Pure, so the whole
-    precedence is unit-testable without an API call."""
+        None) — the candidate has asserted the location is workable.
+      - Else a manual POOR flag (manual_geo_poor_flag — 'remote in an unsupported location' or
+        'feed location incorrect'): a deterministic POOR verdict → ('poor', that flag's note,
+        the flag itself).
+      - Else (None, None, None): no manual verdict, so the caller should run assess_location_fit.
+    A `fit` of None is the sole signal to fall through to the AI call. manual_poor is echoed —
+    as the flag string, since which flag fired decides the wording — so the caller passes it to
+    clamp_viability_for_geo for an honest 'manual flag' reason suffix; and, since the override
+    branch returns None there, an ACCEPTABLE override also suppresses the low-clamp a coexisting
+    POOR flag would otherwise apply. Pure, so the whole precedence is unit-testable without an
+    API call."""
     override = manual_geo_fit(job)
     if override:
-        return override, geo_note(override, ""), False
-    if is_manual_geo_poor(job):
-        return "poor", geo_note("poor", ""), True
-    return None, None, False
+        return override, geo_note(override, ""), None
+    flag = manual_geo_poor_flag(job)
+    if flag:
+        note, _suffix = _MANUAL_GEO_POOR_FLAGS[flag]
+        return "poor", note or geo_note("poor", ""), flag
+    return None, None, None
 
 
 # Appended to the score reason when a POOR geographic fit forces the rating down (see
@@ -764,17 +826,14 @@ _GEO_POOR_SUFFIX = (
     "arrangements is workable for the candidate, which is disqualifying regardless of other merits.]"
 )
 
-# The manual counterpart, used when the POOR verdict comes from the GEO_UNSUPPORTED_ARRANGEMENT
-# flag rather than the AI location call — so the score is honestly attributed to a manual flag,
-# not the model (which, for these roles, would have rated the remote option a good fit).
-_GEO_MANUAL_POOR_SUFFIX = (
-    " [Forced to LOW: manually flagged as remote-only in a location the candidate can't work "
-    "from — the remote option is geographically unavailable, which is disqualifying.]"
-)
+# The manual counterparts live in _MANUAL_GEO_POOR_FLAGS (one suffix per flag), used when the
+# POOR verdict comes from a hand-set flag rather than the AI location call — so the score is
+# honestly attributed to a manual flag, not the model (which, for these roles, would have rated
+# the remote option a good fit, or reasoned about a city the job isn't in).
 
 
 def clamp_viability_for_geo(
-    fit: str | None, rating: str | None, reason: str, manual: bool = False,
+    fit: str | None, rating: str | None, reason: str, manual: "str | bool | None" = None,
 ) -> tuple[str | None, str]:
     """Force a POOR-geography job down to 'low', preserving the model's own reasoning.
 
@@ -793,13 +852,20 @@ def clamp_viability_for_geo(
     rating (score_job failed) is left as-is for the caller to skip. Pure, so it's unit-testable
     without an API call.
 
-    manual=True selects the reason suffix that attributes the clamp to a manual flag
-    (GEO_UNSUPPORTED_ARRANGEMENT) instead of the AI location verdict; the clamp is otherwise
-    identical. It's ignored unless a POOR fit actually forces a change.
+    `manual` (as returned by manual_geo_verdict) selects a reason suffix attributing the clamp to
+    a hand-set flag instead of the AI location verdict; the clamp is otherwise identical, and it's
+    ignored unless a POOR fit actually forces a change. Pass the flag string so the suffix names
+    the *right* finding; a bare True is accepted as a legacy alias for GEO_UNSUPPORTED_ARRANGEMENT
+    (the only flag that existed when this was a boolean), and any unrecognized truthy value falls
+    back to the same, since guessing a different finding would be worse than the older wording.
     """
     if fit != "poor" or rating is None or rating == "low":
         return rating, reason
-    suffix = _GEO_MANUAL_POOR_SUFFIX if manual else _GEO_POOR_SUFFIX
+    if manual:
+        key = manual if manual in _MANUAL_GEO_POOR_FLAGS else GEO_UNSUPPORTED_ARRANGEMENT
+        suffix = _MANUAL_GEO_POOR_FLAGS[key][1]
+    else:
+        suffix = _GEO_POOR_SUFFIX
     return "low", (reason or "").rstrip() + suffix
 
 

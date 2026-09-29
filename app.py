@@ -30,7 +30,8 @@ from config import AppConfig, ConfigError, DEFAULT_SEARCH_ID, load_config
 from ingest import (adopt_legacy, append_history, backfill_description_truncated,
                     bootstrap_history, ensure_job_search_state, history_scope)
 from viability import (
-    _work_arrangement, FACTOR_DIMENSIONS, GEO_UNSUPPORTED_ARRANGEMENT, MANUAL_GEO_FIT_CHOICES,
+    _work_arrangement, FACTOR_DIMENSIONS, GEO_BAD_FEED_LOCATION, GEO_UNSUPPORTED_ARRANGEMENT,
+    MANUAL_GEO_FIT_CHOICES,
     assess_location_fit, clamp_viability_for_geo, CURRENCY_SYMBOLS, currency_symbol,
     description_is_truncated, effective_description, geo_note, has_description_override,
     manual_geo_verdict, parse_factors, RESUME_COMPETITIVENESS_DIMENSION, score_job,
@@ -223,12 +224,14 @@ _APPLIED_AT_CASE_SQL = (
 # Manual work-arrangement override options (self-explanatory phrasings sent verbatim to
 # the viability scorer — see viability._work_arrangement). The preview panel serves these
 # to its dropdown via /job/<id>; the endpoint validates against this exact set.
-# GEO_UNSUPPORTED_ARRANGEMENT is the odd one out: it isn't a work-style the scorer reasons
-# about but a deterministic "POOR geography" flag (see viability.is_manual_geo_poor) for
-# remote roles restricted to states the candidate can't be in — kept in this list so it
-# rides the same dropdown + validation path.
+# The last two are the odd ones out: neither is a work-style the scorer reasons about, both are
+# deterministic "POOR geography" flags (see viability.manual_geo_poor_flag) — one for remote roles
+# restricted to states the candidate can't be in, one for a posting the feed put in the wrong
+# place entirely (the classic "Washington, United States" that means Seattle, not DC). They're
+# kept in this list so they ride the same dropdown + validation path, and listed last so the real
+# arrangements stay together at the top of the menu.
 WORK_ARRANGEMENTS = ["On-site", "Hybrid", "Fully remote", "Remote (hybrid if near an office)",
-                     GEO_UNSUPPORTED_ARRANGEMENT]
+                     GEO_UNSUPPORTED_ARRANGEMENT, GEO_BAD_FEED_LOCATION]
 
 STATUS_COLORS = {
     # 'new' gets the brighter cyan (info) so "jobs I still need to look at" stand out most;
@@ -2699,9 +2702,10 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
     try:
         import anthropic
         client = anthropic.Anthropic(api_key=api_key)
-        # A manual geographic verdict (ACCEPTABLE override, or the remote-in-unsupported-
-        # location POOR flag) short-circuits the billed sub-call; fit is None only when
-        # neither applies, which is the signal to run the AI location call. See the helper.
+        # A manual geographic verdict (ACCEPTABLE override, or one of the POOR flags —
+        # remote-in-an-unsupported-location / wrong-feed-location) short-circuits the billed
+        # sub-call; fit is None only when none applies, which is the signal to run the AI
+        # location call. manual_geo_poor carries *which* flag fired, for the reason wording.
         fit, gnote, manual_geo_poor = manual_geo_verdict(dict(row))
         if fit is None and location_prompt:
             fit, match, gusage = assess_location_fit(

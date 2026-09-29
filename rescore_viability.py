@@ -894,10 +894,11 @@ def main() -> None:
         job = dict(row)
         # A manual geographic verdict short-circuits the billed sub-call: an ACCEPTABLE override
         # ("I'd work here") wins over everything and — being ACCEPTABLE, not POOR — never trips
-        # the clamp below; failing that, a "remote in an unsupported location" flag is a
-        # deterministic POOR verdict (the one geo dead end the feed/sub-call can't catch: plain
-        # "Remote OK" + an implicit state list) which does force the score low. fit is None only
-        # when neither applies — the signal to run the AI sub-call. See the helper.
+        # the clamp below; failing that, either manual POOR flag is a deterministic POOR verdict
+        # (the two geo dead ends the feed/sub-call can't catch: "Remote OK" + an implicit state
+        # list, and a feed location that names the wrong city) which does force the score low.
+        # fit is None only when none applies — the signal to run the AI sub-call. manual_geo_poor
+        # is the flag that fired, so the clamp can attribute the score to it. See the helper.
         fit, gnote, manual_geo_poor = manual_geo_verdict(job)
         # Focused geographic pre-assessment (only when a location_prompt is configured and no
         # manual verdict applied). Its verdict replaces the raw location list in the scorer

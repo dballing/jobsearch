@@ -26,41 +26,60 @@ def test_manual_geo_fit_none_for_unset_blank_or_bogus():
 
 # ── manual_geo_verdict(): precedence before the AI call ───────────────────────
 def test_verdict_none_when_no_manual_signal():
-    """No override and no POOR flag → (None, None, False): the caller runs the AI sub-call."""
-    assert viability.manual_geo_verdict({}) == (None, None, False)
+    """No override and no POOR flag → (None, None, None): the caller runs the AI sub-call."""
+    assert viability.manual_geo_verdict({}) == (None, None, None)
 
 
 def test_verdict_acceptable_override_skips_ai_and_wont_clamp():
-    """An ACCEPTABLE override yields a non-None fit (so the AI call is skipped) with
-    manual_poor False, and the clamp then leaves the rating untouched."""
+    """An ACCEPTABLE override yields a non-None fit (so the AI call is skipped) with no
+    manual_poor flag, and the clamp then leaves the rating untouched."""
     fit, gnote, manual_poor = viability.manual_geo_verdict({"geo_fit_actual": "acceptable"})
     assert fit == "acceptable"
     assert gnote == viability.geo_note("acceptable", "")
-    assert manual_poor is False
+    assert manual_poor is None
     # ACCEPTABLE is a non-POOR tier, so the disqualifying low-clamp never fires.
     assert viability.clamp_viability_for_geo(fit, "medium", "Good scope.") == ("medium", "Good scope.")
 
 
 def test_verdict_override_wins_over_manual_poor_flag():
-    """When a job carries BOTH the ACCEPTABLE override and the remote-in-unsupported-location
-    POOR flag, the explicit "I'd work here" override wins and suppresses the clamp."""
-    job = {"geo_fit_actual": "acceptable",
-           "work_arrangement_actual": viability.GEO_UNSUPPORTED_ARRANGEMENT}
-    fit, _gnote, manual_poor = viability.manual_geo_verdict(job)
-    assert fit == "acceptable"
-    assert manual_poor is False
+    """When a job carries BOTH the ACCEPTABLE override and a POOR flag, the explicit "I'd work
+    here" override wins and suppresses the clamp — for either flag."""
+    for flag in (viability.GEO_UNSUPPORTED_ARRANGEMENT, viability.GEO_BAD_FEED_LOCATION):
+        job = {"geo_fit_actual": "acceptable", "work_arrangement_actual": flag}
+        fit, _gnote, manual_poor = viability.manual_geo_verdict(job)
+        assert fit == "acceptable"
+        assert manual_poor is None
 
 
 def test_verdict_poor_flag_without_override_forces_low():
-    """No override but the POOR flag set → ('poor', poor-note, True); the clamp then forces
-    the rating to low with the manual-flag reason suffix."""
-    job = {"work_arrangement_actual": viability.GEO_UNSUPPORTED_ARRANGEMENT}
-    fit, gnote, manual_poor = viability.manual_geo_verdict(job)
+    """No override but a POOR flag set → ('poor', poor-note, that flag); the clamp then forces
+    the rating to low with the manual-flag reason suffix. Echoing the flag (not a bare True) is
+    what lets the suffix name the finding that actually applied."""
+    for flag in (viability.GEO_UNSUPPORTED_ARRANGEMENT, viability.GEO_BAD_FEED_LOCATION):
+        job = {"work_arrangement_actual": flag}
+        fit, gnote, manual_poor = viability.manual_geo_verdict(job)
+        assert fit == "poor"
+        assert manual_poor == flag
+        assert gnote and gnote.startswith("POOR")
+        rating, reason = viability.clamp_viability_for_geo(fit, "medium", "Great role.",
+                                                          manual=manual_poor)
+        assert rating == "low"
+        assert "manually flagged" in reason  # a manual suffix, not the AI-verdict one
+
+
+def test_verdict_bad_feed_location_note_is_flag_specific():
+    """The wrong-feed-location flag sends the scorer its own POOR note: the generic one blames
+    the candidate's preferences, which is false here — the listed location isn't the job's."""
+    fit, gnote, _flag = viability.manual_geo_verdict(
+        {"work_arrangement_actual": viability.GEO_BAD_FEED_LOCATION})
     assert fit == "poor"
-    assert manual_poor is True
-    rating, reason = viability.clamp_viability_for_geo(fit, "medium", "Great role.", manual=manual_poor)
-    assert rating == "low"
-    assert "manually flagged" in reason  # the _GEO_MANUAL_POOR_SUFFIX, not the AI-verdict one
+    assert gnote != viability.geo_note("poor", "")
+    assert "incorrect" in gnote
+    # The older flag keeps the generic note verbatim — a tailored one would change the scorer's
+    # input for jobs already carrying it without a _SCORING_INPUT_VERSION bump.
+    _f, legacy_note, _fl = viability.manual_geo_verdict(
+        {"work_arrangement_actual": viability.GEO_UNSUPPORTED_ARRANGEMENT})
+    assert legacy_note == viability.geo_note("poor", "")
 
 
 # ── /job/<id>/geo_fit_actual endpoint ─────────────────────────────────────────

@@ -572,35 +572,74 @@ def test_clamp_leaves_none_rating_for_caller_to_skip():
     assert viability.clamp_viability_for_geo("poor", None, "") == (None, "")
 
 
-# ── manual "remote in an unsupported location" flag ────────────────────────────
-def test_is_manual_geo_poor_matches_only_the_sentinel():
-    """Detected only for the exact GEO_UNSUPPORTED_ARRANGEMENT override; other work
-    arrangements (and none at all) are not the manual POOR flag."""
-    assert viability.is_manual_geo_poor(
-        {"work_arrangement_actual": viability.GEO_UNSUPPORTED_ARRANGEMENT})
-    assert viability.is_manual_geo_poor(
-        {"work_arrangement_actual": f"  {viability.GEO_UNSUPPORTED_ARRANGEMENT}  "})  # whitespace-tolerant
+# ── the manual POOR-geography flags (unsupported remote location / wrong feed location) ───
+def test_is_manual_geo_poor_matches_only_the_sentinels():
+    """Detected only for the exact flag values; other work arrangements (and none at all) are
+    not manual POOR flags."""
+    for flag in (viability.GEO_UNSUPPORTED_ARRANGEMENT, viability.GEO_BAD_FEED_LOCATION):
+        assert viability.is_manual_geo_poor({"work_arrangement_actual": flag})
+        assert viability.is_manual_geo_poor(
+            {"work_arrangement_actual": f"  {flag}  "})  # whitespace-tolerant
     for other in ("On-site", "Fully remote", "", None):
         assert not viability.is_manual_geo_poor({"work_arrangement_actual": other})
     assert not viability.is_manual_geo_poor({})  # key absent (e.g. manual job)
 
 
+def test_manual_geo_poor_flag_returns_which_sentinel_fired():
+    """The flag itself, not just a boolean — the clamp needs it to pick the right reason
+    wording, and the two findings must not be conflated."""
+    assert viability.manual_geo_poor_flag(
+        {"work_arrangement_actual": f" {viability.GEO_BAD_FEED_LOCATION} "}
+    ) == viability.GEO_BAD_FEED_LOCATION
+    assert viability.manual_geo_poor_flag(
+        {"work_arrangement_actual": viability.GEO_UNSUPPORTED_ARRANGEMENT}
+    ) == viability.GEO_UNSUPPORTED_ARRANGEMENT
+    assert viability.manual_geo_poor_flag({"work_arrangement_actual": "Hybrid"}) is None
+    assert viability.manual_geo_poor_flag({}) is None
+
+
 def test_clamp_manual_uses_distinct_suffix():
-    """manual=True clamps identically but attributes the override to a manual flag, not the
-    AI location verdict — so the two POOR paths are distinguishable in the stored reason."""
+    """A manual flag clamps identically but attributes the override to that flag, not the
+    AI location verdict — so the POOR paths are distinguishable in the stored reason."""
     rating, reason = viability.clamp_viability_for_geo(
-        "poor", "high", "Strong TPM fit, great comp.", manual=True)
+        "poor", "high", "Strong TPM fit, great comp.",
+        manual=viability.GEO_UNSUPPORTED_ARRANGEMENT)
     assert rating == "low"
     assert reason.startswith("Strong TPM fit")            # model's own reasoning preserved
-    assert "Forced to LOW" in reason and "manually flagged" in reason
+    assert "Forced to LOW" in reason and "remote-only" in reason
     assert "geographic fit is POOR" not in reason         # not the AI-verdict wording
+
+
+def test_clamp_bad_feed_location_names_that_finding():
+    """The wrong-feed-location clamp says so: months later the stored reason is the only record
+    of why the job was forced low, and "the feed put it in the wrong city" is a different
+    finding from "remote-only somewhere I can't live"."""
+    rating, reason = viability.clamp_viability_for_geo(
+        "poor", "medium", "Great scope.", manual=viability.GEO_BAD_FEED_LOCATION)
+    assert rating == "low"
+    assert reason.startswith("Great scope.")
+    assert "feed location error" in reason
+    assert "remote-only" not in reason                    # not the other flag's wording
+
+
+def test_clamp_manual_true_is_the_legacy_alias():
+    """A bare True (the parameter's old boolean form) still means the unsupported-remote-location
+    flag — the only one that existed then — so an older caller can't silently lose the manual
+    attribution. Any unrecognized truthy value lands there too rather than inventing a finding."""
+    _r, from_true = viability.clamp_viability_for_geo("poor", "high", "r", manual=True)
+    _r2, from_flag = viability.clamp_viability_for_geo(
+        "poor", "high", "r", manual=viability.GEO_UNSUPPORTED_ARRANGEMENT)
+    assert from_true == from_flag
+    _r3, from_bogus = viability.clamp_viability_for_geo("poor", "high", "r", manual="Moon base")
+    assert from_bogus == from_flag
 
 
 def test_clamp_manual_flag_ignored_when_not_poor():
     """The manual flag only matters on a POOR fit — a non-POOR/None fit passes through
     untouched, and an already-low rating gets no redundant suffix."""
-    assert viability.clamp_viability_for_geo("good", "high", "r", manual=True) == ("high", "r")
-    assert viability.clamp_viability_for_geo("poor", "low", "r", manual=True) == ("low", "r")
+    for flag in (True, viability.GEO_UNSUPPORTED_ARRANGEMENT, viability.GEO_BAD_FEED_LOCATION):
+        assert viability.clamp_viability_for_geo("good", "high", "r", manual=flag) == ("high", "r")
+        assert viability.clamp_viability_for_geo("poor", "low", "r", manual=flag) == ("low", "r")
 
 
 # ── assess_location_fit(): the focused sub-call (fake client, no network) ──────

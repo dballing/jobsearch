@@ -160,7 +160,7 @@ def load_old_viability(repo_root: Path):
 
 
 def _score_with(module, prompt: str, job: dict, *, model: str, gnote: str | None,
-                effort: str, fit: str | None, manual_poor: bool
+                effort: str, fit: str | None, manual_poor: "str | None"
                 ) -> "tuple[str | None, str, list[dict] | None, object]":
     """Score one job with one viability module, applying the (unchanged) geo clamp identically, and
     return (rating, reason, factors, usage). Handles either return shape — the old HEAD module's

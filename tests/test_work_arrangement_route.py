@@ -1,9 +1,11 @@
-"""Work-arrangement override endpoint: valid values (incl. the manual geo-POOR flag) are
+"""Work-arrangement override endpoint: valid values (incl. the manual geo-POOR flags) are
 stored and flag the job for rescoring; invalid values are rejected. The scoring effect of
-the flag is covered as pure logic in test_viability_message.py (clamp / is_manual_geo_poor);
+the flags is covered as pure logic in test_viability_message.py (clamp / manual_geo_poor_flag);
 here we only exercise the route's accept/reject + persistence, since the score itself needs
 a live AI call."""
 import sqlite3
+
+import pytest
 
 import app
 import viability
@@ -14,16 +16,19 @@ def _post_arrangement(job_id: str, value: str):
         f"/job/{job_id}/work_arrangement", data={"work_arrangement": value})
 
 
-def test_unsupported_location_flag_is_a_valid_option():
-    """The manual geo-POOR sentinel rides the same dropdown/validation set as the real
-    work arrangements, so the endpoint accepts it."""
+def test_manual_geo_poor_flags_are_valid_options():
+    """Both manual geo-POOR sentinels ride the same dropdown/validation set as the real work
+    arrangements, so the endpoint accepts them."""
     assert viability.GEO_UNSUPPORTED_ARRANGEMENT in app.WORK_ARRANGEMENTS
+    assert viability.GEO_BAD_FEED_LOCATION in app.WORK_ARRANGEMENTS
 
 
-def test_route_stores_manual_flag_and_marks_rescore(sample_app_db):
-    """POSTing the flag persists it verbatim and sets needs_rescored so the next rescore
+@pytest.mark.parametrize("flag", [viability.GEO_UNSUPPORTED_ARRANGEMENT,
+                                  viability.GEO_BAD_FEED_LOCATION])
+def test_route_stores_manual_flag_and_marks_rescore(sample_app_db, flag):
+    """POSTing either flag persists it verbatim and sets needs_rescored so the next rescore
     re-evaluates the job (and clamps it low)."""
-    resp = _post_arrangement("cs_review", viability.GEO_UNSUPPORTED_ARRANGEMENT)
+    resp = _post_arrangement("cs_review", flag)
     assert resp.status_code == 204
 
     con = sqlite3.connect(app.DB_PATH)
@@ -33,7 +38,7 @@ def test_route_stores_manual_flag_and_marks_rescore(sample_app_db):
         "WHERE j.job_id = ?",
         ("cs_review",)).fetchone()
     con.close()
-    assert row[0] == viability.GEO_UNSUPPORTED_ARRANGEMENT
+    assert row[0] == flag
     assert row[1] == 1
 
 
