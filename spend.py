@@ -17,7 +17,7 @@ Accounting rules (see docs/features.md → "Cost"):
     postings already known, since monitoring for changes is what the run was paying for. A run
     that returned nothing attributable becomes an unattributed (job_id NULL) overhead row, which
     keeps lens totals exact while leaving per-job figures honest.
-  * ``cost_usd`` is priced/charged at the time of the call, so a later MODEL_PRICING change
+  * ``cost_usd`` is priced/charged at the time of the call, so a later pricing-table change
     doesn't rewrite history.
 
 Only depends on ai_config, so ingest/app/rescore can all import it without a cycle.

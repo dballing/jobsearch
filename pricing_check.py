@@ -1,8 +1,8 @@
-"""Live-pricing drift check for ai_config.MODEL_PRICING.
+"""Live-pricing drift check for the shipped model_pricing.json table.
 
 Anthropic doesn't expose per-token prices via the Models API — the only machine-readable
 source is the public pricing page — so this fetches that page's markdown and compares its base
-input/output per-MTok rates against our hard-coded MODEL_PRICING. A rate change (or a current
+input/output per-MTok rates against the shipped pricing table. A rate change (or a current
 model we forgot to price) then surfaces within a day instead of silently skewing every cost
 line.
 
@@ -21,7 +21,8 @@ import urllib.error
 import urllib.request
 import warnings
 
-from ai_config import MODEL_PRICING
+from ai_config import (model_pricing, override_is_silenced, pricing_overrides,
+                       shipped_pricing)
 
 PRICING_URL = "https://platform.claude.com/docs/en/about-claude/pricing.md"
 CACHE_TTL_SECONDS = 24 * 60 * 60
@@ -45,7 +46,7 @@ def display_to_model_id(display: str) -> str:
 
 def parse_model_pricing_table(markdown: str) -> "dict[str, dict[str, float]]":
     """Extract {model_id: {input, cache_write, cache_read, output}} in $/MTok from the page's
-    'Model pricing' table — the same four keys MODEL_PRICING stores, so they compare directly.
+    'Model pricing' table — the same four keys the pricing tables store, so they compare directly.
 
     Scoped to the one table whose header carries 'base input', so the half-price Batch table
     (and every other table on the page) is ignored — matching on those would produce spurious
@@ -72,7 +73,7 @@ def parse_model_pricing_table(markdown: str) -> "dict[str, dict[str, float]]":
         cells = [c.strip() for c in s.strip("|").split("|")]
         if len(cells) < 6:               # Model | Base Input | 5m | 1h | Hits | Output
             continue
-        # The 1h cache-write column (cells[3]) is skipped: MODEL_PRICING only knows the 5m TTL,
+        # The 1h cache-write column (cells[3]) is skipped: our tables only know the 5m TTL,
         # which is what every call site uses.
         rates = {"input":       parse_price(cells[1]),
                  "cache_write": parse_price(cells[2]),
@@ -100,24 +101,29 @@ def parse_retired_model_ids(markdown: str) -> "set[str]":
 
 
 def missing_from_repo(live: "dict[str, dict[str, float]]", retired: "set[str]") -> "list[str]":
-    """Live, callable models that MODEL_PRICING doesn't price. Anything we can call but can't
-    price silently costs $0 in the spend ledger, which understates every cost figure — so these
-    get surfaced for adding rather than ignored."""
-    return sorted(m for m in live if m not in MODEL_PRICING and m not in retired)
+    """Live, callable models that nothing prices. Anything we can call but can't price silently
+    costs $0 in the spend ledger, which understates every cost figure — so these get surfaced for
+    adding rather than ignored.
+
+    Checked against the MERGED table: a model the user has already priced locally is solved for
+    them, and nagging about it would just train them to ignore the warning."""
+    priced = model_pricing()
+    return sorted(m for m in live if m not in priced and m not in retired)
 
 
-def compare_to_repo(live: "dict[str, dict[str, float]]") -> "list[str]":
-    """Return a mismatch line for every rate that disagrees, across every model priced in BOTH
-    the repo and the live table. All four billed rates are checked, not just base input/output:
-    ai_config derives cache_write/cache_read from input by a multiplier that is standard but not
-    universal (Fable/Mythos 5.1 bill cache hits at 0.025x, a footnote the table itself doesn't
-    show), so a derived-but-wrong cache rate is exactly the kind of quiet error worth catching.
+def _compare(table: "dict[str, dict[str, float]]", live: "dict[str, dict[str, float]]",
+             label: str) -> "list[str]":
+    """Mismatch lines for every rate that disagrees, across models priced in both tables.
+
+    All four billed rates are checked, not just base input/output: the cache rates are derived
+    from input by a multiplier that is standard but not universal (Fable/Mythos 5.1 bill cache
+    hits at 0.025x, a footnote the table itself doesn't show), so a derived-but-wrong cache rate
+    is exactly the kind of quiet error worth catching.
 
     A model on only one side is not a mismatch: a repo-only model has nothing to compare against,
-    and a live-only one is reported separately by missing_from_repo. Rounded to 4dp for float
-    noise."""
+    and a live-only one is reported by missing_from_repo. Rounded to 4dp for float noise."""
     problems = []
-    for model, pricing in MODEL_PRICING.items():
+    for model, pricing in table.items():
         if model not in live:
             continue
         for rate in ("input", "cache_write", "cache_read", "output"):
@@ -125,8 +131,53 @@ def compare_to_repo(live: "dict[str, dict[str, float]]") -> "list[str]":
             live_rate = round(live[model][rate], 4)
             if repo_rate != live_rate:
                 problems.append(
-                    f"{model} {rate}: repo ${repo_rate} vs live ${live_rate} per MTok")
+                    f"{model} {rate}: {label} ${repo_rate} vs live ${live_rate} per MTok")
     return problems
+
+
+def compare_to_repo(live: "dict[str, dict[str, float]]") -> "list[str]":
+    """Drift between the SHIPPED table and live pricing. This is the hard failure.
+
+    Deliberately ignores local overrides: they're the user's data, and a deliberate override
+    (a pre-announcement price, a negotiated rate) must not be able to fail our suite."""
+    return _compare(shipped_pricing(), live, "repo")
+
+
+def override_problems(live: "dict[str, dict[str, float]]") -> "list[str]":
+    """Advisory findings about local overrides — never fatal. Two shapes, both silent rot:
+
+    * **redundant** — the shipped table has caught up and now agrees with the override, so the
+      override does nothing *today*. It's still dangerous: it keeps winning, so the next time
+      Anthropic changes that price and we ship the correction, the stale local copy silently
+      overrides it. Flagged so it gets deleted while it's still harmless.
+    * **disagrees** — the override contradicts the published page. Usually a typo or a rate
+      that moved; occasionally deliberate. Either way the ledger is being priced off it, and
+      rows are priced at call time, so a wrong one can't be repaired after the fact.
+
+    An entry with ``suppress_drift_warning`` opts out of both (a negotiated rate has no reason
+    to match the public page). That silences only these lines — the override disclosure the
+    batch entry points print is not suppressible.
+    """
+    out = []
+    overrides = pricing_overrides()
+    # Everything here is about *today's* price, since that's what the published page states —
+    # a historical period of an override has nothing live to be compared against.
+    merged    = model_pricing()
+    shipped   = shipped_pricing()
+    for model in sorted(overrides):
+        if override_is_silenced(model):
+            continue
+        if model not in merged:
+            continue        # override timeline doesn't cover now; disclosed elsewhere, not drift
+        if overrides[model]["_shipped"] and model in shipped and merged[model] == shipped[model]:
+            out.append(f"{model}: local override now matches the shipped price — it is redundant "
+                       f"and safe to delete (leaving it means it will silently win the next time "
+                       f"this model's price changes)")
+            continue
+        for line in _compare({model: merged[model]}, live, "local override"):
+            out.append(line + " — check the override, or set \"suppress_drift_warning\": true "
+                              "if the difference is intentional")
+    return out
 
 
 class _PermanentRedirectRecorder(urllib.request.HTTPRedirectHandler):

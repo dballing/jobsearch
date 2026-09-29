@@ -1,4 +1,4 @@
-"""Pricing-drift guard for ai_config.MODEL_PRICING (see pricing_check.py).
+"""Pricing-drift guard for the shipped model_pricing.json table (see pricing_check.py).
 
 Most of this is hermetic: pure parser/compare/cache tests that never touch the network. The
 single live test fetches Anthropic's pricing page (24h cached), and by design *skips* when the
@@ -86,16 +86,16 @@ def test_format_change_yields_no_known_models():
     a normal comparison. Verified here so the detection can't silently rot."""
     changed = SAMPLE.replace("Base Input Tokens", "Input price")   # anchor header gone
     live = pc.parse_model_pricing_table(changed)
-    assert set(live) & set(pc.MODEL_PRICING) == set()
+    assert set(live) & set(pc.shipped_pricing()) == set()
 
 
 def _as_live(pricing: dict) -> dict:
-    """MODEL_PRICING ($/token) in the parser's shape ($/MTok), i.e. a live table that agrees."""
+    """A pricing table ($/token) in the parser's shape ($/MTok), i.e. a live table that agrees."""
     return {m: {k: round(v * 1e6, 4) for k, v in p.items()} for m, p in pricing.items()}
 
 
 def test_compare_passes_on_agreement_and_flags_drift():
-    agree = _as_live(pc.MODEL_PRICING)
+    agree = _as_live(pc.shipped_pricing())
     assert pc.compare_to_repo(agree) == []
     drifted = dict(agree, **{"claude-opus-5": dict(agree["claude-opus-5"], input=6.0)})
     problems = pc.compare_to_repo(drifted)
@@ -106,7 +106,7 @@ def test_compare_checks_cache_rates_not_just_input_output():
     """ai_config derives cache_write/cache_read from input by a multiplier that isn't universal
     (Fable/Mythos 5.1 bill hits at 0.025x). A wrong derived cache rate bills real money, so the
     guard must catch it even when base input/output agree."""
-    live = _as_live(pc.MODEL_PRICING)
+    live = _as_live(pc.shipped_pricing())
     live["claude-opus-5"]["cache_read"] = 0.99          # base rates still agree
     problems = pc.compare_to_repo(live)
     assert len(problems) == 1 and "claude-opus-5 cache_read" in problems[0]
@@ -123,7 +123,7 @@ def test_missing_from_repo_reports_unpriced_live_models():
     """A callable model we don't price bills as $0 in the spend ledger, understating every cost
     figure — so it has to surface. The real page is the fixture's source: every model it lists as
     current is priced here."""
-    live = dict(_as_live(pc.MODEL_PRICING), **{"claude-future-9": {}, "claude-gone-1": {}})
+    live = dict(_as_live(pc.shipped_pricing()), **{"claude-future-9": {}, "claude-gone-1": {}})
     assert pc.missing_from_repo(live, retired=set()) == ["claude-future-9", "claude-gone-1"]
     # ...but a model the page marks retired can't be called, so it isn't nagged about.
     assert pc.missing_from_repo(live, retired={"claude-gone-1"}) == ["claude-future-9"]
@@ -231,7 +231,7 @@ def test_live_pricing_matches_repo():
         # Genuinely external/transient (offline, page down, nothing cached) — quiet skip.
         pytest.skip("pricing page unreachable and nothing cached — skipping live check")
     live = pc.parse_model_pricing_table(markdown)
-    if not (set(live) & set(pc.MODEL_PRICING)):
+    if not (set(live) & set(pc.shipped_pricing())):
         # The page WAS fetched but we recognized none of our models in it — the table format or
         # the model display names almost certainly changed, so the guard is validating nothing.
         # Warn loudly (pytest surfaces warnings by default, unlike skip reasons), then skip
@@ -248,10 +248,19 @@ def test_live_pricing_matches_repo():
         # would turn an unrelated announcement into a red suite mid-commit. But an unpriced model
         # bills as $0 if anything ever points at it, so it shouldn't pass in silence either.
         warnings.warn(
-            "Anthropic prices models that ai_config.MODEL_PRICING doesn't: "
+            "Anthropic prices models that model_pricing.json doesn't: "
             + ", ".join(missing)
             + ". Add them (check the page's footnotes for a non-standard cache multiplier) so "
               "spend on them isn't silently counted as $0.",
             stacklevel=2)
+    override_notes = pc.override_problems(live)
+    if override_notes:
+        # Never fatal: an override is the user's own data, and getting ahead of the shipped table
+        # (or encoding a negotiated rate) is the feature working as intended. But a redundant or
+        # contradicted one silently misprices the ledger, so it can't pass unmentioned either.
+        # Per-entry "suppress_drift_warning" opts out; that's already applied upstream.
+        warnings.warn(
+            "local pricing overrides need attention:\n  " + "\n  ".join(override_notes),
+            stacklevel=2)
     problems = pc.compare_to_repo(live)
-    assert not problems, "MODEL_PRICING drifted from live Anthropic pricing:\n  " + "\n  ".join(problems)
+    assert not problems, "model_pricing.json drifted from live Anthropic pricing:\n  " + "\n  ".join(problems)

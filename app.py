@@ -2097,6 +2097,7 @@ def stats_cost():
     lenses side by side is the point (and so it reads the same under the "All searches" view).
     `current` is returned only so the UI can highlight the lens you're viewing. See spend_ledger for
     the accounting definitions (additive spend, tracked-job denominators, trailing windows)."""
+    from ai_config import describe_pricing_overrides
     db = get_db()
     cfg = current_config()
     return {
@@ -2111,6 +2112,11 @@ def stats_cost():
         "names":   {s.id: s.name for s in cfg.searches},
         "colors":  _lens_colors(),
         "current": _current_view_id(),
+        # Disclose local price overrides right where the money is displayed. Every figure in
+        # this modal is derived from ledger rows priced at call time, so if some of those rows
+        # were priced off the user's own file rather than the shipped table, that belongs next
+        # to the numbers — not only in a log line they'd have to go looking for.
+        "pricing_overrides": describe_pricing_overrides(),
     }
 
 
@@ -2645,7 +2651,7 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
     unpriced = sorted({m for m in (model, geo_model) if pricing_for(m) is None})
     if unpriced:
         return False, (f"no pricing configured for {', '.join(unpriced)} — scoring would be "
-                       "recorded as $0. Add the model to ai_config.MODEL_PRICING, or switch "
+                       "recorded as $0. Add the model to model_pricing.local.json, or switch "
                        "to a priced model.")
     # Thinking effort for the scorer and geo sub-call (applied only on reasoning models; see
     # viability._thinking_call_config). Resolved the same way rescore_viability does.

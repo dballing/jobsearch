@@ -62,7 +62,9 @@ from pathlib import Path
 import anthropic
 
 from config import ConfigError, load_config
-from ai_config import (UnpricedModelError, base_model_id, format_token_summary, require_priced_models,
+from ai_config import (UnpricedModelError, base_model_id, describe_pricing_overrides,
+                       override_coverage_warnings,
+                       format_token_summary, require_priced_models,
                        resolve_ai_settings, resolve_effort, resolve_geo_effort,
                        resolve_geo_model, warn_effort_ignored)
 from spend import ensure_spend_ledger, record_usage
@@ -603,6 +605,12 @@ def main() -> None:
         require_priced_models([(s.id, s.config) for s in app_cfg.searches])
     except UnpricedModelError as exc:
         sys.exit(f"ERROR: {exc}")
+    # Disclose local price overrides on every run. The ledger is the only record of what a lens
+    # cost, so "these numbers came from your file, not ours" belongs in the log next to them.
+    for line in describe_pricing_overrides():
+        print(f"NOTE: local pricing override — {line}")
+    for line in override_coverage_warnings():
+        print(f"WARNING: {line}", file=sys.stderr)
 
     # Multi-search fan-out: with no explicit --search on a Path-B config, score EVERY configured
     # search — each in its own child process. The writer lock is process-scoped (fcntl.flock,

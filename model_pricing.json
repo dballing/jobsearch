@@ -1,0 +1,102 @@
+{
+  "_README": [
+    "Shipped model pricing — the source of truth for spend-ledger accounting.",
+    "Rates are USD per MILLION tokens, as published on Anthropic's pricing page.",
+    "",
+    "Only 'input' and 'output' are stored. The two cache rates are derived from input by a",
+    "multiplier, because that is how the pricing page presents them: cache write is 1.25x input",
+    "(5-minute TTL — the 1h column is a different product we don't use) and cache read is 0.1x.",
+    "That 0.1x is standard but NOT universal, so a model may override 'cache_read_mult' — see",
+    "Fable/Mythos 5.1, whose 0.025x lives in a page FOOTNOTE rather than a column. Deriving it",
+    "blindly priced those two 4x high on every cached call, which is why the live drift check",
+    "compares the cache columns too instead of assuming.",
+    "",
+    "PRICES ARE TEMPORAL. A model maps to either one rate object (shorthand for 'this price, for",
+    "all time') or a LIST of periods, each optionally carrying 'effective_start' and",
+    "'effective_until' as 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:MM:SS' (UTC). Periods are half-open",
+    "[start, until), so one ending on 2026-09-23 and the next starting on 2026-09-23 do not",
+    "overlap. Overlaps are fatal (the rate at an instant would be ambiguous) and so are gaps (it",
+    "would be unknown, and inventing a neighbouring period's number is worse than refusing).",
+    "",
+    "This is what makes a mispriced ledger repairable: spend_ledger rows store tokens, so",
+    "reprice.py recomputes each row at the rate effective at ITS OWN timestamp. When a price",
+    "changes, close the old period and add the new one with the real effective date from the",
+    "announcement, then run ./reprice.sh. Don't reconstruct effective dates from this file's git",
+    "history — that records when WE learned something, not when a price changed, and backfilling",
+    "from it would stamp our old mistakes as authoritative-for-their-era.",
+    "",
+    "tests/test_pricing_live.py diffs this file against the live pricing page and FAILS on a real",
+    "mismatch, so it cannot quietly go stale. To add a model before we ship it here, don't edit",
+    "this file — create model_pricing.local.json (gitignored) with the same shape; it merges over",
+    "this one per model, replacing that model's ENTIRE timeline. See docs/configuration.md."
+  ],
+  "defaults": {
+    "cache_write_mult": 1.25,
+    "cache_read_mult": 0.10
+  },
+  "models": {
+    "claude-fable-5-1": {
+      "input": 10.00,
+      "output": 50.00,
+      "cache_read_mult": 0.025,
+      "note": "The .1 refresh keeps Fable 5's base rates but cuts cache hits to 0.025x input."
+    },
+    "claude-mythos-5-1": {
+      "input": 10.00,
+      "output": 50.00,
+      "cache_read_mult": 0.025,
+      "note": "Project Glasswing only; the twin of Fable 5.1, same specs and price."
+    },
+    "claude-fable-5": {
+      "input": 10.00,
+      "output": 50.00
+    },
+    "claude-mythos-5": {
+      "input": 10.00,
+      "output": 50.00,
+      "note": "Project Glasswing only; same specs/price as Fable 5."
+    },
+    "claude-opus-5": {
+      "input": 5.00,
+      "output": 25.00
+    },
+    "claude-opus-4-8": {
+      "input": 5.00,
+      "output": 25.00
+    },
+    "claude-sonnet-5": {
+      "input": 2.00,
+      "output": 10.00,
+      "note": "The launch 'introductory' $2/$10 is now the permanent standard price: Anthropic cancelled the increase to $3/$15 that had been scheduled for 2026-09-01."
+    },
+    "claude-haiku-4-5": {
+      "input": 1.00,
+      "output": 5.00
+    },
+    "claude-opus-4-7": {
+      "input": 5.00,
+      "output": 25.00,
+      "note": "Legacy, still active."
+    },
+    "claude-opus-4-6": {
+      "input": 5.00,
+      "output": 25.00,
+      "note": "Legacy, still active."
+    },
+    "claude-opus-4-5": {
+      "input": 5.00,
+      "output": 25.00,
+      "note": "Legacy, still active."
+    },
+    "claude-sonnet-4-6": {
+      "input": 3.00,
+      "output": 15.00,
+      "note": "Legacy, still active."
+    },
+    "claude-sonnet-4-5": {
+      "input": 3.00,
+      "output": 15.00,
+      "note": "Legacy, still active."
+    }
+  }
+}

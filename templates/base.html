@@ -210,6 +210,10 @@
           </div>
           <div id="costTable" class="table-responsive"></div>
           <div id="costUnpricedNote" class="text-muted small" style="display:none"></div>
+          {# Local price overrides: these figures were partly priced off the user's own
+             model_pricing.local.json rather than the shipped table, which is worth saying
+             where the money is shown, not only in the batch logs. #}
+          <div id="costOverrideNote" class="text-muted small" style="display:none"></div>
           <div class="small fw-semibold text-muted mt-3 mb-1">Daily spend by lens <span class="fw-normal">(last 30d)</span></div>
           <div style="height:200px"><canvas id="statsCostDailyChart"></canvas></div>
           <div class="small fw-semibold text-muted mt-3 mb-1">Trailing 30-day cost per application <span class="fw-normal">(last 90d)</span></div>
@@ -1327,6 +1331,12 @@
   function renderCostSection(c) {
     const section = document.getElementById('statsCostSection');
     _statsCostData = c;
+    // Disclosed once per payload rather than per window: an override applies to the whole ledger.
+    const ovr = c.pricing_overrides || [];
+    const ovrNote = document.getElementById('costOverrideNote');
+    ovrNote.style.display = ovr.length ? '' : 'none';
+    ovrNote.textContent = ovr.length
+      ? `ℹ️ Priced using local overrides — ${ovr.join('; ')}` : '';
     const all = (c.lenses || {}).all || {};
     const sids = Object.keys(all);
     if (!sids.length) { section.style.setProperty('display', 'none', 'important'); return; }

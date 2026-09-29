@@ -191,20 +191,126 @@ effort  = "medium"                        # default thinking effort (reasoning m
 then `[ai]`, then the built-in default / `ANTHROPIC_API_KEY`. This is backward
 compatible — an `api_key`/`model` left under `[viability]` still works as an override.
 
+### Model pricing
+
+Pricing lives in **`model_pricing.json`** (tracked, shipped) rather than in code, so a model can
+be priced without a code change. Rates are USD per *million* tokens; only `input` and `output`
+are stored, and the two cache rates are derived from input by a multiplier — `cache_write_mult`
+(default 1.25) and `cache_read_mult` (default 0.10). The 0.1× is standard but not universal:
+Fable/Mythos 5.1 bill cache hits at 0.025×, per a *footnote* on the pricing page rather than a
+column, which is why the multiplier is overridable per model.
+
+**Prices are temporal.** A model maps to either a single rate object — shorthand for "this
+price, for all time" — or a *list* of periods, each optionally carrying `effective_start` and
+`effective_until` (`YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SS`, UTC):
+
+```json
+"claude-sonnet-5": [
+  { "input": 3.00, "output": 15.00, "effective_until": "2026-09-23" },
+  { "input": 2.00, "output": 10.00, "effective_start": "2026-09-23" }
+]
+```
+
+Periods are **half-open** `[start, until)`, so one ending on 2026-09-23 and the next starting
+that day don't overlap. Both failure shapes are fatal at load: an **overlap** makes the rate at
+an instant ambiguous, and a **gap** makes it unknown — which is the same failure as not knowing
+today's price, and we already refuse to run on that. Inventing a neighbouring period's number
+would be worse than refusing.
+
+This is what makes a mispriced ledger repairable. `cost_usd` is a *cache* — every AI row stores
+the model and all four token counts — so `./reprice.sh` recomputes each row at the rate in
+effect at **its own** timestamp. See [Repricing](#repricing) below.
+
+> It's JSON rather than TOML because `.gitignore` carries a blanket `*.toml` — the rule that
+> keeps the secret-bearing `config.toml` and every `searches/*.toml` out of the repo. The shipped
+> table has to be tracked, and adding a negation to that glob would weaken the protection for
+> every other file it covers.
+
+**Adding a model yourself: `model_pricing.local.json`.** Anthropic ships models faster than this
+repo does. Drop a file next to the shipped one (gitignored; override the path with
+`JOBSEARCH_MODEL_PRICING`) using the same shape, and it merges **per model** over the shipped
+table:
+
+```json
+{
+  "models": {
+    "claude-sonnet-5-5": { "input": 2.00, "output": 10.00 },
+    "claude-haiku-4-5":  { "input": 0.80, "output": 4.00,
+                           "suppress_drift_warning": true,
+                           "note": "negotiated rate" }
+  }
+}
+```
+
+A local entry **replaces** the shipped one outright rather than patching individual fields, so an
+override always describes a complete, coherent price — a half-inherited hybrid (new input rate,
+stale cache multiplier) would be silently wrong with nothing to catch it. Edits are picked up
+without a restart. A malformed file is a hard error, not a fall-back to shipped prices: quietly
+billing at rates you deliberately overrode is the failure this is meant to prevent.
+
+> **Overriding a model means owning its whole price history.** The replacement is per *model*,
+> not per period — splicing your periods into ours would produce a timeline nobody authored, and
+> the resulting hybrid would be wrong with nothing to catch it. So if you override
+> `claude-sonnet-foo`, it's on you to know that model's pricing history: declaring only
+> `{"effective_start": "<today>"}` silently orphans every ledger row written before then, and
+> `./reprice.sh` will refuse to run rather than guess what they cost. Consult the
+> [canonical pricing table](https://platform.claude.com/docs/en/about-claude/pricing) if you need
+> the historical rates, and declare a period covering each era you care about. The batch entry
+> points detect the common version of this mistake and print a warning naming the model, the date
+> your override starts, and the history it dropped — but the warning is a safety net, not a
+> substitute for writing the timeline correctly.
+
+Every run that can spend money **discloses** which models are locally priced — `ingest.py` and
+`rescore_viability.py` print a `NOTE:` line at startup, and the stats modal says so next to the
+cost figures. `suppress_drift_warning` turns off the *comparison warnings* described below (a
+negotiated rate has no reason to match the public page); it does **not** suppress that
+disclosure, because a forgotten override quietly distorting months of cost figures is exactly
+what the disclosure is for.
+
+**The drift check.** `tests/test_pricing_live.py` diffs `model_pricing.json` against Anthropic's
+published pricing page and **fails** on a real mismatch, so the shipped table can't go stale.
+Local overrides only ever produce **warnings**, never failures — a deliberate override (a
+pre-announcement price, a negotiated deal) must not be able to redden the suite. Two warnings
+exist: an override that *disagrees* with the published page (usually a typo, occasionally
+intentional), and one that has become *redundant* because the shipped table caught up. The
+redundant case matters more than it looks: the override keeps winning, so the next time that
+price changes and the shipped table is corrected, your stale local copy silently overrides the
+correction.
+
 **Every configured model must be priced, or the run refuses to start.** `ingest.py` and
-`rescore_viability.py` check each search's models against `ai_config.MODEL_PRICING` after
-loading config and exit with an error before spending anything; the app's on-demand rescore
-refuses that one request the same way (it keeps serving, since config is hot-reloaded). This
-is deliberate: an unpriced model still scores jobs, but its [spend ledger](features.md) rows
-are written at $0 and are indistinguishable from genuinely free ones afterwards — and because
-rows are priced at call time, the real cost can't be reconstructed later. The error names the
-model, the config key and the search, and gives both fixes: switch to a listed model, or add
-the new one to `MODEL_PRICING` with its published rates (check the pricing page's *footnotes*
-for a non-standard cache-read multiplier — Fable/Mythos 5.1 bill cache hits at 0.025×, not the
-usual 0.1×). A **dated snapshot** (`claude-sonnet-5-20260101`) needs no entry: it's the same
-model pinned, so it inherits its base model's rates. A **point release** (`claude-sonnet-5-5`)
-does need one — it's a distinct model that may bill differently, so it is never allowed to
-inherit its predecessor's numbers.
+`rescore_viability.py` check each search's models after loading config and exit before spending
+anything; the app's on-demand rescore refuses that one request the same way (it keeps serving,
+since config is hot-reloaded). An unpriced model still scores jobs, but its
+[spend ledger](features.md) rows are written at $0 and are indistinguishable from genuinely free
+ones afterwards — and because rows are priced at call time, the real cost can't be reconstructed
+later. The error names the model, the config key and the search, and gives both fixes. A **dated
+snapshot** (`claude-sonnet-5-20260101`) needs no entry: it's the same model pinned, so it
+inherits its base model's rates. A **point release** (`claude-sonnet-5-5`) does need one — it's a
+distinct model that may bill differently, so it is never allowed to inherit its predecessor's
+numbers.
+
+### Repricing
+
+When a price changes — or when you discover one changed weeks ago — the ledger can be repaired,
+because `cost_usd` is derived from data every row already stores:
+
+```bash
+./reprice.sh --dry-run          # show what would move, per lens and model
+./reprice.sh                    # apply
+./reprice.sh --model claude-sonnet-5 --search europe_tpm   # narrow
+```
+
+The sequence is: close the old period and add the new one with the **real effective date from
+the announcement**, dry-run, then apply. Each row is recomputed at the rate effective at its own
+`ts`, so a single run repairs a mixed-era ledger correctly — there's no cutoff flag to supply,
+because the timeline already encodes it.
+
+It's deliberately manual. Anthropic publishes *current* rates, not effective dates or a price
+history, so the cutoff is a judgment call made from the announcement email — the one fact this
+repo cannot observe. A row whose model has no period covering its timestamp aborts the whole run
+(listed per model-month) rather than repricing some rows and leaving others stale. Apify rows are
+skipped: their charge was never derived from a token count, so there's nothing to recompute. The
+run takes the same writer lock as ingest and rescore.
 
 **`effort` — how it's applied.** Effort controls how much a *reasoning* model (Claude 4.6+/5,
 e.g. `claude-sonnet-5`) thinks before answering. It parallels `model`: an `effort` sits alongside

@@ -174,7 +174,7 @@ def build_sample_db(conn) -> None:
     )
     # A few AI-cost ledger rows (fixed ts/cost) so the stats "AI cost" route has realistic data:
     # an initial score + reformat for an applied-family job, a later rescore of it, and an initial
-    # score of a new High job. Explicit cost_usd keeps them independent of MODEL_PRICING changes.
+    # score of a new High job. Explicit cost_usd keeps them independent of pricing-table changes.
     conn.executemany(
         "INSERT INTO spend_ledger (ts, search_id, job_id, feature, model, input_tokens, output_tokens, "
         "cost_usd) VALUES (?, '__default__', ?, ?, 'claude-haiku-4-5', ?, ?, ?)",

@@ -7,9 +7,11 @@ report token usage / cost the same way. This module is the single source of trut
 for both so the two features stay consistent.
 """
 
+import json
 import os
 import re
 import sys
+from datetime import datetime, timezone
 
 # Fallback model when neither the feature section nor [ai] specifies one. Haiku is the
 # cheapest current model — a sane default for high-volume, low-complexity AI calls
@@ -38,44 +40,345 @@ def is_reasoning_model(model: str) -> bool:
     m = (model or "").lower()
     return any(m.startswith(p) for p in _REASONING_MODELS)
 
-# Approximate pricing per token (USD). Update if Anthropic changes rates.
-# Source: https://platform.claude.com/docs/en/about-claude/models/overview (2026-07-02).
-# Per-model entries list only input/output $/1M; cache_write is 1.25x input (5-min TTL)
-# and cache_read is 0.1x input, so they're derived rather than hand-typed.
-def _pricing(input_per_m: float, output_per_m: float,
-             cache_read_mult: float = 0.10) -> dict[str, float]:
-    """The 0.1x cache-read multiplier is the standard across the lineup but NOT universal —
-    Fable/Mythos 5.1 bill cache hits at 0.025x — so it's overridable per model. Deriving it
-    blindly would have priced those two 4x high on every cached call; the live drift check now
-    compares the cache columns too, so a future exception fails the suite instead of lurking."""
+# ── Model pricing: shipped data file + optional local override ────────────────
+# Pricing lives in JSON rather than in this module so a new model can be priced without a code
+# change or a release — the whole point of the override file. JSON (not TOML) because .gitignore
+# carries a blanket `*.toml`, the rule that keeps the secret-bearing config.toml and every
+# searches/*.toml out of the repo; the shipped table has to be *tracked*, and punching a negation
+# in that glob to allow one filename would weaken the protection for all of them.
+_SHIPPED_PRICING = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_pricing.json")
+
+# The local override is resolved next to the shipped file, or from JOBSEARCH_MODEL_PRICING —
+# the same env-indirection the suite already uses for JOBSEARCH_CONFIG/JOBSEARCH_DB, and what
+# keeps tests hermetic: without it, a real override sitting in the repo root would silently
+# change what every pricing test sees.
+LOCAL_PRICING_ENV = "JOBSEARCH_MODEL_PRICING"
+_DEFAULT_LOCAL_PRICING = os.path.join(os.path.dirname(_SHIPPED_PRICING), "model_pricing.local.json")
+
+# Defaults for the derived cache rates when a model names neither (see model_pricing.json).
+_CACHE_WRITE_MULT = 1.25
+_CACHE_READ_MULT  = 0.10
+
+
+class PricingError(Exception):
+    """The pricing data is unreadable or malformed.
+
+    Fatal rather than fail-soft, in both files. Falling back to "no pricing" would send every
+    call to a $0 ledger row — the exact silent-mispricing failure the unpriced-model gate below
+    exists to prevent — and falling back to the shipped table when a *local* file is broken
+    would quietly bill at rates the user has explicitly overridden.
+    """
+
+
+def local_pricing_path() -> str:
+    """Path to the optional local override file (env wins; else beside the shipped one)."""
+    return os.environ.get(LOCAL_PRICING_ENV) or _DEFAULT_LOCAL_PRICING
+
+
+def _rates(entry: "dict", model: str, source: str) -> "dict[str, float]":
+    """One pricing period's JSON entry → the four per-token rates.
+
+    Only input/output are stored; the cache rates are derived by multiplier, because that
+    mirrors how the pricing page presents them. The 0.1x cache-read default is standard but not
+    universal (Fable/Mythos 5.1 bill 0.025x, per a footnote), so a period may override either
+    multiplier — deriving blindly priced those two 4x high on every cached call.
+    """
+    try:
+        input_per_m  = float(entry["input"])
+        output_per_m = float(entry["output"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PricingError(
+            f"{source}: model {model!r} needs numeric 'input' and 'output' rates "
+            f"(USD per million tokens); got {entry!r}"
+        ) from exc
+    write_mult = float(entry.get("cache_write_mult", _CACHE_WRITE_MULT))
+    read_mult  = float(entry.get("cache_read_mult",  _CACHE_READ_MULT))
     return {
         "input":       input_per_m / 1_000_000,
         "output":      output_per_m / 1_000_000,
-        "cache_write": input_per_m * 1.25 / 1_000_000,
-        "cache_read":  input_per_m * cache_read_mult / 1_000_000,
+        "cache_write": input_per_m * write_mult / 1_000_000,
+        "cache_read":  input_per_m * read_mult  / 1_000_000,
     }
 
 
-MODEL_PRICING: dict[str, dict[str, float]] = {
-    # Current models (latest generation). The .1 refreshes keep Fable 5's base rates but cut
-    # cache hits to 0.025x input (a footnote on the pricing page, not a column).
-    "claude-fable-5-1":  _pricing(10.00, 50.00, cache_read_mult=0.025),
-    "claude-mythos-5-1": _pricing(10.00, 50.00, cache_read_mult=0.025),  # Glasswing-only twin of Fable 5.1
-    "claude-fable-5":    _pricing(10.00, 50.00),
-    "claude-mythos-5":   _pricing(10.00, 50.00),  # Project Glasswing only; same specs/price as Fable 5
-    "claude-opus-5":     _pricing(5.00, 25.00),
-    "claude-opus-4-8":   _pricing(5.00, 25.00),
-    # Sonnet 5's launch "introductory" $2/$10 is now the permanent standard price:
-    # Anthropic cancelled the increase to $3/$15 that had been scheduled for 2026-09-01.
-    "claude-sonnet-5":   _pricing(2.00, 10.00),
-    "claude-haiku-4-5":  _pricing(1.00, 5.00),
-    # Legacy (still active).
-    "claude-opus-4-7":   _pricing(5.00, 25.00),
-    "claude-opus-4-6":   _pricing(5.00, 25.00),
-    "claude-opus-4-5":   _pricing(5.00, 25.00),
-    "claude-sonnet-4-6": _pricing(3.00, 15.00),
-    "claude-sonnet-4-5": _pricing(3.00, 15.00),
-}
+# Pricing is temporal: a model's rate is a sequence of half-open [start, until) periods, not a
+# single number. Modelling it as "the current price" was lossy — it made a historical ledger row
+# unrepriceable, because nothing recorded what the rate was when the row was written. Half-open
+# so two adjacent periods can share a boundary date without overlapping.
+_EPOCH    = "0000-01-01T00:00:00"
+_FOREVER  = "9999-12-31T23:59:59"
+
+
+def _parse_when(value, model: str, field: str, source: str) -> str:
+    """Normalize a date/timestamp to a sortable 'YYYY-MM-DDTHH:MM:SS' string.
+
+    Compared as strings rather than datetimes because the ledger's ``ts`` is SQLite's UTC
+    'YYYY-MM-DD HH:MM:SS' — already lexicographically ordered — so normalizing both to the same
+    shape avoids a parse on every one of thousands of rows during a reprice.
+    """
+    if not isinstance(value, str):
+        raise PricingError(f"{source}: model {model!r} has a non-string {field}: {value!r}")
+    v = value.strip().replace(" ", "T").rstrip("Z")
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+        return v + "T00:00:00"
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", v):
+        return v
+    raise PricingError(
+        f"{source}: model {model!r} has an unparseable {field} {value!r} — "
+        f"use 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:MM:SS' (UTC)."
+    )
+
+
+def _periods(raw, model: str, source: str) -> "list[dict]":
+    """One model's JSON value → its validated, start-sorted list of pricing periods.
+
+    A bare object is shorthand for a single epoch→forever period, so the overwhelmingly common
+    "this model has one price" case doesn't pay for the temporal machinery.
+
+    Overlaps and interior gaps are both fatal. An overlap makes the rate at an instant
+    ambiguous; a gap makes it unknown — and an unknown past rate is the same failure as an
+    unknown present one, which we already refuse to run on. Silently picking a neighbouring
+    period would invent a number, which is the one thing worse than refusing.
+    """
+    entries = raw if isinstance(raw, list) else [raw]
+    if not entries:
+        raise PricingError(f"{source}: model {model!r} has an empty pricing list.")
+    periods = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise PricingError(f"{source}: model {model!r} has a non-object period: {entry!r}")
+        start = _parse_when(entry["effective_start"], model, "effective_start", source) \
+            if entry.get("effective_start") else _EPOCH
+        until = _parse_when(entry["effective_until"], model, "effective_until", source) \
+            if entry.get("effective_until") else _FOREVER
+        if until <= start:
+            raise PricingError(
+                f"{source}: model {model!r} has a period ending at or before it starts "
+                f"({start} → {until}).")
+        periods.append({"start": start, "until": until, "rates": _rates(entry, model, source),
+                        "raw": entry})
+    periods.sort(key=lambda p: p["start"])
+    for prev, nxt in zip(periods, periods[1:]):
+        if nxt["start"] < prev["until"]:
+            raise PricingError(
+                f"{source}: model {model!r} has overlapping pricing periods "
+                f"({prev['start']}→{prev['until']} and {nxt['start']}→{nxt['until']}). "
+                f"Periods are half-open [start, until), so an ending date may equal the next "
+                f"start.")
+        if nxt["start"] > prev["until"]:
+            raise PricingError(
+                f"{source}: model {model!r} has a gap in its pricing history "
+                f"({prev['until']} → {nxt['start']}) — nothing prices a call made in that "
+                f"window. Add a period covering it (consult the published pricing table for "
+                f"the historical rate) or extend an adjacent one.")
+    return periods
+
+
+def _rates_at(periods: "list[dict]", when: str) -> "dict[str, float] | None":
+    """The rates in effect at `when`, or None when no period covers it."""
+    for p in periods:
+        if p["start"] <= when < p["until"]:
+            return p["rates"]
+    return None
+
+
+def _now_stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _normalize_when(when: "str | None") -> str:
+    """A caller-supplied instant (ledger ts or ISO string) normalized for comparison; None ⇒ now."""
+    if when is None:
+        return _now_stamp()
+    return when.strip().replace(" ", "T").rstrip("Z")
+
+
+def _read_pricing_file(path: str, *, required: bool) -> "dict[str, dict]":
+    """Parse one pricing file into {model: raw entry}. Missing + optional ⇒ {}."""
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        if required:
+            raise PricingError(f"{path}: shipped pricing table is missing.") from None
+        return {}
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PricingError(f"{path}: could not read pricing data — {exc}") from exc
+    models = data.get("models")
+    if not isinstance(models, dict):
+        raise PricingError(f"{path}: expected a top-level 'models' object mapping model id → rates.")
+    return models
+
+
+# Cache keyed by each file's (path, mtime, size) so an edit is picked up without a restart —
+# app.py hot-reloads config, and pricing that needed a bounce would be a trap. Batch entry
+# points are short-lived processes, so for them this just means "read once".
+_pricing_cache: "tuple | None" = None
+
+
+def _pricing_stamp() -> tuple:
+    def stat(path):
+        try:
+            st = os.stat(path)
+            return (path, st.st_mtime_ns, st.st_size)
+        except OSError:
+            return (path, None, None)
+    return (stat(_SHIPPED_PRICING), stat(local_pricing_path()))
+
+
+def load_pricing() -> "tuple[dict[str, list], dict[str, dict]]":
+    """Return (merged timelines, override metadata), reloading when either file changes.
+
+    Merge is per *model*, not per period or per rate: a local entry replaces the shipped model's
+    ENTIRE timeline. Splicing the two would produce a history no one authored — our periods
+    interleaved with theirs — and the resulting hybrid would be silently wrong with nothing to
+    catch it. The consequence is that overriding a model means owning its whole price history;
+    see docs/configuration.md, and `override_coverage_warnings()` below, which detects the case
+    where an override silently drops history the shipped table used to cover.
+    """
+    global _pricing_cache
+    stamp = _pricing_stamp()
+    if _pricing_cache is not None and _pricing_cache[0] == stamp:
+        return _pricing_cache[1], _pricing_cache[2]
+
+    shipped_raw = _read_pricing_file(_SHIPPED_PRICING, required=True)
+    local_raw   = _read_pricing_file(local_pricing_path(), required=False)
+
+    base: dict[str, list] = {}
+    for model, entry in shipped_raw.items():
+        base[model.lower()] = _periods(entry, model, _SHIPPED_PRICING)
+    merged = dict(base)
+    overrides: dict[str, dict] = {}
+    for model, entry in local_raw.items():
+        key = model.lower()
+        merged[key] = _periods(entry, model, local_pricing_path())
+        overrides[key] = {"periods": merged[key], "_shipped": key in base}
+
+    _pricing_cache = (stamp, merged, overrides, base)
+    return merged, overrides
+
+
+def model_pricing(at: "str | None" = None) -> "dict[str, dict[str, float]]":
+    """The merged table as of `at` (default now): {model: {input, output, cache_write, cache_read}}.
+
+    Models with no period covering `at` are omitted — "unpriced at that instant" and "unknown
+    model" are the same thing to every caller. Call this rather than binding a dict at import
+    time; it reloads on a file edit.
+    """
+    when = _normalize_when(at)
+    out = {}
+    for model, periods in load_pricing()[0].items():
+        rates = _rates_at(periods, when)
+        if rates is not None:
+            out[model] = rates
+    return out
+
+
+def pricing_overrides() -> "dict[str, dict]":
+    """{model: {periods, _shipped}} for every model the local file overrides or adds.
+
+    ``_shipped`` is True when it *replaces* a shipped timeline (the risky case worth disclosing
+    loudly), False when it merely adds a model we don't ship yet.
+    """
+    return load_pricing()[1]
+
+
+def shipped_pricing(at: "str | None" = None) -> "dict[str, dict[str, float]]":
+    """The shipped table alone as of `at`, ignoring any local override.
+
+    The drift check validates THIS against Anthropic's published page — that comparison has to
+    be about our data, not the user's, or a deliberate local override would fail the suite.
+    """
+    load_pricing()
+    when = _normalize_when(at)
+    out = {}
+    for model, periods in _pricing_cache[3].items():
+        rates = _rates_at(periods, when)
+        if rates is not None:
+            out[model] = rates
+    return out
+
+
+def override_coverage_warnings() -> "list[str]":
+    """Warn where an override's timeline covers less history than the shipped one it replaced.
+
+    Not an error — declaring only "from today" is legitimate for a model whose history you
+    genuinely don't know. But it silently makes older ledger rows unrepriceable, and the reason
+    (a whole-timeline replacement) isn't obvious from looking at a two-line override file. This
+    turns a documentation-dependent trap into something the tooling actually says out loud.
+    """
+    out = []
+    shipped_all = load_pricing()
+    shipped = _pricing_cache[3]
+    for model, meta in sorted(pricing_overrides().items()):
+        if not meta["_shipped"]:
+            continue
+        was = shipped[model][0]["start"]
+        now = meta["periods"][0]["start"]
+        if now > was:
+            out.append(
+                f"{model}: your override starts at {now[:10]}, but the shipped table priced it "
+                f"from {'the epoch' if was == _EPOCH else was[:10]}. An override replaces the "
+                f"whole timeline, so ledger rows before {now[:10]} can no longer be repriced — "
+                f"add an earlier period if you need that history.")
+    return out
+
+
+def describe_pricing_overrides() -> "list[str]":
+    """One disclosure line per locally-priced model, for batch startup output (empty if none).
+
+    Always produced, even for a ``suppress_drift_warning`` entry: that switch turns off the
+    comparison nag, not the fact that the ledger is being priced off something other than the
+    shipped table. Silencing that too is how a forgotten override quietly distorts months of
+    cost figures.
+    """
+    lines = []
+    when = _now_stamp()
+    for model, meta in sorted(pricing_overrides().items()):
+        what = "replaces the shipped price" if meta["_shipped"] else "not in the shipped table"
+        current = _current_period(meta["periods"], when)
+        if current is None:
+            # An override whose timeline has run out (or hasn't started). Still disclosed — the
+            # startup gate will refuse it if it's configured, but a *past* period of it may
+            # already have priced live ledger rows, so staying silent would hide that.
+            lines.append(f"{model}: {len(meta['periods'])} pricing period(s) from "
+                         f"{os.path.basename(local_pricing_path())}, none covering now ({what})")
+            continue
+        rates, raw = current["rates"], current["raw"]
+        span = "" if len(meta["periods"]) == 1 else f", period from {current['start'][:10]}"
+        line = (f"{model}: ${rates['input'] * 1_000_000:g}/${rates['output'] * 1_000_000:g} "
+                f"per MTok from {os.path.basename(local_pricing_path())} ({what}{span})")
+        if raw.get("note"):
+            line += f" — {raw['note']}"
+        if raw.get("suppress_drift_warning"):
+            line += " [drift warnings silenced]"
+        lines.append(line)
+    return lines
+
+
+def _current_period(periods: "list[dict]", when: str) -> "dict | None":
+    """The period covering `when`, or None."""
+    for p in periods:
+        if p["start"] <= when < p["until"]:
+            return p
+    return None
+
+
+def override_is_silenced(model: str) -> bool:
+    """True when a local entry opts out of the drift warnings via ``suppress_drift_warning``.
+
+    Deliberately narrow: it silences the *nag* (redundant / disagrees-with-published), never the
+    "prices are overridden locally" disclosure. A negotiated rate is a legitimate reason to stop
+    comparing against the public page; it is never a reason to hide that the ledger is being
+    priced off something other than the shipped table.
+    """
+    meta = pricing_overrides().get((model or "").lower())
+    if not meta:
+        return False
+    # Read off the currently-effective period: the drift check compares against today's published
+    # price, so today's period is the one whose opt-out is relevant.
+    current = _current_period(meta["periods"], _now_stamp())
+    return bool(current and current["raw"].get("suppress_drift_warning"))
 
 
 # A dated snapshot ID is a base model plus an 8-digit date (claude-sonnet-5-20260101). That
@@ -91,15 +394,16 @@ def base_model_id(model: str) -> str:
     return _SNAPSHOT_SUFFIX.sub("", (model or "").lower())
 
 
-def pricing_for(model: str) -> "dict[str, float] | None":
-    """The MODEL_PRICING entry for `model`, or None when it isn't priced.
+def pricing_for(model: str, at: "str | None" = None) -> "dict[str, float] | None":
+    """The rates for `model` in effect at `at` (default now), or None when nothing prices it then.
 
-    A dated snapshot inherits its base model's rates — it IS that model, pinned. Everything
+    A dated snapshot inherits its base model's timeline — it IS that model, pinned. Everything
     else must be priced explicitly, so a new point release surfaces as unpriced rather than
     quietly inheriting the older sibling's numbers.
     """
+    table = model_pricing(at)
     m = (model or "").lower()
-    return MODEL_PRICING.get(m) or MODEL_PRICING.get(base_model_id(m))
+    return table.get(m) or table.get(base_model_id(m))
 
 
 def resolve_ai_settings(config: dict, section: str) -> tuple[str | None, str]:
@@ -194,7 +498,7 @@ def resolve_geo_model(config: dict, geo_uses_description: bool) -> str:
 
 
 class UnpricedModelError(Exception):
-    """A configured model has no MODEL_PRICING entry, so its calls would ledger at $0.
+    """A configured model has no pricing entry, so its calls would ledger at $0.
 
     Fatal rather than a warning because the spend ledger is the only record of what a lens
     costs, rows are priced at call time, and an unpriced model's $0 rows are indistinguishable
@@ -244,9 +548,11 @@ def require_priced_models(items: "list[tuple[str, dict]]") -> None:
         "no pricing is configured for these models, so their calls would be recorded as $0 "
         "in the spend ledger:\n" + "\n".join(problems)
         + "\n\nFix by either:\n"
-          "  - switching the config to a model listed in ai_config.MODEL_PRICING, or\n"
-          "  - adding the model to ai_config.MODEL_PRICING with its published rates\n"
-          "    (check the pricing page's footnotes for a non-standard cache-read multiplier).\n"
+          "  - switching the config to a model listed in model_pricing.json, or\n"
+          f"  - adding it to {local_pricing_path()} with its published rates, e.g.\n"
+          '      {"models": {"<model-id>": {"input": 2.00, "output": 10.00}}}\n'
+          "    (rates are USD per million tokens; check the pricing page's footnotes for a\n"
+          "     non-standard cache-read multiplier, e.g. \"cache_read_mult\": 0.025).\n"
           "A dated snapshot (e.g. claude-sonnet-5-20260101) inherits its base model's rates "
           "automatically; a point release (e.g. claude-sonnet-5-5) is a distinct model and "
           "needs its own entry."
@@ -254,7 +560,8 @@ def require_priced_models(items: "list[tuple[str, dict]]") -> None:
 
 
 def estimate_cost(model: str, *, input: int = 0, output: int = 0,
-                  cache_write: int = 0, cache_read: int = 0) -> float | None:
+                  cache_write: int = 0, cache_read: int = 0,
+                  at: "str | None" = None) -> float | None:
     """Estimated USD cost for a token tally, or None if the model is unpriced.
 
     The keyword-only param names (input/output/cache_write/cache_read) deliberately
@@ -262,7 +569,7 @@ def estimate_cost(model: str, *, input: int = 0, output: int = 0,
     Returns None (rather than 0) for an unknown model so the caller can distinguish
     "no pricing data" from "genuinely free" and omit the cost line entirely.
     """
-    pricing = pricing_for(model)
+    pricing = pricing_for(model, at)
     if not pricing:
         return None
     return (

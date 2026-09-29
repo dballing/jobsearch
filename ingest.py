@@ -25,7 +25,9 @@ import requests
 
 from config import ConfigError, load_config, migrate_config_to_basics
 
-from ai_config import (DEFAULT_EFFORT, UnpricedModelError, format_token_summary,
+from ai_config import (DEFAULT_EFFORT, UnpricedModelError, describe_pricing_overrides,
+                       override_coverage_warnings,
+                       format_token_summary,
                        require_priced_models, resolve_ai_settings, resolve_effort,
                        warn_effort_ignored)
 from spend import (SCHEMA as SPEND_SCHEMA, ensure_spend_ledger, record_apify_run,
@@ -1895,6 +1897,10 @@ def main() -> None:
         require_priced_models([(s.id, s.config) for s in app_cfg.searches])
     except UnpricedModelError as exc:
         sys.exit(f"ERROR: {exc}")
+    for line in describe_pricing_overrides():
+        print(f"NOTE: local pricing override — {line}")
+    for line in override_coverage_warnings():
+        print(f"WARNING: {line}", file=sys.stderr)
 
     # Globals are shared across all searches (one DB, one alias namespace, one API key).
     shared = app_cfg.shared

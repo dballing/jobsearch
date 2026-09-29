@@ -3,6 +3,11 @@
 # per-search [[searches]] file (e.g. midatl_tpm.toml). The tracked template is config.toml.example
 # (ends in .example, so this glob doesn't match it).
 *.toml
+# Local pricing overrides: personal data (a pre-announcement rate, a negotiated deal), and the
+# shipped model_pricing.json is the tracked one. Named explicitly because *.json is NOT blanket
+# ignored the way *.toml is — without this line an override would show up as untracked and could
+# be committed by accident.
+model_pricing.local.json
 *.backup
 *.db
 # SQLite WAL-mode sidecars (jobs.db-wal / jobs.db-shm) — transient
