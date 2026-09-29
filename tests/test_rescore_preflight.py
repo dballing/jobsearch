@@ -67,12 +67,33 @@ def test_currency_silent_when_model_is_current(capsys):
     assert out.out == "" and out.err == ""
 
 
-def test_currency_notes_newer_sibling(capsys):
-    """A newer dated id in the same family → an advisory note (not a warning)."""
+def test_currency_silent_about_a_newer_build_of_a_pinned_model(capsys):
+    """A pin is deliberate, so newer BUILDS of the pinned model are not news.
+
+    You can only ever pin to a build that already exists, which makes the act of pinning itself
+    the statement "I know later builds will come and I want this one." Reporting them every run
+    would be pure noise. (This deliberately reverses the older behavior, which notified here.)
+    """
     models = [_Model("claude-sonnet-5-20260101", created_at=1),
               _Model("claude-sonnet-5-20260601", created_at=2)]
     rv.check_model_currency(models, "claude-sonnet-5-20260101")
-    assert "newer model is available" in capsys.readouterr().out
+    out = capsys.readouterr()
+    assert out.out == "" and out.err == ""
+
+
+def test_currency_tells_a_pinned_config_about_a_different_model(capsys):
+    """A newer MODEL is different information from a newer build: the family has moved past the
+    pin, possibly past whatever the pin was avoiding. Phrased as such rather than as a drifted
+    config, and naming the base id — a pinned user reading 'claude-sonnet-5-5-20260929' might
+    pin that too, which is not the advice."""
+    models = [_Model("claude-sonnet-5-20260101", created_at=1),
+              _Model("claude-sonnet-5-5-20260929", created_at=2)]
+    rv.check_model_currency(models, "claude-sonnet-5-20260101")
+    out = capsys.readouterr().out
+    assert "pinned to 'claude-sonnet-5-20260101'" in out
+    assert "'claude-sonnet-5-5' is available" in out
+    assert "20260929" not in out                  # no build level leaked
+    assert "Consider updating" not in out         # not the drifted-config phrasing
 
 
 def test_currency_notes_point_release_in_same_family(capsys):
@@ -86,7 +107,8 @@ def test_currency_notes_point_release_in_same_family(capsys):
               _Model("claude-sonnet-5-5-20260929", created_at=2)]
     rv.check_model_currency(models, "claude-sonnet-5")
     out = capsys.readouterr()
-    assert "newer model is available" in out.out and "claude-sonnet-5-5" in out.out
+    assert "newer model is available" in out.out and "'claude-sonnet-5-5'" in out.out
+    assert "20260929" not in out.out              # reported by base id, not the dated build
     assert out.err == ""          # a successor is advisory, not a 'model unavailable' warning
 
 

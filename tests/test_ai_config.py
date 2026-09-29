@@ -4,7 +4,8 @@ location sub-call to a capable model when it reads job descriptions — plus the
 import pytest
 
 from ai_config import (DEFAULT_EFFORT, DEFAULT_MODEL, UnpricedModelError, base_model_id,
-                       configured_models, effective_effort, estimate_cost, is_reasoning_model,
+                       configured_models, describe_model_change, effective_effort, estimate_cost,
+                       is_reasoning_model,
                        model_pricing, pricing_for, require_priced_models, resolve_effort,
                        resolve_geo_effort, resolve_geo_model, unpriced_models)
 
@@ -201,3 +202,54 @@ def test_require_priced_models_names_model_search_and_remediation():
 def test_require_priced_models_accepts_a_dated_snapshot_pin():
     """Pinning a snapshot is legitimate config, not an error — it inherits the base rates."""
     require_priced_models([("s", {"viability": {"model": "claude-sonnet-5-20260101"}})])
+
+
+# ── newer-model advisory (describe_model_change) ──────────────────────────────
+# The currency notice used to say only "something newer exists". These two facts decide whether
+# the upgrade is worth taking, and neither is visible in a bare model id.
+def test_cheaper_successor_is_reported_with_the_delta():
+    lines = " ".join(describe_model_change("claude-sonnet-4-6", "claude-sonnet-5"))
+    assert "cheaper" in lines and "-33%" in lines
+    assert "$2/$10 vs $3/$15" in lines
+
+
+def test_more_expensive_successor_is_also_reported():
+    """'Newer and dearer' is just as decision-relevant as the reverse — a one-directional hint
+    would quietly push users toward upgrades that cost them more."""
+    lines = " ".join(describe_model_change("claude-sonnet-5", "claude-sonnet-4-6"))
+    assert "costs MORE" in lines and "+50%" in lines
+
+
+def test_same_price_successor_says_so():
+    lines = " ".join(describe_model_change("claude-opus-4-8", "claude-opus-5"))
+    assert "unchanged" in lines
+
+
+def test_crossing_into_adaptive_thinking_is_flagged():
+    """The case where 'cheaper per token' is most likely to be wrong: the newer model bills
+    reasoning tokens the old one never produced, which no price table can show."""
+    lines = " ".join(describe_model_change("claude-sonnet-4-5", "claude-sonnet-5"))
+    assert "adaptive thinking" in lines and "NOT necessarily cheaper per job" in lines
+    # ...and it is NOT claimed when both sides already think.
+    assert "adaptive thinking" not in " ".join(
+        describe_model_change("claude-sonnet-4-6", "claude-sonnet-5"))
+
+
+def test_opus_4_5_upgrade_is_a_pure_cost_increase():
+    """Same rates AND newly-billed thinking tokens — the concrete answer to 'why would I ever
+    stay on an older model'."""
+    lines = " ".join(describe_model_change("claude-opus-4-5", "claude-opus-5"))
+    assert "unchanged" in lines and "adaptive thinking" in lines
+
+
+def test_unpriced_side_produces_no_price_claim():
+    """Guessing a delta is worse than staying quiet, so an unpriced model yields no price line."""
+    lines = " ".join(describe_model_change("claude-sonnet-5", "claude-fictional-9"))
+    assert "cheaper" not in lines and "costs MORE" not in lines and "unchanged" not in lines
+
+
+def test_advice_points_at_the_comparison_harness_by_base_id():
+    """The suggested command must name a model you'd actually put in config — not the dated
+    build the models API hands back."""
+    lines = describe_model_change("claude-sonnet-4-6", "claude-sonnet-5-5-20260929")
+    assert lines[-1].endswith("./compare_scoring.sh --model claude-sonnet-5-5")

@@ -559,6 +559,51 @@ def require_priced_models(items: "list[tuple[str, dict]]") -> None:
     )
 
 
+def describe_model_change(current: str, candidate: str) -> "list[str]":
+    """Advisory lines comparing a configured model against a newer one, for the currency notice.
+
+    Two facts a bare "a newer model exists" note leaves out, both decision-relevant:
+
+    * **Price, in either direction.** Newer is often cheaper (Sonnet 4.6 → 5 drops a third) but
+      not always, and "newer and dearer" is just as worth knowing before switching. Silent when
+      either side is unpriced — guessing here would be the one thing worse than saying nothing.
+    * **A change of thinking regime.** Moving from a non-reasoning model to an adaptive-thinking
+      one adds billed reasoning tokens that simply didn't exist before, so a lower per-token rate
+      can still mean a higher bill per job. This is the case where "cheaper" is most likely to be
+      wrong, and it's invisible in a price table — hence the explicit warning and the pointer at
+      the comparison harness.
+
+    Deliberately phrased as information, not a recommendation: the model is never folded into the
+    scoring hash (see viability.prompt_hash), so switching leaves every existing score in place
+    and silently mixes two judges' ratings in one table. That's a real cost this function cannot
+    weigh for the user.
+    """
+    out = []
+    now, new = pricing_for(current), pricing_for(candidate)
+    if now and new:
+        pct = lambda a, b: (b - a) / a * 100 if a else 0.0
+        d_in, d_out = pct(now["input"], new["input"]), pct(now["output"], new["output"])
+        rates = (f"${new['input'] * 1_000_000:g}/${new['output'] * 1_000_000:g} vs "
+                 f"${now['input'] * 1_000_000:g}/${now['output'] * 1_000_000:g} per MTok")
+        if d_in < 0 and d_out < 0:
+            out.append(f"It is also cheaper per token: {rates} "
+                       f"({d_in:+.0f}% input, {d_out:+.0f}% output).")
+        elif d_in > 0 or d_out > 0:
+            out.append(f"Note it costs MORE per token: {rates} "
+                       f"({d_in:+.0f}% input, {d_out:+.0f}% output).")
+        else:
+            out.append(f"Per-token rates are unchanged ({rates}).")
+    if is_reasoning_model(candidate) and not is_reasoning_model(current):
+        out.append(
+            "It runs adaptive thinking and your current model does not, so it bills reasoning "
+            "tokens your current model never produced — cheaper per token is NOT necessarily "
+            "cheaper per job.")
+    if out:
+        out.append(f"Before switching, check the rating drift: "
+                   f"./compare_scoring.sh --model {base_model_id(candidate)}")
+    return out
+
+
 def estimate_cost(model: str, *, input: int = 0, output: int = 0,
                   cache_write: int = 0, cache_read: int = 0,
                   at: "str | None" = None) -> float | None:

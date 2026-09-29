@@ -62,7 +62,8 @@ from pathlib import Path
 import anthropic
 
 from config import ConfigError, load_config
-from ai_config import (UnpricedModelError, base_model_id, describe_pricing_overrides,
+from ai_config import (UnpricedModelError, base_model_id, describe_model_change,
+                       describe_pricing_overrides,
                        override_coverage_warnings,
                        format_token_summary, require_priced_models,
                        resolve_ai_settings, resolve_effort, resolve_geo_effort,
@@ -153,17 +154,41 @@ def check_model_currency(all_models: list, configured_model: str) -> None:
         )
 
         if family_models:
-            newest = family_models[0].id
-            # Not newer if the configured model IS the newest, or newest is merely a dated
-            # snapshot of the undated alias we're configured with. Deliberately asymmetric: a
-            # config pinned to a *dated* id stays eligible for the notice, so a newer snapshot
-            # of the same base model still gets reported.
-            if not (newest == configured_model or base_model_id(newest) == configured_model):
+            newest          = family_models[0].id
+            newest_base     = base_model_id(newest)
+            configured_base = base_model_id(configured_model)
+            pinned = configured_model != configured_base   # config names a dated build
+
+            # Same base model on both sides ⇒ nothing to report, for either kind of config.
+            # On the undated alias you already track the newest build automatically. On a pinned
+            # build you chose this one over whatever came after: a pin can only ever target a
+            # build that already exists, so the act of pinning IS the statement "I know there are
+            # later builds of this model and I want this one." Nagging about them is noise.
+            if newest_base == configured_base:
+                return
+
+            # A different base model in the family is genuinely new information — not "a newer
+            # build of your thing" but "the family has moved on past your pin", which may well
+            # be past whatever you pinned to avoid. Reported by base id, never the dated build
+            # the API hands back: that form isn't what you'd write in config.toml, so printing
+            # it only invites pinning a snapshot you didn't mean to pin.
+            if pinned:
+                print(
+                    f"Note: you are pinned to '{configured_model}', but '{newest_base}' is "
+                    f"available, with builds past your pin. Worth re-checking if you pinned to "
+                    f"avoid a specific regression."
+                )
+            else:
                 print(
                     f"Note: a newer model is available in this family: "
-                    f"'{newest}' (you are using '{configured_model}'). "
+                    f"'{newest_base}' (you are using '{configured_model}'). "
                     f"Consider updating [viability] model in config.toml."
                 )
+            # Price and thinking-regime deltas, so the note is actionable rather than just
+            # "something newer exists". Kept advisory: switching is free in re-scoring terms
+            # (the model isn't hashed) but silently mixes two models' ratings in one table.
+            for line in describe_model_change(configured_model, newest):
+                print(f"      {line}")
     except Exception:
         pass  # Non-fatal — don't interrupt scoring if the check fails.
 

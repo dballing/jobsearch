@@ -47,8 +47,9 @@ from pathlib import Path
 import anthropic
 
 from config import ConfigError, load_config
-from ai_config import (format_token_summary, resolve_ai_settings, resolve_effort,
-                       resolve_geo_effort, resolve_geo_model)
+from ai_config import (describe_model_change, estimate_cost, format_token_summary,
+                       pricing_for, resolve_ai_settings, resolve_effort, resolve_geo_effort,
+                       resolve_geo_model)
 import viability as viability_new
 from viability import (assess_location_fit, clamp_viability_for_geo, geo_note,
                        manual_geo_verdict)
@@ -229,6 +230,12 @@ def main() -> None:
                             metavar="N", help="Only jobs first ingested within the trailing N days (default 30)")
     date_group.add_argument("--since", type=valid_since_date, metavar="YYYY-MM-DD",
                             help="Only jobs first ingested on/after this date (overrides --previous-days)")
+    parser.add_argument("--model", dest="candidate_model", metavar="MODEL",
+                        help="Compare the CONFIGURED model against MODEL instead of comparing "
+                             "prompts. Both sides use the working-tree prompt, so the model is "
+                             "the only variable; the per-side cost lines then show what the same "
+                             "jobs actually cost under each, which a per-token rate cannot tell "
+                             "you (a cheaper model that thinks more can bill more per job).")
     parser.add_argument("--reasons", action="store_true",
                         help="Print the old/new reason and the new factor breakdown for EVERY job "
                              "(by default this detail is shown only for jobs whose rating changed)")
@@ -261,15 +268,38 @@ def main() -> None:
     geo_effort = resolve_geo_effort(config, geo_uses_description)[0]
     db_path = config.get("db_path", "jobs.db")
 
+    # Two mutually exclusive axes. Comparing prompt AND model at once would confound them —
+    # you could not attribute a rating move to either — so --model fixes the prompt (working
+    # tree on both sides) and varies the model, exactly mirroring how the default mode fixes
+    # the model and varies the prompt.
     repo_root = Path(__file__).resolve().parent
-    old_module = load_old_viability(repo_root)
+    model_mode = bool(args.candidate_model)
+    if model_mode:
+        old_model, new_model = model, args.candidate_model
+        if old_model == new_model:
+            sys.exit(f"--model {new_model} is already the configured model — nothing to compare.")
+        if pricing_for(new_model) is None:
+            sys.exit(f"No pricing configured for {new_model!r}, so the cost comparison — the "
+                     f"main reason to run this — would be blank. Add it to model_pricing.json "
+                     f"or model_pricing.local.json first.")
+        old_module = new_module = viability_new
+    else:
+        old_model = new_model = model
+        old_module, new_module = load_old_viability(repo_root), viability_new
     _SCORE_CLIENT = anthropic.Anthropic(api_key=api_key)
 
     import sqlite3
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
 
-    print(f"Comparing working-tree vs HEAD viability scoring (model {model}).")
+    if model_mode:
+        print(f"Comparing viability scoring on {old_model} (configured) vs {new_model} "
+              f"(candidate), working-tree prompt on both sides.")
+        for line in describe_model_change(old_model, new_model):
+            if "compare_scoring" not in line:      # we ARE the suggested check; don't recurse
+                print(f"  {line}")
+    else:
+        print(f"Comparing working-tree vs HEAD viability scoring (model {model}).")
     if args.job_id:
         print(f"Comparing a single job: {args.job_id}\n")
     else:
@@ -278,8 +308,11 @@ def main() -> None:
 
     pairs_new_vs_old: list[tuple[str, str]] = []   # (old-fresh, new-fresh) — the prompt effect
     pairs_stored_vs_old: list[tuple[str, str]] = []  # (stored, old-fresh) — nondeterminism baseline
-    # Token tallies: main scorer (both old+new calls priced on `model`), geo sub-call on `geo_model`.
-    main_tok = {"input": 0, "output": 0, "cache_write": 0, "cache_read": 0}
+    # Token tallies kept per SIDE, not pooled: in --model mode the two sides bill at different
+    # rates, and the whole question is which costs more for the same work. The geo sub-call is
+    # made once per job and shared by both sides, so it stays a single tally on `geo_model`.
+    old_tok  = {"input": 0, "output": 0, "cache_write": 0, "cache_read": 0}
+    new_tok  = {"input": 0, "output": 0, "cache_write": 0, "cache_read": 0}
     geo_tok  = {"input": 0, "output": 0, "cache_write": 0, "cache_read": 0}
 
     # Build the batches to compare: one explicit job (--job-id), else a random sample per tier.
@@ -321,16 +354,16 @@ def main() -> None:
                     geo_tok[k] += _tok(gusage, attr)
 
             old_rating, old_reason, _old_factors, old_usage = _score_with(
-                old_module, viability_prompt, job, model=model, gnote=gnote,
+                old_module, viability_prompt, job, model=old_model, gnote=gnote,
                 effort=effort, fit=fit, manual_poor=manual_poor)
             new_rating, new_reason, new_factors, new_usage = _score_with(
-                viability_new, viability_prompt, job, model=model, gnote=gnote,
+                new_module, viability_prompt, job, model=new_model, gnote=gnote,
                 effort=effort, fit=fit, manual_poor=manual_poor)
-            for usage in (old_usage, new_usage):
+            for usage, tally in ((old_usage, old_tok), (new_usage, new_tok)):
                 for k, attr in (("input", "input_tokens"), ("output", "output_tokens"),
                                 ("cache_write", "cache_creation_input_tokens"),
                                 ("cache_read", "cache_read_input_tokens")):
-                    main_tok[k] += _tok(usage, attr)
+                    tally[k] += _tok(usage, attr)
 
             stored = job.get("viability")
             if old_rating and new_rating:
@@ -368,7 +401,10 @@ def main() -> None:
     summary = summarize_pairs(pairs_new_vs_old)
     baseline = summarize_pairs(pairs_stored_vs_old)
     print("=" * 72)
-    print("NEW vs OLD prompt (both scored fresh on the same jobs — this is the prompt's effect):")
+    # Label the axis actually under test — calling a model comparison "the prompt's effect"
+    # would misattribute every rating move in the matrix below.
+    axis = "MODEL" if model_mode else "prompt"
+    print(f"NEW vs OLD {axis} (both scored fresh on the same jobs — this is the {axis}'s effect):")
     if summary["total"]:
         print(f"  {summary['same']}/{summary['total']} unchanged "
               f"({summary['agreement_rate']*100:.0f}% agreement); "
@@ -381,18 +417,30 @@ def main() -> None:
     else:
         print("  no comparable pairs (both scorings failed on every sampled job).")
     print()
-    print("STORED vs OLD-fresh (same prompt, re-scored) — model-nondeterminism baseline:")
+    held = "same model+prompt" if model_mode else "same prompt"
+    print(f"STORED vs OLD-fresh ({held}, re-scored) — nondeterminism baseline:")
     if baseline["total"]:
         print(f"  {baseline['same']}/{baseline['total']} unchanged "
               f"({baseline['agreement_rate']*100:.0f}% agreement). Drift above this in the block "
-              f"above is what the prompt change is actually responsible for.")
+              f"above is what the {axis} change is actually responsible for.")
     else:
         print("  no comparable pairs.")
     print()
 
-    main_summary = format_token_summary(model, **main_tok)
-    if main_summary:
-        print(f"  Main scorer ({model}, old+new calls): {main_summary}")
+    for label, side_model, tally in (("configured" if model_mode else "HEAD prompt",
+                                      old_model, old_tok),
+                                     ("candidate" if model_mode else "working-tree prompt",
+                                      new_model, new_tok)):
+        side = format_token_summary(side_model, **tally)
+        if side:
+            print(f"  Main scorer — {label} ({side_model}): {side}")
+    if model_mode:
+        old_cost = estimate_cost(old_model, **old_tok)
+        new_cost = estimate_cost(new_model, **new_tok)
+        if old_cost and new_cost:
+            # The number the rate card can't give you: same jobs, same prompt, measured.
+            print(f"  → measured cost for this sample: ${new_cost:.4f} vs ${old_cost:.4f} "
+                  f"({(new_cost - old_cost) / old_cost * 100:+.0f}%)")
     geo_summary = format_token_summary(geo_model, **geo_tok)
     if geo_summary:
         print(f"  Location pre-assessment ({geo_model}): {geo_summary}")

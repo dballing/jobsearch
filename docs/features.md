@@ -386,11 +386,16 @@ Any `new` or `reviewing` job that scores at or below the threshold is automatica
 
 The scoring prompt is tuned over time, and the premise is that the *current* prompt is scoring correctly — so `compare_scoring.sh` checks that a prompt edit doesn't unintentionally shift ratings before you adopt it. It samples recent jobs (10 per stored tier by default) and scores each one **twice** on identical inputs — once with the committed (`git HEAD`) prompt and once with your working-tree prompt — then reports how often the two agree, a confusion matrix, and (as a model-nondeterminism baseline) how often re-scoring with the *same* prompt disagrees with the stored score. It writes nothing to the database.
 
+**Evaluating a model change instead: `--model`.** The same harness has a second axis. `--model claude-sonnet-5-5` holds the prompt fixed (working tree on both sides) and varies the *model*, so the confusion matrix attributes drift to the model rather than the prompt — varying both at once would confound them. This matters more than it looks, because a model change is otherwise invisible: the model is deliberately **not** part of the scoring hash, so switching re-scores nothing and leaves your table holding ratings from two different judges with nothing marking which is which. If the newer model is even slightly stricter, older ratings read as artificially strong — and the auto-skip threshold acts on them.
+
+It also prints **measured cost per side** on the same jobs, which is the only way to answer "is it actually cheaper?". A lower per-token rate is not the same as a lower bill: moving from a non-reasoning model to an adaptive-thinking one adds billed reasoning tokens that didn't exist before, and `claude-opus-4-5` → any newer Opus costs the same per token while adding exactly that. In the other direction the effect can favour the newer model — on one sample, Sonnet 5.5 spent 43% fewer output tokens than Sonnet 5 at identical rates, for ~10% less. Either way, measure rather than assume; `rescore_viability.py` prints the price delta and a thinking-regime warning when it spots a newer model in your family, and points here.
+
 ```bash
 ./compare_scoring.sh --previous-days 30       # 10 jobs per tier from the last 30 days
 ./compare_scoring.sh --n 15 --since 2026-07-01
 ./compare_scoring.sh --tier medium --n 25     # focus on one band (where churn usually is)
 ./compare_scoring.sh --reasons                # also print reasons/factors for unchanged jobs
+./compare_scoring.sh --model claude-sonnet-5-5 # the OTHER axis: current model vs a candidate
 ```
 
 Because the harness writes nothing, the reasons and factor breakdowns it computes never reach the database — so it prints the old/new reason and the **new factor breakdown** inline for every job whose rating *changed* (add `--reasons` to see them for all jobs). That's where you judge whether a move is an *improvement*: the harness only measures drift, not correctness.
