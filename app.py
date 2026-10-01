@@ -3054,16 +3054,56 @@ def jobs_autocomplete():
     return out
 
 
+def adopt_company_from_root(db: sqlite3.Connection, job_ids: list[str], target_root: str, ts: str,
+                            search_id: str = DEFAULT_SEARCH_ID) -> tuple[str | None, list[str]]:
+    """Give each of `job_ids` a `company_actual` override naming the root's *effective* employer.
+
+    The manual twin of the adoption ingest does when fuzzy dedup auto-links a repost: a
+    headhunter/aggregator posting keeps its own row but displays — and gets scored — under the
+    real employer, so one group doesn't read as N different companies. Only postings whose
+    *effective* company actually differs are touched (case/whitespace-insensitive), so a member
+    already naming the employer isn't handed a no-op override. Company is a shared posting fact
+    feeding every lens's scorer, so a change dirties all of a job's per-lens state rows (same
+    rule as `set_company_actual`).
+
+    Pure DB logic (no request/response) so it's unit-testable. Returns
+    (adopted_name, changed_job_ids) — (None, []) when the root is missing or unnamed, which is
+    a no-op rather than an error: the merge itself is the point, the renaming is a convenience.
+    """
+    root = db.execute("SELECT company, company_actual FROM jobs WHERE job_id = ?",
+                      (target_root,)).fetchone()
+    if not root:
+        return None, []
+    company = (root["company_actual"] or root["company"] or "").strip()
+    if not company:
+        return None, []
+    changed: list[str] = []
+    for jid in job_ids:
+        row = db.execute("SELECT company, company_actual FROM jobs WHERE job_id = ?",
+                         (jid,)).fetchone()
+        if not row or _company_key(row["company_actual"], row["company"]) == _company_key(None, company):
+            continue
+        old = row["company_actual"]
+        db.execute("UPDATE jobs SET company_actual = ? WHERE job_id = ?", (company, jid))
+        db.execute("UPDATE job_search_state SET needs_rescored = 1 WHERE job_id = ?", (jid,))
+        append_history(db, jid, {"ts": ts, "event": "company_actual", "from": old, "to": company,
+                                 "note": "adopted from canonical on link"}, search_id)
+        changed.append(jid)
+    return company, changed
+
+
 def _merge_group_into(db: sqlite3.Connection, job_id: str, target_root: str, ts: str,
-                      search_id: str = DEFAULT_SEARCH_ID) -> int:
+                      search_id: str = DEFAULT_SEARCH_ID, adopt_company: bool = False) -> int:
     """Merge job_id's ENTIRE current group into the group rooted at target_root.
 
     Re-points the source group's root and every member at target_root (preserving the
     one-hop / no-chain invariant), and inherits the target's status + applied date for any
     moved member still in a new/reviewing state — per lens (status is per-(job, search)), so
     only members that belong to ``search_id`` inherit. Manual merges may cross searches, so the
-    canonical_id re-point (shared grouping) is unrestricted. Pure DB logic (no request/response)
-    so it's unit-testable. Returns the number of postings moved.
+    canonical_id re-point (shared grouping) is unrestricted. With `adopt_company`, the moved
+    postings also take on the target root's employer name (the modal's checkbox — saves doing
+    the link and the company override as two separate actions). Pure DB logic (no
+    request/response) so it's unit-testable. Returns the number of postings moved.
     """
     row = db.execute("SELECT canonical_id FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
     source_root = (row["canonical_id"] if row else None) or job_id
@@ -3093,15 +3133,22 @@ def _merge_group_into(db: sqlite3.Connection, job_id: str, target_root: str, ts:
                     "ts": ts, "event": "status", "from": st["status"], "to": root["status"],
                     "note": "inherited from canonical on link",
                 }, search_id)
+    if adopt_company:
+        adopt_company_from_root(db, source_ids, target_root, ts, search_id)
     return len(source_ids)
 
 
 @app.route("/job/<job_id>/link", methods=["POST"])
 def link_job(job_id: str):
     """Merge this posting's whole group into the group whose root is `canonical_id` (from the
-    picker — always a group root). Empty `canonical_id` unlinks this posting only."""
+    picker — always a group root). Empty `canonical_id` unlinks this posting only.
+
+    `adopt_company` (the modal's checkbox) additionally renames the moved postings to the
+    target root's employer — the common case where several recruiters post the same req under
+    their own agency names."""
     db             = get_db()
     target_raw     = request.form.get("canonical_id", "").strip()
+    adopt_company  = request.form.get("adopt_company", "") in ("1", "on", "true")
     ts             = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # ── Unlink (this posting only) ────────────────────────────────────────────
@@ -3125,7 +3172,7 @@ def link_job(job_id: str):
     if resolved_root == source_root:
         return {"error": "Those postings are already in the same group."}, 400
 
-    merged = _merge_group_into(db, job_id, resolved_root, ts, _current_search_id())
+    merged = _merge_group_into(db, job_id, resolved_root, ts, _current_search_id(), adopt_company)
     db.commit()
     return {"canonical_id": resolved_root, "merged": merged}, 200
 

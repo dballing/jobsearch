@@ -304,7 +304,7 @@ When `inherit_canonical_status = true` (default), a newly linked duplicate start
 
 ### Company-name inheritance
 
-A newly linked duplicate also adopts its canonical's **effective employer name** as a `company_actual` override when its own scraped company differs — so a repost surfaced under an aggregator name (e.g. "RemoteHunter", "Jobgether") shows the real employer ("Cribl") without a manual re-override on every repost. A genuine copy that already names the employer gets no override. This is independent of `inherit_canonical_status` (naming is a display concern, not application status).
+A newly linked duplicate also adopts its canonical's **effective employer name** as a `company_actual` override when its own scraped company differs — so a repost surfaced under an aggregator name (e.g. "RemoteHunter", "Jobgether") shows the real employer ("Cribl") without a manual re-override on every repost. A genuine copy that already names the employer gets no override. This is independent of `inherit_canonical_status` (naming is a display concern, not application status). A **manual** link offers the same thing as an opt-in checkbox — see [Manual linking](#manual-linking).
 
 ### Notes
 
@@ -317,9 +317,19 @@ When fuzzy matching doesn't catch two postings you can tell are the same role, l
 
 1. Type a title or company name to search. Multiple words narrow results (all must match); wrap a phrase in quotes for an exact match (e.g. `"senior tpm" zillow`).
 2. Select the match from the results.
-3. Click **Link to selected**.
+3. Optionally check **Also set the company to "…"** (see below).
+4. Click **Link to selected**.
 
 If the job being linked has `new` or `reviewing` status, it inherits the canonical's status. If you select a job that is itself already linked, your job is linked to the root directly — no chains are created.
+
+**Rename-on-merge.** Selecting a target enables a checkbox naming its employer — check it and every posting moved by the merge also gets a `company_actual` override pointing at that employer, in the same action. This is the manual twin of [Company-name inheritance](#company-name-inheritance) on an auto-link: when several recruiters post the same req at "Foo, Inc." under their own agency names, the group reads as one employer instead of N. Details:
+
+- It applies to the **moved** group (the posting you clicked and its current group members), not to the target group — the target already names the employer.
+- The name adopted is the target root's *effective* company (its own override if it has one, else its feed value), and postings whose effective company already matches are skipped rather than given a no-op override.
+- Each rename is recorded in that posting's History as a `company_actual` event noted `adopted from canonical on link`, and flags the posting for rescoring (the employer feeds the viability prompt).
+- The checkbox stays disabled until a target is selected, and for a target group with no employer name at all.
+
+Leaving it unchecked links the postings and nothing else, exactly as before.
 
 To **unlink** a job, click its 🔗 icon (blue when a link is active) and click **Unlink**.
 

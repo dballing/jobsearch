@@ -47,6 +47,17 @@
         <div class="text-muted mb-1" style="font-size:.78em">Each result is a whole group; merging moves <em>all</em> of this posting's group into it.</div>
         <div id="linkResults" class="list-group list-group-flush small"></div>
 
+        {# Rename-on-merge: the usual case for a manual link is a headhunter posting of a req
+           you already track under the real employer, so offer the company override here
+           instead of making it a second trip through the preview pane. Enabled only once a
+           target is picked (its employer name is what we'd adopt). #}
+        <div class="form-check small mt-3">
+          <input class="form-check-input" type="checkbox" id="linkAdoptCompany" disabled>
+          <label class="form-check-label" for="linkAdoptCompany" id="linkAdoptCompanyLabel">
+            Also set the company to the selected group's employer
+          </label>
+        </div>
+
         <div id="linkWarning" class="alert alert-warning py-2 small mt-2 d-none"></div>
       </div>
       <div class="modal-footer">
@@ -878,6 +889,7 @@ function openLinkModal(jobId, canonicalId, btn) {
   document.getElementById('linkResults').innerHTML  = '';
   document.getElementById('linkWarning').classList.add('d-none');
   document.getElementById('linkConfirmBtn').disabled = true;
+  resetAdoptCompany();
 
   const curGroup = document.getElementById('linkCurrentGroup');
   if (canonicalId) {
@@ -901,6 +913,19 @@ function searchLinkByTitle() {
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
+// Rename-on-merge checkbox back to "no target picked": unchecked, disabled, generic label.
+// Called on open and whenever the result list re-renders (which drops the selection whose
+// employer the label names). Top-level, not inside the DOMContentLoaded block below, because
+// openLinkModal (also top-level) calls it.
+function resetAdoptCompany() {
+  const box = document.getElementById('linkAdoptCompany');
+  if (!box) return;
+  box.checked  = false;
+  box.disabled = true;
+  document.getElementById('linkAdoptCompanyLabel').textContent =
+    "Also set the company to the selected group's employer";
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('linkSearchInput')?.addEventListener('input', function() {
     clearTimeout(_linkDebounce);
@@ -911,6 +936,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // GROUP, labeled with size / first-seen / source so identically-titled groups are telling
 // apart. The picker's job_id is the group root — the merge target.
 async function fetchLinkResults(q) {
+  resetAdoptCompany();            // any re-render clears the selection this tracked
   if (!q) { document.getElementById('linkResults').innerHTML = ''; return; }
   const resp = await fetch(`/jobs/autocomplete?q=${encodeURIComponent(q)}&exclude=${encodeURIComponent(_linkJobId)}`);
   if (!resp.ok) return;
@@ -924,7 +950,7 @@ async function fetchLinkResults(q) {
                   date ? `first seen ${date}` : '']
                  .filter(Boolean).join(' · ');
     return `<button type="button" class="list-group-item list-group-item-action py-1 px-2 link-result"
-                    data-job-id="${escHtml(r.root_id)}">
+                    data-job-id="${escHtml(r.root_id)}" data-company="${escHtml(r.company || '')}">
               <div>${escHtml(r.title || '(no title)')}</div>
               <div class="text-muted" style="font-size:.8em">${meta}</div>
             </button>`;
@@ -932,18 +958,32 @@ async function fetchLinkResults(q) {
   list.querySelectorAll('.link-result').forEach(btn => btn.addEventListener('click', selectLinkResult));
 }
 
-// Mark a group selected and enable the merge button.
+// Mark a group selected and enable the merge button. Also names the employer in the
+// rename checkbox's label, so it's obvious what checking it would write — and leaves the
+// box disabled for a group with no employer name (nothing to adopt).
 function selectLinkResult(e) {
   document.querySelectorAll('.link-result').forEach(b => b.classList.remove('active'));
   e.currentTarget.classList.add('active');
   _linkSelectedId = e.currentTarget.dataset.jobId;   // target group root
   document.getElementById('linkWarning').classList.add('d-none');
   document.getElementById('linkConfirmBtn').disabled = false;
+
+  const company = (e.currentTarget.dataset.company || '').trim();
+  const box     = document.getElementById('linkAdoptCompany');
+  box.disabled  = !company;
+  if (!company) box.checked = false;
+  document.getElementById('linkAdoptCompanyLabel').textContent = company
+    ? `Also set the company on this posting's group to “${company}”`
+    : 'That group has no employer name to copy';
 }
 
   document.getElementById('linkConfirmBtn')?.addEventListener('click', async () => {
     if (!_linkSelectedId) return;
-    const body = new URLSearchParams({canonical_id: _linkSelectedId});
+    const adopt = document.getElementById('linkAdoptCompany');
+    const body  = new URLSearchParams({
+      canonical_id:  _linkSelectedId,
+      adopt_company: (adopt && adopt.checked && !adopt.disabled) ? '1' : '',
+    });
     const resp = await fetch(`/job/${encodeURIComponent(_linkJobId)}/link`, {method: 'POST', body});
     if (resp.ok) {
       bootstrap.Modal.getInstance(document.getElementById('linkModal')).hide();
