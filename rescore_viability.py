@@ -1110,6 +1110,9 @@ def main() -> None:
 
     if interactive:
         print()  # move past the progress line
+    # No-op today (every per-job branch above commits), but close() discards an open transaction
+    # instead of committing it, so this keeps a later edit from losing a trailing write silently.
+    conn.commit()
     conn.close()
     elapsed        = (datetime.now(timezone.utc) - start_time).total_seconds()
     breakdown      = ", ".join(f"{r}: {tally[r]}" for r in ("high", "medium", "low") if tally.get(r))

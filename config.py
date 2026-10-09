@@ -27,6 +27,7 @@ consume it unchanged.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import sys
@@ -332,6 +333,14 @@ def migrate_config_to_basics(path) -> tuple[bool, str]:
         return False, f"{path}: refused — rewrite would change the effective config."
 
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(new_text, encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        tmp.write_text(new_text, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as e:
+        # Mirrors the alias writer in app.py: temp-then-rename leaves the live config intact on a
+        # failed write (ENOSPC raises at flush/close, before the rename), but the half-written
+        # temp has to be cleaned up rather than left beside a hand-edited file.
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        return False, f"{path}: could not write ({e}); nothing changed."
     return True, f"{path}: moved bare top-level settings under [basics]."

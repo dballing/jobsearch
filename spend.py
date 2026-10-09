@@ -76,6 +76,28 @@ def ensure_spend_ledger(conn: sqlite3.Connection) -> None:
         conn.commit()
 
 
+def _is_missing_table(exc: sqlite3.OperationalError) -> bool:
+    """True only for the "the ledger table isn't there" error the recorders may swallow.
+
+    Everything else must propagate — above all SQLITE_FULL ("database or disk is full").
+    A full disk makes SQLite abort the WHOLE open transaction, not just the failing
+    statement, and a later commit() on that connection then returns success with nothing
+    in it. So swallowing it here would do far more than lose a ledger row: it would
+    silently discard the caller's own uncommitted work in the same transaction (an ingest
+    item's job_search_state membership row, a fuzzy re-link) while ingest went on to
+    report the item as written. Raising turns that into the loud crash that ingest's
+    per-item commit / commit-the-bookmark-last design is built to recover from.
+
+    Matched on the message, not ``exc.sqlite_errorcode``, because a missing table doesn't have
+    a code of its own: SQLite reports it as the generic SQLITE_ERROR (1), the same code a dozen
+    unrelated statement errors use. So the message is the only thing that identifies the
+    tolerated case — and note the asymmetry that makes this safe. What's being recognized here
+    is the survivable error, with everything unrecognized re-raised, so a wording change (or an
+    exception a test hand-builds, which carries no code attribute at all) fails toward raising.
+    """
+    return "no such table" in str(exc).lower()
+
+
 def usage_counts(usage) -> dict[str, int] | None:
     """The four billed token counts from an Anthropic ``usage`` object, or None when there's
     nothing to record (no usage object, or every count zero — a call that never reached the
@@ -97,8 +119,10 @@ def record_usage(conn: sqlite3.Connection, *, feature: str, model: str, usage,
 
     Deliberately does NOT commit: callers already commit per job (rescore) / per run (ingest) /
     per request (app), and folding the insert into that transaction keeps the ledger consistent
-    with the work it paid for. Never raises on a missing table either — accounting must not be
-    able to break scoring or ingest, so a DB that somehow lacks the table just skips the row."""
+    with the work it paid for. A DB that somehow lacks the table just skips the row — accounting
+    must not be able to break scoring or ingest. That tolerance stops there, though: any OTHER
+    OperationalError (a full disk, above all) propagates, because swallowing it would discard the
+    caller's transaction too. See _is_missing_table."""
     counts = usage_counts(usage)
     if counts is None:
         return False
@@ -110,7 +134,9 @@ def record_usage(conn: sqlite3.Connection, *, feature: str, model: str, usage,
             (search_id, job_id, feature, model, counts["input"], counts["output"],
              counts["cache_write"], counts["cache_read"], cost),
         )
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as exc:
+        if not _is_missing_table(exc):
+            raise
         return False
     return True
 
@@ -163,7 +189,12 @@ def record_apify_run(conn: sqlite3.Connection, *, search_id: str, task_name: str
                     "INSERT INTO spend_ledger (search_id, job_id, feature, model, cost_usd) "
                     "VALUES (?, NULL, 'apify', ?, ?)", (search_id, task_name, unattributed))
             written += 1
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as exc:
+        # Same rule as record_usage: only a missing table is survivable. A full disk here would
+        # otherwise lose this run's whole Apify charge with no message at all — and the run is
+        # bookmarked as consumed in the same transaction, so nothing would ever re-record it.
+        if not _is_missing_table(exc):
+            raise
         return written
     return written
 

@@ -435,6 +435,10 @@ def main() -> None:
         print(f"  Inserted  {job_id}: {title_str} at {company_str} → {effective_status}")
         inserted += 1
 
+    # No-op today (the loop commits per item), but close() discards an open transaction rather
+    # than committing it — the same guard ingest and rescore now carry, so the invariant holds
+    # across all three batch writers instead of per-file vigilance.
+    conn.commit()
     conn.close()
 
     parts = []

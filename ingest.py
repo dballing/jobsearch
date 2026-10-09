@@ -2116,11 +2116,18 @@ def main() -> None:
                 )
                 print(f"    {summary_compact(result, reset_on_change)}")
                 task_total += result
-                record_state(conn, skey, run,
-                             _new_total(result), result["updated"], result["unchanged"])
                 # Pro-rate what Apify charged for this run across the postings it returned.
                 # usageTotalUsd rides on the run objects already fetched, so this costs no extra
                 # API call; a run that returned nothing becomes lens overhead (see record_apify_run).
+                #
+                # Deliberately BEFORE record_state, which is the call that commits: the cost rows
+                # belong in the same transaction as the "this run is consumed" bookmark. Ordered
+                # the other way round they sat uncommitted until something later happened to
+                # commit — and for the last ingested run of a cycle nothing did, so the conn.close()
+                # at the end of main() discarded them (sqlite3's close() rolls an open transaction
+                # back; it does not commit it). That silently dropped the largest-dollar rows in
+                # the ledger on most runs. Pairing them also makes a write failure recoverable:
+                # the bookmark rolls back with the cost rows, so the next ingest redoes both.
                 divisor = max(_unscoped_task_lenses.get(task_name, 1), 1)
                 record_apify_run(
                     conn, search_id=search_id, task_name=task_name,
@@ -2128,6 +2135,8 @@ def main() -> None:
                     divisor=divisor,
                 )
                 task_cost += (run.get("usageTotalUsd") or 0) / divisor
+                record_state(conn, skey, run,
+                             _new_total(result), result["updated"], result["unchanged"])
 
             if len(pending) > 1:
                 print(f"  Task total: {summary_compact(task_total, reset_on_change)}")
@@ -2153,6 +2162,11 @@ def main() -> None:
         if ghosted_count:
             print(f"Auto-ghosted {ghosted_count} applied job(s) with no activity in {auto_ghost_days}+ days.")
 
+    # Belt-and-braces flush before close. Every writer above commits for itself, but close()
+    # DISCARDS an open transaction rather than committing it, so anything a future edit leaves
+    # uncommitted here would vanish without a word — which is exactly how this run's Apify cost
+    # rows used to be lost. Harmless no-op when there's nothing pending.
+    conn.commit()
     conn.close()
     elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
     print(summary_detailed(grand_total, ghosted_count, elapsed, args.dry_run))

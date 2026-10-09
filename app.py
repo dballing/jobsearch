@@ -9,6 +9,7 @@ and the rescore script via WAL: this process migrates once at startup (_init_db)
 otherwise read-mostly, with a handful of small write endpoints for user actions.
 """
 
+import contextlib
 import json
 import math
 import os
@@ -709,11 +710,22 @@ _init_db()  # run migrations once at import, before serving any request
 
 @app.errorhandler(sqlite3.OperationalError)
 def handle_db_busy(e: sqlite3.OperationalError):
-    """A locked DB means ingestion/scoring is mid-write. Reads stay lock-free in
-    WAL, so this only affects writes; surface a clear, retryable message."""
-    if "locked" in str(e).lower() or "busy" in str(e).lower():
+    """Turn the two *environmental* SQLite write failures into messages that name the cause.
+
+    A locked DB means ingestion/scoring is mid-write. Reads stay lock-free in WAL, so this
+    only affects writes; surface a clear, retryable message.
+
+    A full disk gets its own answer because a bare 500 sends you hunting for an app bug. It's
+    safe to be definite that nothing was saved: SQLITE_FULL aborts the entire transaction, not
+    just the failing statement, so the request's writes are already rolled back — there is no
+    half-applied state to reconcile. 507 Insufficient Storage is the honest status for it."""
+    msg = str(e).lower()
+    if "locked" in msg or "busy" in msg:
         return ("The database is busy — an ingestion or scoring run is in progress. "
                 "Please try again in a moment.", 503)
+    if "disk is full" in msg:
+        return ("The database could not be written: the disk is full. Nothing from this "
+                "request was saved — free some space and try again.", 507)
     raise e  # other operational errors fall through to the normal 500 handler
 
 
@@ -2521,8 +2533,18 @@ def add_company_alias(variant: str, canonical: str) -> tuple[bool, str | None]:
     if parsed.get("company_aliases", {}) != {**old_aliases, variant: canonical}:
         return False, "refused: re-format would have changed existing aliases"
     tmp = _config_path.with_name(_config_path.name + ".tmp")
-    tmp.write_text(new_text, encoding="utf-8")
-    os.replace(tmp, _config_path)
+    try:
+        tmp.write_text(new_text, encoding="utf-8")
+        os.replace(tmp, _config_path)
+    except OSError as e:
+        # temp-then-rename already protects config.toml itself: ENOSPC surfaces at flush/close,
+        # so the rename never happens and the live file is untouched. What it doesn't do is clean
+        # up the half-written temp — remove it here, both to avoid litter next to a config people
+        # read by hand and so a later retry can't inherit a stale one. Reported through the normal
+        # refusal channel, which already means "wrote nothing".
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        return False, f"could not write config.toml: {e}"
     return True, None
 
 
@@ -2724,6 +2746,13 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
         # A POOR geographic fit is disqualifying — clamp to low (the main scorer discounts it).
         # The clamp rewrites only rating/reason; factors stay as the model reported them.
         rating, reason = clamp_viability_for_geo(fit, rating, reason, manual=manual_geo_poor)
+    except sqlite3.OperationalError:
+        # A DB-layer failure (a full disk, now that record_usage propagates it) is not a scoring
+        # failure, and the generic branch below would report it as one — sending you to look at
+        # the model or the network. Re-raise so handle_db_busy names the real cause. Safe to be
+        # non-fail-soft here: the only caller commits the job row before calling us, so the
+        # 503/507 costs nothing already written.
+        raise
     except Exception as e:  # network/SDK/config errors — stay fail-soft
         return False, f"scoring call failed: {e}"
     if rating is None:
@@ -2929,21 +2958,36 @@ def upload_attachment(job_id: str):
     ext = os.path.splitext(secure_filename(file.filename))[1]
     attachment_id = uuid.uuid4().hex
     stored_name = f"{attachment_id}{ext}"
-    file.save(os.path.join(UPLOADS_DIR, stored_name))
-    size = os.path.getsize(os.path.join(UPLOADS_DIR, stored_name))
-    ctype = file.mimetype or None
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    # Link the one physical file to every current group member (shared metadata).
-    members = group_member_ids(db, job_id)
-    db.executemany(
-        "INSERT INTO job_attachments (job_id, attachment_id, stored_name, original_name, "
-        "content_type, size, uploaded_at) VALUES (?,?,?,?,?,?,?)",
-        [(mid, attachment_id, stored_name, original, ctype, size, ts) for mid in members],
-    )
-    sid = _current_search_id()
-    for mid in members:
-        append_history(db, mid, {"ts": ts, "event": "attachment_added", "name": original, "origin": job_id}, sid)
-    db.commit()
+    stored_path = os.path.join(UPLOADS_DIR, stored_name)
+    # The bytes land on disk before the rows that reference them, so every failure between the
+    # two has to undo the file. The classic one is a full disk: file.save() raises part-way and
+    # leaves a truncated (often zero-byte) file behind, and the DB insert then never runs — an
+    # orphan under a UUID nothing points at, invisible in the UI, never reached by the refcounted
+    # delete path, still occupying the space we just ran out of. `linked` flips only once the rows
+    # are committed, so the cleanup can never remove a file an attachment row now depends on.
+    linked = False
+    try:
+        file.save(stored_path)
+        size = os.path.getsize(stored_path)
+        ctype = file.mimetype or None
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Link the one physical file to every current group member (shared metadata).
+        members = group_member_ids(db, job_id)
+        db.executemany(
+            "INSERT INTO job_attachments (job_id, attachment_id, stored_name, original_name, "
+            "content_type, size, uploaded_at) VALUES (?,?,?,?,?,?,?)",
+            [(mid, attachment_id, stored_name, original, ctype, size, ts) for mid in members],
+        )
+        sid = _current_search_id()
+        for mid in members:
+            append_history(db, mid, {"ts": ts, "event": "attachment_added", "name": original, "origin": job_id}, sid)
+        db.commit()
+        linked = True
+    finally:
+        if not linked:
+            # Best-effort: if even the unlink fails we still want the original error to surface.
+            with contextlib.suppress(OSError):
+                os.remove(stored_path)
     return {"attachment_id": attachment_id, "original_name": original, "size": size,
             "content_type": ctype, "uploaded_at": ts}, 201
 
