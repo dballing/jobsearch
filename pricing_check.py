@@ -44,6 +44,15 @@ def display_to_model_id(display: str) -> str:
     return name.lower().replace(" ", "-").replace(".", "-")
 
 
+# A row qualified "(for prompts over N tokens)" is a long-prompt SURCHARGE tier, not a separate
+# model: the page lists one model id twice, once per tier. Our tables hold a single rate per
+# model with no notion of prompt length, so the base tier is the one we keep. Without this the
+# two rows collapse onto the same id and whichever the page happens to list LAST silently wins —
+# which is how Claude Haiku 5.5 read as $0.50/$2.50 (its >100k rate) instead of the $0.10/$0.50
+# that every prompt this app sends would actually bill at, a 5x overstatement.
+_SURCHARGE_TIER_RE = re.compile(r"for prompts over", re.I)
+
+
 def parse_model_pricing_table(markdown: str) -> "dict[str, dict[str, float]]":
     """Extract {model_id: {input, cache_write, cache_read, output}} in $/MTok from the page's
     'Model pricing' table — the same four keys the pricing tables store, so they compare directly.
@@ -73,14 +82,19 @@ def parse_model_pricing_table(markdown: str) -> "dict[str, dict[str, float]]":
         cells = [c.strip() for c in s.strip("|").split("|")]
         if len(cells) < 6:               # Model | Base Input | 5m | 1h | Hits | Output
             continue
+        if _SURCHARGE_TIER_RE.search(cells[0]):
+            continue                     # long-prompt tier of a model already priced above
         # The 1h cache-write column (cells[3]) is skipped: our tables only know the 5m TTL,
         # which is what every call site uses.
         rates = {"input":       parse_price(cells[1]),
                  "cache_write": parse_price(cells[2]),
                  "cache_read":  parse_price(cells[4]),
                  "output":      parse_price(cells[-1])}
-        if all(v is not None for v in rates.values()):
-            prices[display_to_model_id(cells[0])] = rates
+        model_id = display_to_model_id(cells[0])
+        # First row wins on any id collision, so a later variant of a model can never quietly
+        # redefine its rates — the surcharge skip above is the known case, this is the backstop.
+        if all(v is not None for v in rates.values()) and model_id not in prices:
+            prices[model_id] = rates
     return prices
 
 

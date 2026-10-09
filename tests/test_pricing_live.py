@@ -57,6 +57,34 @@ def test_parse_reads_base_table_not_batch_table():
     assert prices["claude-opus-4-1"]["cache_read"] == 1.50
 
 
+_TIERED = """## Model pricing
+
+| Model | Base input tokens | 5m Cache Writes | 1h Cache Writes | Cache Hits & Refreshes | Output Tokens |
+| --- | --- | --- | --- | --- | --- |
+| Claude Haiku 5.5 (for prompts {a} 100,000 tokens) | ${ai} / MTok | ${aw} / MTok | $9 / MTok | ${ar} / MTok | ${ao} / MTok |
+| Claude Haiku 5.5 (for prompts {b} 100,000 tokens) | ${bi} / MTok | ${bw} / MTok | $9 / MTok | ${br} / MTok | ${bo} / MTok |
+"""
+_BASE_TIER = {"input": 0.10, "cache_write": 0.125, "cache_read": 0.01, "output": 0.50}
+
+
+def test_parse_keeps_the_base_tier_of_a_prompt_length_tiered_model():
+    """Claude Haiku 5.5 is listed twice, once per prompt-length tier, and both rows collapse to
+    the same model id. Our tables hold one rate per model, so the base tier is the one kept —
+    the >100k surcharge row is 5x, and no prompt this app sends comes near the threshold."""
+    md = _TIERED.format(a="up to", ai=0.10, aw=0.125, ar=0.01, ao=0.50,
+                        b="over", bi=0.50, bw=0.625, br=0.05, bo=2.50)
+    assert pc.parse_model_pricing_table(md) == {"claude-haiku-5-5": _BASE_TIER}
+
+
+def test_parse_ignores_the_surcharge_tier_regardless_of_row_order():
+    """Pins the explicit skip rather than mere first-wins: the surcharge tier is ignored even
+    when the page lists it first. Row order on a docs page is not a pricing decision, and
+    before this the LAST row silently won — which is exactly how Haiku 5.5 got its >100k rate."""
+    md = _TIERED.format(a="over", ai=0.50, aw=0.625, ar=0.05, ao=2.50,
+                        b="up to", bi=0.10, bw=0.125, br=0.01, bo=0.50)
+    assert pc.parse_model_pricing_table(md) == {"claude-haiku-5-5": _BASE_TIER}
+
+
 def test_parse_anchor_survives_header_recasing():
     """Regression: the live page renamed the column 'Base Input Tokens' -> 'Base input tokens',
     which lost the (then case-sensitive) anchor and left the drift check silently validating

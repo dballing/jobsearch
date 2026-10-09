@@ -73,12 +73,18 @@
     "claude-sonnet-5-5": {
       "input": 2.00,
       "output": 10.00,
-      "note": "Launched 2026-09-29 at the same headline rates as Sonnet 5 (the 'up to 30% cheaper per task' claim is about tokens used at Medium effort, not the per-token price). A point release, not a snapshot, so it needs its own entry — it must never inherit Sonnet 5's."
+      "cache_read_mult": 0.05,
+      "note": "Launched 2026-09-29 at the same headline rates as Sonnet 5 (the 'up to 30% cheaper per task' claim is about tokens used at Medium effort, not the per-token price). A point release, not a snapshot, so it needs its own entry — it must never inherit Sonnet 5's. Cache hits are 0.05x input, not the standard 0.1x: the page footnote that gave Opus 5.5 its 0.05x names Sonnet 5.5 too, and we applied it to only one of them. Deliberately NOT a temporal period — that footnote has covered this model since launch, so $0.20 was never the right rate for any era, it was our error. Fixing it in place (plus ./reprice.sh) is what corrects the ledger; closing a period here would have preserved the overcharge as authoritative."
     },
     "claude-sonnet-5": {
       "input": 2.00,
       "output": 10.00,
       "note": "The launch 'introductory' $2/$10 is now the permanent standard price: Anthropic cancelled the increase to $3/$15 that had been scheduled for 2026-09-01."
+    },
+    "claude-haiku-5-5": {
+      "input": 0.10,
+      "output": 0.50,
+      "note": "Priced by PROMPT LENGTH, which this file can't express: $0.10/$0.50 for prompts up to 100k tokens, $0.50/$2.50 above that (both tiers use the standard 1.25x/0.1x cache multipliers). Stored at the base tier because every call this app makes — a job description plus a resume — is an order of magnitude under 100k, so the surcharge tier would overstate real spend 5x. A prompt that did cross 100k would underbill; if that ever becomes possible, the tier has to become a real concept rather than a comment. Also the only 4.6-or-later model WITHOUT the 1M context window at standard pricing."
     },
     "claude-haiku-4-5": {
       "input": 1.00,
