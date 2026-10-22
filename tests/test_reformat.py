@@ -1,8 +1,9 @@
 """reformat_description engine selection by model generation.
 
-A faithful reformat wants deterministic output, so on a non-reasoning model (the Haiku default)
-it runs at temperature 0. Reasoning models (Claude 4.6+/5) reject `temperature`, so there it
-drops temperature and runs adaptive thinking at the configured effort instead. Only the create()
+A faithful reformat wants deterministic output, so on a non-reasoning model (Haiku 4.5/older)
+it runs at temperature 0. Reasoning models (Claude 4.6+/5, including the default Haiku 5.5)
+reject `temperature`, so there it drops temperature and runs adaptive thinking at the configured
+effort instead. Only the create()
 kwargs are asserted (no live call); the integrity check lives in ingest, not here.
 """
 import reformat
@@ -35,6 +36,19 @@ def test_reformat_reasoning_model_drops_temperature_for_thinking_at_effort():
     c = _FakeClient()
     reformat.reformat_description(c, "Some job description text.", model="claude-sonnet-5", effort="low")
     assert "temperature" not in c.last_kwargs          # would 400 on a reasoning model
+    assert c.last_kwargs["thinking"] == {"type": "adaptive"}
+    assert c.last_kwargs["output_config"] == {"effort": "low"}
+
+
+def test_reformat_default_haiku_5_5_drops_temperature_for_thinking():
+    """The default model is Haiku 5.5, which 400s on a non-default `temperature` — so the default
+    path must take the adaptive-thinking engine, not the temperature-0 one Haiku 4.5 used. Called
+    with no `model` so this fails if DEFAULT_MODEL is ever pointed back at a non-reasoning model
+    without the engine split being revisited."""
+    c = _FakeClient()
+    reformat.reformat_description(c, "Some job description text.", effort="low")
+    assert c.last_kwargs["model"] == "claude-haiku-5-5"
+    assert "temperature" not in c.last_kwargs          # a 400 on this model
     assert c.last_kwargs["thinking"] == {"type": "adaptive"}
     assert c.last_kwargs["output_config"] == {"effort": "low"}
 

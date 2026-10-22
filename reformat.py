@@ -11,7 +11,7 @@ import difflib
 import hashlib
 import re
 
-from ai_config import DEFAULT_EFFORT, is_reasoning_model
+from ai_config import DEFAULT_EFFORT, DEFAULT_MODEL, is_reasoning_model
 
 # Strict instructions — emit only formatting changes, never content changes.
 # Kept as a module constant so it can be marked for prompt caching (the system
@@ -99,7 +99,7 @@ def content_preserved(original: str, markdown: str) -> bool:
     return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio() >= CONTENT_THRESHOLD
 
 
-def reformat_description(client, text: str, model: str = "claude-haiku-4-5",
+def reformat_description(client, text: str, model: str = DEFAULT_MODEL,
                          effort: str = DEFAULT_EFFORT):
     """Reformat one description to Markdown.
 
@@ -110,10 +110,12 @@ def reformat_description(client, text: str, model: str = "claude-haiku-4-5",
     one ingest run only pay full system-token cost once (the per-description user
     message is the only uncached part).
 
-    Model-generation-aware: a non-reasoning model (the Haiku default) runs at temperature 0 for
-    the least-creative, most-reproducible reformat. A reasoning model (Claude 4.6+/5) rejects
-    `temperature`, so we drop it and run adaptive thinking at `effort` instead (a faithful reformat
-    is trivial, so `effort` is best left low); `effort` is ignored on a non-reasoning model.
+    Model-generation-aware: a non-reasoning model (Haiku 4.5/older) runs at temperature 0 for
+    the least-creative, most-reproducible reformat. A reasoning model (Claude 4.6+/5, which now
+    includes the default Haiku 5.5) rejects `temperature`, so we drop it and run adaptive thinking
+    at `effort` instead (a faithful reformat is trivial, so `effort` is best left low — and on
+    this model lowering effort is the ONLY way to get less thinking; asking for it in the prompt
+    doesn't work); `effort` is ignored on a non-reasoning model.
     """
     text = (text or "").strip()
     if not text:

@@ -14,7 +14,7 @@ import hashlib
 import json
 import re
 
-from ai_config import (DEFAULT_EFFORT, effective_effort, is_reasoning_model,
+from ai_config import (DEFAULT_EFFORT, DEFAULT_MODEL, effective_effort, is_reasoning_model,
                        resolve_ai_settings, resolve_effort, resolve_geo_effort, resolve_geo_model)
 
 # The valid rating values; anything else from the model is treated as a failure.
@@ -873,7 +873,7 @@ def assess_location_fit(
     client,
     location_prompt: str,
     job: dict,
-    model: str = "claude-haiku-4-5",
+    model: str = DEFAULT_MODEL,
     include_description: bool = True,
     effort: str = DEFAULT_EFFORT,
 ) -> tuple[str, str, object] | tuple[None, None, None]:
@@ -954,7 +954,7 @@ def assess_location_fit(
 def _scorer_thinking(model: str) -> dict:
     """Thinking config for an AI scorer/geo call, by model: adaptive for reasoning-capable models
     (so their reasoning stays in a hidden block and the configured `effort` applies), disabled for
-    Haiku/older. A reasoning model run with thinking *disabled* reasons out loud in the visible
+    Haiku 4.5/older. A reasoning model run with thinking *disabled* reasons out loud in the visible
     output — and since the only prose slot is the JSON "reason", its whole scratchpad lands there
     (observed on a Sonnet-5 scorer). Pure, so it's unit-testable without an API call."""
     return {"type": "adaptive"} if is_reasoning_model(model) else {"type": "disabled"}
@@ -964,7 +964,7 @@ def _thinking_call_config(model: str, effort: str, *, disabled_max_tokens: int,
                           adaptive_max_tokens: int) -> dict:
     """The model-generation-aware bits of a messages.create() call — {max_tokens, thinking} plus
     output_config when adaptive. On a reasoning model: adaptive thinking at `effort`, with the
-    larger token budget to leave room for the (hidden) thinking. On Haiku/older: thinking disabled
+    larger token budget to leave room for the (hidden) thinking. On Haiku 4.5/older: thinking disabled
     and the small budget, and `effort` is simply not sent (thrown away). Shared by score_job and
     assess_location_fit so both handle the reasoning/non-reasoning split identically."""
     thinking = _scorer_thinking(model)
@@ -1013,7 +1013,7 @@ def score_job(
     client,
     viability_prompt: str,
     job: dict,
-    model: str = "claude-haiku-4-5",
+    model: str = DEFAULT_MODEL,
     geo_note: str | None = None,
     effort: str = DEFAULT_EFFORT,
 ) -> "tuple[str, str, list[dict] | None, object] | tuple[None, None, None, None]":

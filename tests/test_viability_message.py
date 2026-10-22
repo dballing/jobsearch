@@ -207,10 +207,10 @@ def test_boilerplate_defines_a_veto_rule():
     assert "soft preference" in bp                      # the carve-out that prevents over-vetoing
 
 
-# ── _scorer_thinking: adaptive for reasoning models, disabled for Haiku/older ──
+# ── _scorer_thinking: adaptive for reasoning models, disabled for Haiku 4.5/older ──
 def test_scorer_thinking_adaptive_for_reasoning_models():
     for m in ("claude-sonnet-5", "claude-opus-5", "claude-opus-4-8", "claude-fable-5",
-              "claude-sonnet-4-6"):
+              "claude-sonnet-4-6", "claude-haiku-5-5"):
         assert viability._scorer_thinking(m) == {"type": "adaptive"}, m
 
 

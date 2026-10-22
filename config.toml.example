@@ -15,10 +15,11 @@ uploads_dir = "uploads"
 # description reformatting). Each feature may override `model` in its own section.
 # [ai]
 # api_key = "sk-ant-xxxxxxxxxxxxxxxxxxxx"   # Anthropic API key (or set ANTHROPIC_API_KEY env var)
-# model   = "claude-haiku-4-5"              # default Anthropic model (default: claude-haiku-4-5)
+# model   = "claude-haiku-5-5"              # default Anthropic model (default: claude-haiku-5-5)
 # effort  = "medium"                        # default thinking effort (low|medium|high|xhigh|max).
-#                                           # ONLY applies to reasoning models (Claude 4.6+/5) —
-#                                           # thrown away on Haiku/older. Each feature may override.
+#                                           # ONLY applies to reasoning models (Claude 4.6+/5,
+#                                           # incl. Haiku 5.5) — thrown away on Haiku 4.5/older.
+#                                           # Each feature may override.
 
 # Viability scoring — uses the Anthropic API to rate each job high/medium/low.
 # Run `rescore_viability.sh` after ingestion to score new/updated jobs (excludes closed).
@@ -104,7 +105,7 @@ uploads_dir = "uploads"
 # location_effort = "low"                    # optional; thinking effort for the location sub-call
 #   (applies only on a reasoning model). Unset: mirrors location_model's source — the viability
 #   effort when the sub-call reads descriptions, else [ai].effort.
-# location_model = "claude-haiku-4-5"        # optional; overrides the auto-selected sub-call model.
+# location_model = "claude-haiku-5-5"        # optional; overrides the auto-selected sub-call model.
 #   When unset: with location_use_description OFF the sub-call is a cheap location match and uses
 #   [ai].model. With it ON, reading descriptions needs comprehension, so it uses whatever model
 #   viability scoring itself uses — the `model` in this [viability] section if you set one (above),
@@ -126,9 +127,11 @@ uploads_dir = "uploads"
 # (logged in the ingest summary); identical descriptions are formatted once and reused.
 # [descriptions]
 # use_ai_on_descriptions = true
-# model = "claude-haiku-4-5"                # optional per-feature override of [ai].model
-# effort = "low"                            # thinking effort if `model` is a reasoning model
-#                                           # (Haiku default is temperature-based and ignores it).
+# model = "claude-haiku-5-5"                # optional per-feature override of [ai].model
+# effort = "low"                            # thinking effort. Recommended: the default Haiku 5.5
+#                                           # thinks unless told to think less, and a faithful
+#                                           # reformat needs none of it. Ignored on Haiku 4.5/older
+#                                           # (those reformat at temperature=0 instead).
 
 # Global defaults — all can be overridden per task. These belong under [basics]
 # (uncomment them inside that table near the top of the file, or here — they bind to

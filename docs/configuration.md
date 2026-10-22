@@ -177,14 +177,14 @@ engine configuration. Put the Anthropic key and default model here once:
 ```toml
 [ai]
 api_key = "sk-ant-xxxxxxxxxxxxxxxxxxxx"   # or set ANTHROPIC_API_KEY env var
-model   = "claude-haiku-4-5"              # default model for all AI features
+model   = "claude-haiku-5-5"              # default model for all AI features
 effort  = "medium"                        # default thinking effort (reasoning models only)
 ```
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `api_key` | *(env)* | Anthropic API key. Falls back to `ANTHROPIC_API_KEY`. |
-| `model` | `"claude-haiku-4-5"` | Default model; a feature section may override it. |
+| `model` | `"claude-haiku-5-5"` | Default model; a feature section may override it. |
 | `effort` | `"medium"` | Default thinking effort (`low`/`medium`/`high`/`xhigh`/`max`); a feature section may override it. **Applies only to reasoning models** — see below. |
 
 **Resolution order** for each feature: a value in the feature's own section wins,
@@ -357,7 +357,7 @@ If a posting's ONLY location is an entire country ("United States") with no stat
 assume it falls within my target areas (my searches are already geographically pre-filtered)
 and treat it as at least ACCEPTABLE.
 """
-location_model = "claude-haiku-4-5"   # optional; defaults to [ai].model
+location_model = "claude-haiku-5-5"   # optional; defaults to [ai].model
 location_effort = "low"               # optional; effort for the location sub-call (reasoning models only)
 location_use_description = true        # optional; default true (see below)
 
@@ -374,7 +374,7 @@ reject_companies = [
 ```
 
 > **Recommended: set `[viability].model` to a capable model such as `claude-sonnet-5`.**
-> The global default (`[ai].model`) is `claude-haiku-4-5` on purpose — it's the cheapest model,
+> The global default (`[ai].model`) is `claude-haiku-5-5` on purpose — it's the cheapest model,
 > and the other AI feature (description reformatting) is high-volume, low-judgment work where
 > Haiku is the right call. Viability scoring is different, and it's worth spending a little more
 > here for three reasons:
@@ -434,7 +434,7 @@ Optional. At ingest time, hand each job description to the model and store a cle
 ```toml
 [descriptions]
 use_ai_on_descriptions = true
-# model = "claude-haiku-4-5"   # optional: override [ai].model for reformatting
+# model = "claude-haiku-5-5"   # optional: override [ai].model for reformatting
 # effort = "low"               # optional: effort if `model` is a reasoning model
 ```
 
@@ -442,7 +442,7 @@ use_ai_on_descriptions = true
 |-----|---------|-------------|
 | `use_ai_on_descriptions` | `false` | Enable AI reformatting at ingest. |
 | `api_key` / `model` | *(from `[ai]`)* | Optional per-feature overrides. |
-| `effort` | *(from `[ai]`)* | Thinking effort, applied only if `model` is a reasoning model. The Haiku default reformats at `temperature=0` and ignores it. (A faithful reformat is trivial, so keep it low.) |
+| `effort` | *(from `[ai]`)* | Thinking effort, applied only if `model` is a reasoning model — which the default (Haiku 5.5) is. Keep it `low`: a faithful reformat is trivial, and on this model lowering effort is the only way to get less thinking (asking in the prompt doesn't work). Haiku 4.5 and older ignore it and reformat at `temperature=0` instead. |
 
 Notes:
 - **Scope:** only new jobs and jobs whose description changed are formatted (no

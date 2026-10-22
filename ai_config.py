@@ -16,7 +16,11 @@ from datetime import datetime, timezone
 # Fallback model when neither the feature section nor [ai] specifies one. Haiku is the
 # cheapest current model — a sane default for high-volume, low-complexity AI calls
 # (description reformatting, viability scoring) where cost matters more than peak quality.
-DEFAULT_MODEL = "claude-haiku-4-5"
+# Haiku 5.5 rather than 4.5: 10x cheaper per token ($0.10/$0.50 vs $1/$5 per MTok) at better
+# instruction-following, which on real reformat volume is ~an 85% cut even after its newer
+# tokenizer counts the same text as ~30% more tokens. It is a *reasoning* model (below), so
+# the calls themselves differ — adaptive thinking, no `temperature`.
+DEFAULT_MODEL = "claude-haiku-5-5"
 
 # Fallback thinking effort for a reasoning model with no explicit setting. 'medium' balances
 # instruction-following against cost for these high-volume calls. Only ever applied when the
@@ -27,16 +31,21 @@ DEFAULT_EFFORT = "medium"
 # (reasoning stays in a hidden thinking block; effort controls its depth/cost). Haiku 4.5 and
 # older don't support adaptive thinking, so effort is meaningless there and is thrown away.
 # Matched by prefix so dated snapshots (e.g. a future 'claude-sonnet-5-YYYYMMDD') still count.
+# Haiku 5.5 belongs here even though it's the cheap model: it runs adaptive thinking BY DEFAULT
+# and rejects a non-default `temperature` with a 400, so the reformat path's temperature-0 engine
+# would simply fail against it. Spelled '5-5', not '5' — a bare 'claude-haiku-5' prefix would be
+# a guess about a model that doesn't exist, and the 8-digit snapshot rule (pricing_for) is what
+# keeps dated builds working.
 _REASONING_MODELS = (
     "claude-fable-5", "claude-mythos-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7",
-    "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6",
+    "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-5-5",
 )
 
 
 def is_reasoning_model(model: str) -> bool:
     """True when `model` runs with adaptive thinking, so a configured `effort` actually applies
-    (and, for reformat, `temperature` must be dropped). False for Haiku/older, where effort is
-    ignored. Pure, so it's unit-testable and shared by every AI call site."""
+    (and, for reformat, `temperature` must be dropped). False for Haiku 4.5/older, where effort
+    is ignored. Pure, so it's unit-testable and shared by every AI call site."""
     m = (model or "").lower()
     return any(m.startswith(p) for p in _REASONING_MODELS)
 
@@ -479,7 +488,7 @@ def resolve_geo_model(config: dict, geo_uses_description: bool) -> str:
 
     - With the description, the call must tell an EXPLICIT eligibility restriction ("remote only
       for residents of X") from incidental office/regional/pay-zone prose — real reading
-      comprehension. The cheap ``[ai].model`` (haiku) gets this wrong, false-POORing fully-remote
+      comprehension. A cheap Haiku-class ``[ai].model`` gets this wrong, false-POORing fully-remote
       roles whose descriptions merely name other regions, which then gets clamped to low. So we
       escalate to the *viability scoring* model (the stronger model the user already trusts for
       the main judgment, typically sonnet).

@@ -13,10 +13,21 @@ from ai_config import (DEFAULT_EFFORT, DEFAULT_MODEL, UnpricedModelError, base_m
 # ── effort resolution (parallels the model resolution) ────────────────────────
 def test_is_reasoning_model():
     for m in ("claude-sonnet-5", "claude-opus-5", "claude-opus-4-6", "claude-fable-5",
-              "claude-sonnet-4-6"):
+              "claude-sonnet-4-6", "claude-haiku-5-5", "claude-haiku-5-5-20260501"):
         assert is_reasoning_model(m), m
     for m in ("claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-sonnet-4-5", "", None):
         assert not is_reasoning_model(m), m
+
+
+def test_haiku_5_5_is_a_reasoning_model_but_haiku_4_5_is_not():
+    """The cheap model crossed the thinking line at 5.5: it runs adaptive thinking by default and
+    400s on a non-default `temperature`. Mislabelling it would send reformat's temperature-0 engine
+    (reformat.py) at a model that rejects it — every description would fall back to the heuristic
+    renderer. Pinned separately from the loop above because the whole Haiku-5.5 switch rests on it."""
+    assert is_reasoning_model("claude-haiku-5-5")
+    assert not is_reasoning_model("claude-haiku-4-5")
+    # The shipped default is that model, so the default path must be the adaptive-thinking one.
+    assert is_reasoning_model(DEFAULT_MODEL)
 
 
 def test_resolve_effort_precedence_and_explicit_flag():
@@ -41,6 +52,8 @@ def test_resolve_geo_effort_mirrors_geo_model():
 def test_effective_effort_is_none_on_non_reasoning_model():
     assert effective_effort("claude-sonnet-5", "high") == "high"
     assert effective_effort("claude-haiku-4-5", "high") is None
+    # Haiku 5.5 does take effort, so it's the one Haiku whose effort reaches the scoring hash.
+    assert effective_effort("claude-haiku-5-5", "low") == "low"
 
 
 def test_warn_effort_ignored_only_when_explicit_and_non_reasoning(capsys):
@@ -58,8 +71,11 @@ def test_current_models_are_priced():
     estimate_cost returns None and the cost line silently disappears. Opus 5 in particular
     was missing — the table jumped from Fable 5 straight to Opus 4.8."""
     for model in ("claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-opus-4-8",
-                  "claude-sonnet-5", "claude-haiku-4-5"):
+                  "claude-sonnet-5", "claude-haiku-5-5", "claude-haiku-4-5"):
         assert model in model_pricing(), model
+    # The built-in fallback model is reached with no config at all, so it must be priced or every
+    # default-path call would write a $0 ledger row that looks exactly like a free one.
+    assert DEFAULT_MODEL in model_pricing()
 
 
 def test_fable_5_1_cache_hits_use_the_cheaper_multiplier():

@@ -25,7 +25,8 @@ import requests
 
 from config import ConfigError, load_config, migrate_config_to_basics
 
-from ai_config import (DEFAULT_EFFORT, UnpricedModelError, describe_pricing_overrides,
+from ai_config import (DEFAULT_EFFORT, DEFAULT_MODEL, UnpricedModelError,
+                       describe_pricing_overrides,
                        override_coverage_warnings,
                        format_token_summary,
                        require_priced_models, resolve_ai_settings, resolve_effort,
@@ -1245,7 +1246,7 @@ class DescriptionFormatter:
     case. Tracks token usage and per-run counts for the summary line.
     """
 
-    def __init__(self, client=None, model: str = "claude-haiku-4-5",
+    def __init__(self, client=None, model: str = DEFAULT_MODEL,
                  effort: str = DEFAULT_EFFORT):
         self.client = client
         self.model = model
