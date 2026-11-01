@@ -268,4 +268,4 @@ def test_advice_points_at_the_comparison_harness_by_base_id():
     """The suggested command must name a model you'd actually put in config — not the dated
     build the models API hands back."""
     lines = describe_model_change("claude-sonnet-4-6", "claude-sonnet-5-5-20260929")
-    assert lines[-1].endswith("./compare_scoring.sh --model claude-sonnet-5-5")
+    assert lines[-1].endswith("./tools/compare_scoring.sh --model claude-sonnet-5-5")

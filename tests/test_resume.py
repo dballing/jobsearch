@@ -129,7 +129,7 @@ def test_extract_applies_despacing(tmp_path):
     assert "Senior TPM, 20+ years." in text
 
 
-# ── CLI preview (preview_resume.sh → resume.main): "how the parser sees this" ──
+# ── CLI preview (tools/preview_resume.sh → resume.main): "how the parser sees this" ──
 
 def test_cli_prints_extracted_text(tmp_path, capsys):
     p = tmp_path / "resume.md"

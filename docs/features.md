@@ -375,7 +375,7 @@ Or chain after ingestion in cron:
 
 - Each job is scored in one Anthropic API call. Your candidate `prompt` is sent as a cached system prompt, so repeated calls within a session only pay full token cost on the first.
 - Alongside the rating and one-sentence reason, the scorer self-reports a **factor breakdown**: for six fixed dimensions — *role requirements fit* (can I do it?), *role interest fit* (do I want it? — captures intangibles like consulting/farm-out or industry aversion), *seniority fit* (is the level right? — weighted gently, since a small step up/down is normal), *company fit* (size, stage, viability, exclusions), *compensation*, and *location* — plus any extra axes it finds relevant, it gives a signed contribution from **−2 to +2** (where **0 = no effect on the rating**) and a terse note. This makes the verdict auditable: a factor merely *mentioned* in the reason (score 0) is now distinguishable from one that actually **lowered** the rating (a negative score) — e.g. a job with no listed salary should show `compensation: 0`, not a silent dock. The scorer is required to explain the rating *entirely* through the factors, so nothing is scored invisibly. It's a model self-report of *how it weighed each factor*, not internal arithmetic — the rating itself is a single holistic judgment, with no numeric formula under the hood (the rating is deliberately **not** a threshold on the sum of the factor scores: some negatives are near-vetoes a sum can't model). In particular, an **absolute dealbreaker** stated in your profile (e.g. "won't", "not interested in") or an inability to do the core job acts as a **veto** — it forces the rating to `low` regardless of how positive everything else is; a softer preference ("prefer to avoid") is weighted as a strong negative but won't by itself disqualify. The breakdown shows in the job **preview panel** under the reason.
-- **Optional resume (`[viability].resume_file`).** Point it at a resume file (`.md`/`.txt`, `.pdf`, or `.docx`) and its text is folded into your candidate profile as **authoritative, ground-truth** evidence of your **actual** experience — so `role requirements fit` is judged against your real background, not just how you described yourself. It also **mandates** an extra factor, `application competitiveness`: the **employer's-eye** view of how likely you are to get a positive response (a recruiter screen / callback) versus being filtered out — a *distinct* question from whether the role is a good fit **for you** — with its own signed −2…+2 contribution in the breakdown, so you can see how much "would they even respond?" moved the rating. The resume is per-search (each lens can use one tailored to that kind of role) and its **text** is part of the staleness hash, so editing the resume re-scores; `.pdf`/`.docx` need `pypdf`/`python-docx` respectively (only if you use them). Because PDF/DOCX extraction can garble multi-column layouts or tables, run **`./preview_resume.sh <file>`** first to see the exact text the scorer will use. See [Configuration → Viability scoring](configuration.md#viability-scoring-viability).
+- **Optional resume (`[viability].resume_file`).** Point it at a resume file (`.md`/`.txt`, `.pdf`, or `.docx`) and its text is folded into your candidate profile as **authoritative, ground-truth** evidence of your **actual** experience — so `role requirements fit` is judged against your real background, not just how you described yourself. It also **mandates** an extra factor, `application competitiveness`: the **employer's-eye** view of how likely you are to get a positive response (a recruiter screen / callback) versus being filtered out — a *distinct* question from whether the role is a good fit **for you** — with its own signed −2…+2 contribution in the breakdown, so you can see how much "would they even respond?" moved the rating. The resume is per-search (each lens can use one tailored to that kind of role) and its **text** is part of the staleness hash, so editing the resume re-scores; `.pdf`/`.docx` need `pypdf`/`python-docx` respectively (only if you use them). Because PDF/DOCX extraction can garble multi-column layouts or tables, run **`./tools/preview_resume.sh <file>`** first to see the exact text the scorer will use. See [Configuration → Viability scoring](configuration.md#viability-scoring-viability).
 - A SHA-256 hash of the prompt is stored with each score. On subsequent runs, only jobs with a missing or stale hash are re-scored. (When a resume is configured, its extracted text is part of that prompt, so editing the resume marks scores stale exactly as editing the prompt does.)
 - Jobs with `NULL` viability are always scored regardless of status (they may have inherited a status from a canonical without ever being evaluated).
 - Jobs are also flagged for re-scoring when a viability-relevant field changes independently of the prompt — a manual [salary override](#salary-override), [company override](#company-name-override), [job title override](#job-title-override), [work arrangement override](#work-arrangement-override), or [location viability override](#location-viability-override). Such a flagged job is re-scored on the next run even if its prompt hash is current and even if it is `skipped`/`closed` (so a correction that improves it can resurface it). The flag clears once the job is successfully re-scored.
@@ -397,18 +397,18 @@ Any `new` or `reviewing` job that scores at or below the threshold is automatica
 
 ### Validating a prompt change
 
-The scoring prompt is tuned over time, and the premise is that the *current* prompt is scoring correctly — so `compare_scoring.sh` checks that a prompt edit doesn't unintentionally shift ratings before you adopt it. It samples recent jobs (10 per stored tier by default) and scores each one **twice** on identical inputs — once with the committed (`git HEAD`) prompt and once with your working-tree prompt — then reports how often the two agree, a confusion matrix, and (as a model-nondeterminism baseline) how often re-scoring with the *same* prompt disagrees with the stored score. It writes nothing to the database.
+The scoring prompt is tuned over time, and the premise is that the *current* prompt is scoring correctly — so `tools/compare_scoring.sh` checks that a prompt edit doesn't unintentionally shift ratings before you adopt it. It samples recent jobs (10 per stored tier by default) and scores each one **twice** on identical inputs — once with the committed (`git HEAD`) prompt and once with your working-tree prompt — then reports how often the two agree, a confusion matrix, and (as a model-nondeterminism baseline) how often re-scoring with the *same* prompt disagrees with the stored score. It writes nothing to the database.
 
 **Evaluating a model change instead: `--model`.** The same harness has a second axis. `--model claude-sonnet-5-5` holds the prompt fixed (working tree on both sides) and varies the *model*, so the confusion matrix attributes drift to the model rather than the prompt — varying both at once would confound them. This matters more than it looks, because a model change is otherwise invisible: the model is deliberately **not** part of the scoring hash, so switching re-scores nothing and leaves your table holding ratings from two different judges with nothing marking which is which. If the newer model is even slightly stricter, older ratings read as artificially strong — and the auto-skip threshold acts on them.
 
 It also prints **measured cost per side** on the same jobs, which is the only way to answer "is it actually cheaper?". A lower per-token rate is not the same as a lower bill: moving from a non-reasoning model to an adaptive-thinking one adds billed reasoning tokens that didn't exist before, and `claude-opus-4-5` → any newer Opus costs the same per token while adding exactly that. In the other direction the effect can favour the newer model — on one sample, Sonnet 5.5 spent 43% fewer output tokens than Sonnet 5 at identical rates, for ~10% less. Either way, measure rather than assume; `rescore_viability.py` prints the price delta and a thinking-regime warning when it spots a newer model in your family, and points here.
 
 ```bash
-./compare_scoring.sh --previous-days 30       # 10 jobs per tier from the last 30 days
-./compare_scoring.sh --n 15 --since 2026-07-01
-./compare_scoring.sh --tier medium --n 25     # focus on one band (where churn usually is)
-./compare_scoring.sh --reasons                # also print reasons/factors for unchanged jobs
-./compare_scoring.sh --model claude-sonnet-5-5 # the OTHER axis: current model vs a candidate
+./tools/compare_scoring.sh --previous-days 30       # 10 jobs per tier from the last 30 days
+./tools/compare_scoring.sh --n 15 --since 2026-07-01
+./tools/compare_scoring.sh --tier medium --n 25     # focus on one band (where churn usually is)
+./tools/compare_scoring.sh --reasons                # also print reasons/factors for unchanged jobs
+./tools/compare_scoring.sh --model claude-sonnet-5-5 # the OTHER axis: current model vs a candidate
 ```
 
 Because the harness writes nothing, the reasons and factor breakdowns it computes never reach the database — so it prints the old/new reason and the **new factor breakdown** inline for every job whose rating *changed* (add `--reasons` to see them for all jobs). That's where you judge whether a move is an *improvement*: the harness only measures drift, not correctness.
@@ -428,17 +428,17 @@ Once any jobs are scored:
 
 ## Importing existing applications
 
-`import_linkedin.sh` bulk-imports LinkedIn jobs by URL or numeric ID.
+`tools/import_linkedin.sh` bulk-imports LinkedIn jobs by URL or numeric ID.
 
 ```bash
-./import_linkedin.sh --status applied \
+./tools/import_linkedin.sh --status applied \
   "https://www.linkedin.com/jobs/view/1234567890" \
   4383359492
 ```
 
 URLs/IDs can also be piped via stdin:
 ```bash
-cat my_urls.txt | ./import_linkedin.sh --status applied
+cat my_urls.txt | ./tools/import_linkedin.sh --status applied
 ```
 
 | Flag | Effect |

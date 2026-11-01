@@ -20,7 +20,7 @@ prints the old/new reason and the new factor breakdown for every CHANGED job by 
 all jobs with --reasons), so the qualitative check can happen without persisting scores.
 
 Usage:
-    python3 compare_scoring.py [--config PATH] [--n N] [--tier low|medium|high]
+    python3 -m tools.compare_scoring [--config PATH] [--n N] [--tier low|medium|high]
         [--previous-days N | --since YYYY-MM-DD] [--job-id ID] [--reasons]
 
 Flags:
@@ -43,6 +43,13 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
+
+# This module lives in tools/, one level under the repo root. That depth matters: the HEAD-side
+# import shells out to `git show HEAD:viability.py`, and git resolves that pathspec relative to
+# the cwd it is handed — from tools/ it would look for HEAD:tools/viability.py and exit. Derived
+# once here (and asserted in tests/test_compare_scoring.py) so the assumption is visible rather
+# than buried in main().
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 import anthropic
 
@@ -272,7 +279,7 @@ def main() -> None:
     # you could not attribute a rating move to either — so --model fixes the prompt (working
     # tree on both sides) and varies the model, exactly mirroring how the default mode fixes
     # the model and varies the prompt.
-    repo_root = Path(__file__).resolve().parent
+    repo_root = REPO_ROOT
     model_mode = bool(args.candidate_model)
     if model_mode:
         old_model, new_model = model, args.candidate_model

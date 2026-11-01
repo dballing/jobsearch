@@ -129,8 +129,8 @@ def test_snapshot_all_grouped():
 def test_snapshot_screenshot_mock():
     """The FULL page rendered against the fixture IS the committed snapshots/mock_screenshot.html
     — the standalone HTML the README screenshot (docs/screenshot.png) is captured from headless
-    (see make_screenshot.sh). An unexpected diff is a regression to fix; an intended one means
-    regenerating the mock with UPDATE_SNAPSHOTS=1 ./run_tests.sh AND re-running make_screenshot.sh
+    (see tools/make_screenshot.sh). An unexpected diff is a regression to fix; an intended one means
+    regenerating the mock with UPDATE_SNAPSHOTS=1 ./run_tests.sh AND re-running tools/make_screenshot.sh
     to refresh the PNG. Unlike the table-region snapshots, this whole-page golden intentionally
     DOES track chrome/JS changes, since the screenshot must reflect the real current UI."""
     html = app.app.test_client().get(_SCREENSHOT_URL).get_data(as_text=True)
@@ -143,17 +143,17 @@ def test_snapshot_screenshot_mock():
         pytest.fail("created mock_screenshot.html; review it, regenerate the PNG, then commit")
     assert html == path.read_text(), (
         "mock_screenshot.html differs from the app's current render. If intended, regenerate "
-        "with UPDATE_SNAPSHOTS=1 ./run_tests.sh then run ./make_screenshot.sh to refresh the PNG.")
+        "with UPDATE_SNAPSHOTS=1 ./run_tests.sh then run ./tools/make_screenshot.sh to refresh the PNG.")
 
 
 def test_screenshot_not_clipped():
     """docs/screenshot.png must have a uniform background strip along its bottom edge — proof
     the whole fixture table fit inside the capture window and nothing was silently clipped.
 
-    make_screenshot.sh captures a fixed window height; if the sample fixture grows past it,
+    tools/make_screenshot.sh captures a fixed window height; if the sample fixture grows past it,
     the last rows (including the hotlisted one) drop off the bottom without any error. This
     guards that: it fails whenever content reaches the bottom edge. Fix by raising the
-    --window-size height in make_screenshot.sh and re-running it."""
+    --window-size height in tools/make_screenshot.sh and re-running it."""
     w, h, bpp, rows = _decode_png(_ROOT / "docs" / "screenshot.png")
     strip = 8  # px of required uniform bottom margin — a clipped row leaves content here
     bg = bytes(rows[h - 1][:bpp])  # background sampled from the bottom-left pixel
@@ -163,5 +163,5 @@ def test_screenshot_not_clipped():
             assert bytes(row[x:x + bpp]) == bg, (
                 f"docs/screenshot.png has non-background content within {strip}px of the "
                 f"bottom edge (row {y}, col {x // bpp}) — the fixture table is clipped and a "
-                f"job row was lost. Raise the --window-size height in make_screenshot.sh and "
+                f"job row was lost. Raise the --window-size height in tools/make_screenshot.sh and "
                 f"re-run it to re-capture the full table.")

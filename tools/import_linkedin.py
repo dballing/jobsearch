@@ -10,7 +10,7 @@ reuses ingest's helpers (open_db, find_canonical, append_history) so imported ro
 look exactly like normally-ingested ones, including fuzzy-dedup grouping.
 
 Usage:
-    python3 import_linkedin.py [--status STATUS] [--label LABEL] [--config PATH]
+    python3 -m tools.import_linkedin [--status STATUS] [--label LABEL] [--config PATH]
                                [--dry-run] [--debug] URL [URL ...]
 
     URLs may also be piped via stdin (one per line).

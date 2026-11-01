@@ -12,8 +12,8 @@ The usual sequence after a price change you found out about late:
 
   1. add the new period to model_pricing.json (or model_pricing.local.json) with the real
      effective date from the announcement, leaving the old period ending on that date;
-  2. run ``./reprice.sh --dry-run`` to see what would move;
-  3. run ``./reprice.sh``.
+  2. run ``./tools/reprice.sh --dry-run`` to see what would move;
+  3. run ``./tools/reprice.sh``.
 
 Deliberately manual. Anthropic publishes *current* rates, not effective dates or a price
 history, so the cutoff is a judgment call made from the announcement — not something this repo
@@ -23,7 +23,7 @@ Apify rows ('apify' feature) are skipped: they carry a run charge that was never
 token count, so there is nothing to recompute.
 
 Usage:
-    python3 reprice.py [--config PATH] [--dry-run] [--model MODEL] [--search SEARCH_ID]
+    python3 -m tools.reprice [--config PATH] [--dry-run] [--model MODEL] [--search SEARCH_ID]
 """
 
 import argparse

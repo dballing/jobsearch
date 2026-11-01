@@ -609,7 +609,7 @@ def describe_model_change(current: str, candidate: str) -> "list[str]":
             "cheaper per job.")
     if out:
         out.append(f"Before switching, check the rating drift: "
-                   f"./compare_scoring.sh --model {base_model_id(candidate)}")
+                   f"./tools/compare_scoring.sh --model {base_model_id(candidate)}")
     return out
 
 

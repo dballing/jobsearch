@@ -70,7 +70,7 @@ uploads_dir = "uploads"
 # unreadable file is a loud config error (not silently ignored). Per-search: each lens can point
 # at a resume tailored to that kind of role. Common "letter-spaced" PDF headers (e.g. a title
 # stored as "P R O F E S S I O N A L  S U M M A R Y") are auto-repaired; other garble (multi-column
-# layouts, tables) may survive — run `./preview_resume.sh <file>` to see the exact text the scorer
+# layouts, tables) may survive — run `./tools/preview_resume.sh <file>` to see the exact text the scorer
 # will use.
 # resume_file = "resume.md"
 #

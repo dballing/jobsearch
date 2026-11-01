@@ -143,8 +143,6 @@ jobsearch/
 ├── app.py                   # Flask web application (routes, schema migration, stats)
 ├── ingest.py                # Apify ingestion: fetch, extract, fuzzy dedup, run summary
 ├── ingest.sh                # venv wrapper for ingest.py
-├── import_linkedin.py       # one-off import of jobs by LinkedIn URL/ID
-├── import_linkedin.sh       # venv wrapper for import_linkedin.py
 ├── rescore_viability.py     # AI viability scoring driver (selection, auto-skip, promotion)
 ├── rescore_viability.sh     # venv wrapper for rescore_viability.py
 ├── viability.py             # shared scoring helpers (prompt_hash, score_job, location sub-call)
@@ -153,7 +151,12 @@ jobsearch/
 ├── runlock.py               # single shared writer lock (serializes ingest vs. rescore)
 ├── run_app.sh               # venv wrapper for Flask
 ├── run_tests.sh             # hermetic pytest suite (run before committing)
-├── make_screenshot.sh       # regenerate docs/screenshot.png from the mock golden (headless Chrome)
+├── tools/                   # occasional one-offs, each with its own venv wrapper
+│   ├── compare_scoring.py/.sh  # before/after scoring-stability check (run before a prompt edit)
+│   ├── import_linkedin.py/.sh  # one-off import of jobs by LinkedIn URL/ID
+│   ├── reprice.py/.sh          # recompute historical ledger costs from the pricing timeline
+│   ├── preview_resume.sh       # print a resume exactly as the scorer will see it
+│   └── make_screenshot.sh      # regenerate docs/screenshot.png from the mock golden (headless Chrome)
 ├── config.toml              # your local config (gitignored)
 ├── config.toml.example      # template
 ├── requirements.txt         # Python dependencies

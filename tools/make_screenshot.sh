@@ -5,19 +5,21 @@
 # The mock is app-generated from the sample fixture (see tests/test_snapshots.py). Workflow
 # after an intentional UI change:
 #   1. UPDATE_SNAPSHOTS=1 ./run_tests.sh   # rewrite the mock (+ other goldens)
-#   2. ./make_screenshot.sh                # re-capture the PNG from the mock
+#   2. ./tools/make_screenshot.sh                # re-capture the PNG from the mock
 #   3. commit both
 #
-# Chrome path is overridable: CHROME=/path/to/chrome ./make_screenshot.sh
+# Chrome path is overridable: CHROME=/path/to/chrome ./tools/make_screenshot.sh
 # Dimensions match the existing screenshot (1400x860, scale 1) so the README layout is stable.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
+# This wrapper lives in tools/, but everything it touches (.venv, config.toml, jobs.db) is
+# keyed to the REPO ROOT, so resolve that — one level up — rather than the script's own dir.
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$REPO_ROOT"
 
 CHROME="${CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
-MOCK="$SCRIPT_DIR/tests/snapshots/mock_screenshot.html"
-OUT="$SCRIPT_DIR/docs/screenshot.png"
+MOCK="$REPO_ROOT/tests/snapshots/mock_screenshot.html"
+OUT="$REPO_ROOT/docs/screenshot.png"
 
 [ -x "$CHROME" ] || { echo "Chrome not found at '$CHROME'. Set CHROME=/path/to/chrome." >&2; exit 1; }
 [ -f "$MOCK" ]   || { echo "Mock not found: $MOCK. Run UPDATE_SNAPSHOTS=1 ./run_tests.sh first." >&2; exit 1; }

@@ -160,7 +160,7 @@ def extract_resume_text(path) -> str:
 
 
 def main(argv=None) -> int:
-    """`preview_resume.sh <file>` — print the resume EXACTLY as the scorer will see it.
+    """`tools/preview_resume.sh <file>` — print the resume EXACTLY as the scorer will see it.
 
     PDF/DOCX extraction routinely mangles multi-column layouts, tables, and headers/footers, and
     the scorer judges the candidate against precisely this extracted text — so this lets you eyeball
