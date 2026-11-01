@@ -11,6 +11,10 @@ if [ ! -d .venv ]; then
     exit 1
 fi
 
+# The modules these tools import (config, viability, ai_config…) live in lib/, and running
+# a script in tools/ puts tools/ on sys.path, not lib/ — so point Python at it.
+export PYTHONPATH="$REPO_ROOT/lib${PYTHONPATH:+:$PYTHONPATH}"
+
 source .venv/bin/activate
 
-python3 -m tools.compare_scoring "$@"
+python3 tools/compare_scoring.py "$@"

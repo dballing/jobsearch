@@ -13,4 +13,4 @@ fi
 
 source .venv/bin/activate
 
-python3 resume.py "$@"
+python3 lib/resume.py "$@"

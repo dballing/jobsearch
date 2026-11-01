@@ -140,17 +140,28 @@ The `&& …/rescore_viability.sh` chained onto the end is what AI-scores newly i
 
 ```
 jobsearch/
-├── app.py                   # Flask web application (routes, schema migration, stats)
-├── ingest.py                # Apify ingestion: fetch, extract, fuzzy dedup, run summary
-├── ingest.sh                # venv wrapper for ingest.py
-├── rescore_viability.py     # AI viability scoring driver (selection, auto-skip, promotion)
-├── rescore_viability.sh     # venv wrapper for rescore_viability.py
-├── viability.py             # shared scoring helpers (prompt_hash, score_job, location sub-call)
-├── reformat.py              # AI description→Markdown reformatting + integrity check
-├── ai_config.py             # shared [ai]/per-feature settings + token-cost accounting
-├── runlock.py               # single shared writer lock (serializes ingest vs. rescore)
+├── ingest.sh                # venv wrapper for lib/ingest.py (this is what cron calls)
+├── rescore_viability.sh     # venv wrapper for lib/rescore_viability.py (cron calls this too)
 ├── run_app.sh               # venv wrapper for Flask
 ├── run_tests.sh             # hermetic pytest suite (run before committing)
+├── model_pricing.json       # per-model API rates (+ optional model_pricing.local.json override)
+├── lib/                     # the application itself — imported flat (`import config`), see CLAUDE.md
+│   ├── app.py               # Flask web application (routes, schema migration, stats)
+│   ├── ingest.py            # Apify ingestion: fetch, extract, fuzzy dedup, run summary
+│   ├── rescore_viability.py # AI viability scoring driver (selection, auto-skip, promotion)
+│   ├── viability.py         # shared scoring helpers (prompt_hash, score_job, location sub-call)
+│   ├── reformat.py          # AI description→Markdown reformatting + integrity check
+│   ├── ai_config.py         # shared [ai]/per-feature settings + token-cost accounting
+│   ├── config.py            # config loader (every entry point goes through it)
+│   ├── spend.py             # spend ledger: one row per billed AI call / Apify run
+│   ├── resume.py            # resume extraction (.md/.txt/.pdf/.docx) for the scorer
+│   ├── pricing_check.py     # pricing-page drift check (drives the live pricing test)
+│   ├── fx_rates.py          # FX rates for the display-only USD-equivalent salary hover
+│   ├── runlock.py           # single shared writer lock (serializes ingest vs. rescore)
+│   └── templates/           # Flask templates (here because Flask looks beside app.py)
+│       ├── base.html        # base layout, navbar, offcanvas preview, stats modal
+│       ├── jobs.html        # main jobs table with filters and column picker
+│       └── report_weekly.html   # printable weekly job-hunt-contact report
 ├── tools/                   # occasional one-offs, each with its own venv wrapper
 │   ├── compare_scoring.py/.sh  # before/after scoring-stability check (run before a prompt edit)
 │   ├── import_linkedin.py/.sh  # one-off import of jobs by LinkedIn URL/ID
@@ -167,10 +178,6 @@ jobsearch/
 │   ├── configuration.md     # full config reference
 │   ├── features.md          # feature documentation
 │   └── screenshot.png       # UI screenshot (used in README; captured from the mock golden)
-├── templates/
-│   ├── base.html            # base layout, navbar, offcanvas preview, stats modal
-│   ├── jobs.html            # main jobs table with filters and column picker
-│   └── report_weekly.html   # printable weekly job-hunt-contact report
 └── tests/                   # hermetic pytest suite
     ├── conftest.py          # throwaway config/db setup; sample_db / sample_app_db fixtures
     ├── fixtures/

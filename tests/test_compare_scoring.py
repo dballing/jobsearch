@@ -109,14 +109,15 @@ def test_factor_sum_none_or_empty():
 
 
 # ── REPO_ROOT: the one thing the move to tools/ could break silently ───────────
-def test_repo_root_is_the_directory_that_holds_viability():
-    """The HEAD-side comparison shells out to `git show HEAD:viability.py` with cwd=REPO_ROOT, and
-    git resolves that pathspec relative to the cwd it's given — so if REPO_ROOT pointed at this
-    module's own directory (tools/), git would look for HEAD:tools/viability.py and the harness
-    would exit before scoring anything. Assert the real value, not a re-derivation of the same
-    arithmetic: the computed root must be the directory that actually holds the files git is asked
-    for. This is what catches the tool being moved to a different depth."""
-    assert (cs.REPO_ROOT / "viability.py").is_file()
+def test_repo_root_is_the_directory_the_head_pathspec_resolves_against():
+    """The HEAD-side comparison shells out to `git show HEAD:lib/viability.py` with cwd=REPO_ROOT,
+    and git resolves that pathspec relative to the cwd it's given — so if REPO_ROOT pointed at
+    this module's own directory (tools/), git would look for HEAD:tools/lib/viability.py and the
+    harness would exit before scoring anything. Assert the real value, not a re-derivation of the
+    same arithmetic: the computed root must be the directory the pathspec actually resolves
+    against. This is what catches either half of the pair — the tool moving to a different depth,
+    or viability.py moving — going stale."""
+    assert (cs.REPO_ROOT / "lib" / "viability.py").is_file()
     assert (cs.REPO_ROOT / "pytest.ini").is_file()
-    # And it must NOT be the package directory the module itself sits in.
+    # And it must NOT be the directory the module itself sits in.
     assert cs.REPO_ROOT != Path(cs.__file__).resolve().parent

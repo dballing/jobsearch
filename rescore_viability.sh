@@ -11,4 +11,4 @@ fi
 
 source .venv/bin/activate
 
-python3 rescore_viability.py "$@"
+python3 lib/rescore_viability.py "$@"

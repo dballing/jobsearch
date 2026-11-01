@@ -11,4 +11,4 @@ fi
 
 source .venv/bin/activate
 
-python3 ingest.py "$@"
+python3 lib/ingest.py "$@"

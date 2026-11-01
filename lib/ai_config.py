@@ -55,7 +55,11 @@ def is_reasoning_model(model: str) -> bool:
 # carries a blanket `*.toml`, the rule that keeps the secret-bearing config.toml and every
 # searches/*.toml out of the repo; the shipped table has to be *tracked*, and punching a negation
 # in that glob to allow one filename would weaken the protection for all of them.
-_SHIPPED_PRICING = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_pricing.json")
+# Pricing data lives in the REPO ROOT, not beside this module: it is user-facing data (an
+# optional model_pricing.local.json overrides it) and belongs with config.toml.example rather
+# than inside lib/. Hence the extra dirname — one level up from this file.
+_SHIPPED_PRICING = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "model_pricing.json")
 
 # The local override is resolved next to the shipped file, or from JOBSEARCH_MODEL_PRICING —
 # the same env-indirection the suite already uses for JOBSEARCH_CONFIG/JOBSEARCH_DB, and what

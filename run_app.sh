@@ -21,5 +21,9 @@ DEBUG_FLAG="--debug"
 # Default to port 5001 — macOS Control Center / AirPlay Receiver squats on Flask's
 # default 5000 (returns 403). An explicit `--port N` still overrides this, since the
 # CLI flag takes precedence over FLASK_RUN_PORT.
+# The app modules live in lib/. The flask CLI is the entry point here, not one of our
+# scripts, so nothing puts lib/ on sys.path implicitly — say it explicitly.
+export PYTHONPATH="$SCRIPT_DIR/lib${PYTHONPATH:+:$PYTHONPATH}"
+
 export FLASK_RUN_PORT="${FLASK_RUN_PORT:-5001}"
 flask --app app run $DEBUG_FLAG "$@"

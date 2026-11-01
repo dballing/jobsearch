@@ -142,19 +142,22 @@ def summarize_pairs(pairs: "list[tuple[str, str]]") -> dict:
 
 
 def load_old_viability(repo_root: Path):
-    """Import the committed (HEAD) viability.py as a separate module so we can score with the OLD
-    prompt while the working tree holds the NEW one. Returns the module, or exits if HEAD's copy
-    can't be read (e.g. not a git repo, or viability.py isn't committed yet).
+    """Import the committed (HEAD) lib/viability.py as a separate module so we can score with the
+    OLD prompt while the working tree holds the NEW one. Returns the module, or exits if HEAD's
+    copy can't be read (e.g. not a git repo, or lib/viability.py isn't committed yet).
+
+    The pathspec is repo-relative (`HEAD:lib/viability.py`) because git resolves it against the
+    cwd it's handed, and that cwd is REPO_ROOT.
 
     The old module still does `from ai_config import …`; those resolve to the working-tree ai_config
     on sys.path, which is intended — only viability.py's own prompt/logic differs between the two."""
     try:
         src = subprocess.run(
-            ["git", "show", "HEAD:viability.py"],
+            ["git", "show", "HEAD:lib/viability.py"],
             cwd=repo_root, capture_output=True, text=True, check=True,
         ).stdout
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        sys.exit(f"Could not read HEAD:viability.py (need a git repo with viability.py committed): {e}")
+        sys.exit(f"Could not read HEAD:lib/viability.py (need a git repo with it committed): {e}")
     # Write to a temp file and import under a distinct name so it doesn't shadow the working-tree
     # module already imported as `viability` / `viability_new`.
     tmp = tempfile.NamedTemporaryFile("w", suffix="_viability_old.py", delete=False)
