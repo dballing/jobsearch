@@ -289,7 +289,7 @@ def positive_int(value: str) -> int:
 # are stable, and validating --status against a fixed set turns a typo into a clear error
 # instead of a silent zero-row run.
 VALID_STATUSES = (
-    "new", "skipped", "autoskipped", "reviewing", "deferred",
+    "new", "skipped", "autoskipped", "bulkskipped", "reviewing", "deferred",
     "applied", "rejected", "ghosted", "interviewing", "offered",
     "withdrawn", "closed",
 )
@@ -473,8 +473,14 @@ def build_selection(
         conditions.append("jss.status = ?")
         params.append(status)
     else:
+        # 'bulkskipped' sits with the other two skip statuses here, and that placement is the
+        # whole economic point of the catch-up feature: a scheduled run must not pay to re-score a
+        # few hundred postings the user explicitly buried unread. (The NULL/needs_rescored escape
+        # still applies to it, exactly as it does to skipped/autoskipped — an unscored row is
+        # cheap, and leaving it unscored would make the pile unmineable by viability later.)
         conditions.append(
-            "(jss.status NOT IN ('skipped', 'autoskipped', 'rejected', 'withdrawn', 'ghosted', 'closed')"
+            "(jss.status NOT IN ('skipped', 'autoskipped', 'bulkskipped', 'rejected', "
+            "'withdrawn', 'ghosted', 'closed')"
             " OR jss.viability IS NULL OR jss.needs_rescored = 1)"
         )
 

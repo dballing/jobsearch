@@ -264,7 +264,7 @@
             <div class="col-md-3">
               <label class="form-label small fw-semibold">Status</label>
               <select name="status" class="form-select form-select-sm">
-                <option value="new" selected>new</option><option value="skipped" >skipped</option><option value="autoskipped" >autoskipped</option><option value="reviewing" >reviewing</option><option value="deferred" >deferred</option><option value="applied" >applied</option><option value="rejected" >rejected</option><option value="ghosted" >ghosted</option><option value="interviewing" >interviewing</option><option value="offered" >offered</option><option value="withdrawn" >withdrawn</option><option value="closed" >closed</option>
+                <option value="new" selected>new</option><option value="skipped" >skipped</option><option value="autoskipped" >autoskipped</option><option value="bulkskipped" >bulkskipped</option><option value="reviewing" >reviewing</option><option value="deferred" >deferred</option><option value="applied" >applied</option><option value="rejected" >rejected</option><option value="ghosted" >ghosted</option><option value="interviewing" >interviewing</option><option value="offered" >offered</option><option value="withdrawn" >withdrawn</option><option value="closed" >closed</option>
               </select>
             </div>
             <div class="col-md-3">
@@ -473,6 +473,9 @@
       <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=skipped&amp;page=1"
          class="btn btn-outline-success">Skipped</a>
       
+      <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=bulkskipped&amp;page=1"
+         class="btn btn-outline-success">Caught up</a>
+      
       <a href="/?sort=first_seen&amp;dir=desc&amp;group_match=0&amp;group_employer=0&amp;per_page=200&amp;status_filter=all&amp;page=1"
          class="btn btn-success">All</a>
       
@@ -528,6 +531,14 @@
   
   <button id="bulk-skip-btn" class="btn btn-sm btn-outline-danger d-none">
     <i class="bi bi-x-circle"></i> Skip <span id="bulk-skip-count"></span> low &amp; new
+  </button>
+  
+
+  
+  
+  <button id="catchup-btn" class="btn btn-sm btn-outline-warning" data-count="3"
+          title="Set every new job matching the current filters to bulkskipped">
+    <i class="bi bi-check2-all"></i> Catch up (3)
   </button>
   
 
@@ -687,6 +698,8 @@ Solid fit; re-score pending.">medium</span>
   
   <option value="autoskipped" >autoskipped</option>
   
+  <option value="bulkskipped" >bulkskipped</option>
+  
   <option value="reviewing" >reviewing</option>
   
   <option value="deferred" >deferred</option>
@@ -774,6 +787,8 @@ Solid fit; re-score pending.">medium</span>
   
   <option value="autoskipped" >autoskipped</option>
   
+  <option value="bulkskipped" >bulkskipped</option>
+  
   <option value="reviewing" >reviewing</option>
   
   <option value="deferred" >deferred</option>
@@ -859,6 +874,8 @@ Solid fit; re-score pending.">medium</span>
   <option value="skipped" >skipped</option>
   
   <option value="autoskipped" selected>autoskipped</option>
+  
+  <option value="bulkskipped" >bulkskipped</option>
   
   <option value="reviewing" >reviewing</option>
   
@@ -946,6 +963,8 @@ Solid fit; re-score pending.">medium</span>
   
   <option value="autoskipped" >autoskipped</option>
   
+  <option value="bulkskipped" >bulkskipped</option>
+  
   <option value="reviewing" >reviewing</option>
   
   <option value="deferred" >deferred</option>
@@ -1028,6 +1047,8 @@ Solid fit; re-score pending.">medium</span>
   <option value="skipped" >skipped</option>
   
   <option value="autoskipped" >autoskipped</option>
+  
+  <option value="bulkskipped" >bulkskipped</option>
   
   <option value="reviewing" >reviewing</option>
   
@@ -1115,6 +1136,8 @@ Solid fit; re-score pending.">medium</span>
   
   <option value="autoskipped" >autoskipped</option>
   
+  <option value="bulkskipped" >bulkskipped</option>
+  
   <option value="reviewing" >reviewing</option>
   
   <option value="deferred" >deferred</option>
@@ -1200,6 +1223,8 @@ Solid fit; re-score pending.">medium</span>
   <option value="skipped" >skipped</option>
   
   <option value="autoskipped" >autoskipped</option>
+  
+  <option value="bulkskipped" >bulkskipped</option>
   
   <option value="reviewing" >reviewing</option>
   
@@ -1287,6 +1312,8 @@ Solid fit; re-score pending.">medium</span>
   
   <option value="autoskipped" >autoskipped</option>
   
+  <option value="bulkskipped" >bulkskipped</option>
+  
   <option value="reviewing" >reviewing</option>
   
   <option value="deferred" >deferred</option>
@@ -1372,6 +1399,8 @@ Solid fit; re-score pending.">medium</span>
   <option value="skipped" >skipped</option>
   
   <option value="autoskipped" >autoskipped</option>
+  
+  <option value="bulkskipped" >bulkskipped</option>
   
   <option value="reviewing" >reviewing</option>
   
@@ -1460,6 +1489,8 @@ Solid fit; re-score pending.">medium</span>
   
   <option value="autoskipped" >autoskipped</option>
   
+  <option value="bulkskipped" >bulkskipped</option>
+  
   <option value="reviewing" >reviewing</option>
   
   <option value="deferred" >deferred</option>
@@ -1545,6 +1576,8 @@ Solid fit; re-score pending.">medium</span>
   <option value="skipped" >skipped</option>
   
   <option value="autoskipped" >autoskipped</option>
+  
+  <option value="bulkskipped" >bulkskipped</option>
   
   <option value="reviewing" >reviewing</option>
   
@@ -1632,6 +1665,8 @@ Solid fit; re-score pending.">medium</span>
   
   <option value="autoskipped" >autoskipped</option>
   
+  <option value="bulkskipped" >bulkskipped</option>
+  
   <option value="reviewing" selected>reviewing</option>
   
   <option value="deferred" >deferred</option>
@@ -1717,6 +1752,8 @@ Solid fit; re-score pending.">medium</span>
   <option value="skipped" >skipped</option>
   
   <option value="autoskipped" >autoskipped</option>
+  
+  <option value="bulkskipped" >bulkskipped</option>
   
   <option value="reviewing" >reviewing</option>
   
@@ -1806,6 +1843,8 @@ Solid fit; re-score pending.">medium</span>
   
   <option value="autoskipped" >autoskipped</option>
   
+  <option value="bulkskipped" >bulkskipped</option>
+  
   <option value="reviewing" >reviewing</option>
   
   <option value="deferred" >deferred</option>
@@ -1891,6 +1930,8 @@ Solid fit; re-score pending.">medium</span>
   <option value="skipped" >skipped</option>
   
   <option value="autoskipped" >autoskipped</option>
+  
+  <option value="bulkskipped" >bulkskipped</option>
   
   <option value="reviewing" >reviewing</option>
   
@@ -1978,6 +2019,8 @@ Solid fit; re-score pending.">medium</span>
   <option value="skipped" >skipped</option>
   
   <option value="autoskipped" >autoskipped</option>
+  
+  <option value="bulkskipped" >bulkskipped</option>
   
   <option value="reviewing" >reviewing</option>
   
@@ -3429,7 +3472,7 @@ Solid fit; re-score pending.">medium</span>
   </script>
   
 <script>
-const STATUS_COLORS = {"applied": "primary", "autoskipped": "dark", "closed": "dark", "deferred": "deferred", "ghosted": "secondary", "interviewing": "warning", "new": "info", "offered": "success", "rejected": "danger", "reviewing": "secondary", "skipped": "dark", "withdrawn": "secondary"};
+const STATUS_COLORS = {"applied": "primary", "autoskipped": "dark", "bulkskipped": "dark", "closed": "dark", "deferred": "deferred", "ghosted": "secondary", "interviewing": "warning", "new": "info", "offered": "success", "rejected": "danger", "reviewing": "secondary", "skipped": "dark", "withdrawn": "secondary"};
 
 // ── Rows-per-page persistence ──
 // Page size lives in the ?per_page= URL param (server-side paging), but we also remember
@@ -3557,6 +3600,46 @@ async function bulkSkipLow() {
 }
 
 document.getElementById('bulk-skip-btn')?.addEventListener('click', bulkSkipLow);
+
+// "Catch up": bury every `new` posting matching the CURRENT FILTERS, across every page. Unlike
+// bulkSkipLow above, this posts the FILTERS rather than ids — the backlog is routinely bigger than
+// one page, so a client-side id sweep would silently stop at the page boundary while reporting
+// success. The server re-derives the set from the same filters (app.catchup_where), and `expect`
+// lets it refuse if a cron ingest moved the count while this page sat open.
+async function catchUp() {
+  const btn = document.getElementById('catchup-btn');
+  if (!btn) return;
+  const n = parseInt(btn.dataset.count, 10);
+  if (!n) return;
+  if (!confirm(`Skip all ${n} new job${n === 1 ? '' : 's'} matching the current filters?\n\n`
+             + `They'll be set to "bulkskipped" — cleared without being read. The "Caught up" `
+             + `status filter still finds them.`)) return;
+  const p    = new URLSearchParams(window.location.search);
+  const body = new URLSearchParams({expect: n});
+  // Only the axes that change WHICH rows match; paging/sort/grouping don't. `search` is forwarded
+  // so the write lands on the lens in the URL rather than leaning on the sticky cookie.
+  ['label', 'q', 'source', 'viability', 'comp', 'search'].forEach(k => {
+    if (p.get(k)) body.set(k, p.get(k));
+  });
+  btn.disabled = true;
+  try {
+    const resp = await fetch('/jobs/catchup', {method: 'POST', body});
+    if (resp.status === 409) {
+      const d = await resp.json();
+      alert(`The backlog changed since this page loaded (it's now ${d.count}). `
+          + `Nothing was changed — reloading so you can confirm the real number.`);
+      window.location.reload();
+      return;
+    }
+    if (!resp.ok) throw new Error();
+    window.location.reload();
+  } catch {
+    btn.disabled = false;
+    alert('Failed to catch up.');
+  }
+}
+
+document.getElementById('catchup-btn')?.addEventListener('click', catchUp);
 
 // ── UTC datetime / date-only → local display ──────────────────────────────
 (function() {

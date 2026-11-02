@@ -22,8 +22,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from flask import (Flask, abort, g, has_request_context, make_response, render_template,
-                   request, send_file, url_for)
+from flask import (Flask, abort, g, has_request_context, jsonify, make_response,
+                   render_template, request, send_file, url_for)
 from werkzeug.utils import secure_filename
 import spend
 import fx_rates
@@ -189,7 +189,14 @@ DEFAULT_VIEW          = "grouped"
 DEFAULT_STATUS_FILTER = "active"
 
 STATUSES = [
-    "new", "skipped", "autoskipped", "reviewing", "deferred",
+    # 'bulkskipped' is the "Catch up" status: skipped EN MASSE, without being read. It's a third
+    # skip flavour rather than a reuse of either neighbour because both would misbehave. 'skipped'
+    # means "I read it and passed" — the Skipped filter exists to revisit those decisions, and
+    # burying a few hundred unread postings there makes that useless. And an 'autoskipped' job
+    # scoring above the auto-skip threshold is promoted straight back to 'new' by any rescore that
+    # selects it (rescore_viability.should_unskip), so a caught-up pile would resurrect itself —
+    # and `--autoskipped` would pay for a scoring call on every one of them to do it.
+    "new", "skipped", "autoskipped", "bulkskipped", "reviewing", "deferred",
     "applied", "rejected", "ghosted", "interviewing", "offered",
     "withdrawn", "closed",
 ]
@@ -202,7 +209,7 @@ STATUSES = [
 # later toggle (e.g. applied→interviewing keeps the original date). This fills the gap where a
 # job that reaches the family by a path that never stamped (e.g. new→interviewing directly, or
 # an applied step after the date was cleared) would otherwise sit at applied_at=NULL forever.
-_EARLY_STATUSES = ("new", "reviewing", "deferred", "skipped", "autoskipped")
+_EARLY_STATUSES = ("new", "reviewing", "deferred", "skipped", "autoskipped", "bulkskipped")
 _APPLIED_FAMILY = ("applied", "rejected", "ghosted", "interviewing", "offered", "withdrawn")
 
 
@@ -251,6 +258,7 @@ STATUS_COLORS = {
     "withdrawn":    "secondary",
     "skipped":      "dark",
     "autoskipped":  "dark",
+    "bulkskipped":  "dark",
     "ghosted":      "secondary",
     "closed":       "dark",
 }
@@ -304,7 +312,8 @@ STATUS_FILTERS = {
     # Parked-but-alive: on the radar to mention to recruiters, but not being acted on.
     # Deliberately NOT in the Active exclusion list below, so it also shows in Active.
     "deferred":  ("Deferred",  "jss.status = 'deferred'"),
-    "active":    ("Active",    "jss.status NOT IN ('skipped', 'autoskipped', 'rejected', 'withdrawn', 'ghosted', 'closed')"),
+    "active":    ("Active",    "jss.status NOT IN ('skipped', 'autoskipped', 'bulkskipped', "
+                               "'rejected', 'withdrawn', 'ghosted', 'closed')"),
     "applied":   ("Applied",   "jss.status IN ('applied', 'interviewing', 'offered', 'ghosted')"),
     "interview": ("Interview Process", "jss.status IN ('interviewing', 'offered')"),
     # Ghosted counts as a presumptive rejection (applied, no response, auto-aged out), so
@@ -315,6 +324,11 @@ STATUS_FILTERS = {
     # filter to reconsider a strong role I passed on. Autoskipped jobs are always low
     # viability, so folding them in would only add noise to that pairing.
     "skipped":   ("Skipped",   "jss.status = 'skipped'"),
+    # The catch-up pile: postings buried by "Catch up" without being read. Kept out of Skipped
+    # (above) so that filter keeps meaning "skips I decided on", and offered as a filter of its own
+    # because a catch-up is a bankruptcy declaration, not a verdict — pair it with the High
+    # viability filter to mine the pile for anything that deserved a second look.
+    "bulkskipped": ("Caught up", "jss.status = 'bulkskipped'"),
     "all":       ("All",       None),
 }
 
@@ -847,6 +861,50 @@ def build_where(label: str, status_filter: str, q: str = "", source: str = "",
             params.extend(q_params)
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     return where, params
+
+
+def parse_comp(comp: str) -> "tuple[str, int | None, int | None, bool]":
+    """Parse the exact comp-range param ("min-max", either bound optional) into
+    (comp, min, max, active), normalizing anything unparseable to ("", None, None, False) so a
+    hand-edited URL degrades to "no comp filter" instead of erroring.
+
+    Hoisted out of index() because the catch-up action has to scope to the SAME rows the listing
+    counted: a filter parsed even slightly differently on the write side would bury postings the
+    on-screen number never included.
+    """
+    comp_min = comp_max = None
+    comp_active = False
+    if comp and "-" in comp:
+        lo, _, hi = comp.partition("-")
+        try:
+            comp_min = int(lo) if lo else None
+            comp_max = int(hi) if hi else None
+            comp_active = comp_min is not None or comp_max is not None
+        except ValueError:
+            comp_active = False
+    if not comp_active:
+        comp = ""
+    return comp, comp_min, comp_max, comp_active
+
+
+# The status "Catch up" moves postings out of, the one it moves them into, and the history note
+# that marks the transition. Anchored to 'new' rather than the view's active status filter on
+# purpose: catch-up means "bury the backlog I never looked at", so it must never touch a row whose
+# status records a decision — and the default Active filter includes applied/interviewing rows that
+# a filter-scoped bulk write would otherwise eat.
+CATCHUP_FROM_STATUS   = "new"
+CATCHUP_TO_STATUS     = "bulkskipped"
+CATCHUP_HISTORY_NOTE  = "caught up"
+
+
+def catchup_where(label: str, q: str = "", source: str = "", viability: str = "",
+                  comp_active: bool = False, comp_min: "int | None" = None,
+                  comp_max: "int | None" = None) -> "tuple[str, list]":
+    """WHERE + params selecting the catch-up set: every CATCHUP_FROM_STATUS posting matching the
+    caller's other filters. A thin wrapper over build_where with the status pinned, so the count
+    rendered on the button and the UPDATE the button fires are the same set by construction."""
+    return build_where(label, CATCHUP_FROM_STATUS, q, source, viability,
+                       comp_active, comp_min, comp_max)
 
 
 def effective_currency(row: dict) -> "str | None":
@@ -1495,19 +1553,7 @@ def index():
         return_to = ""
     # Exact comp-range search (from the salary-cell icon): comp = "min-max", either
     # bound optional. Matches the full salary signature, including a null bound.
-    comp = request.args.get("comp", "")
-    comp_min = comp_max = None
-    comp_active = False
-    if comp and "-" in comp:
-        _lo, _, _hi = comp.partition("-")
-        try:
-            comp_min = int(_lo) if _lo else None
-            comp_max = int(_hi) if _hi else None
-            comp_active = comp_min is not None or comp_max is not None
-        except ValueError:
-            comp_active = False
-    if not comp_active:
-        comp = ""
+    comp, comp_min, comp_max, comp_active = parse_comp(request.args.get("comp", ""))
     comp_display = format_salary({"salary_min": comp_min, "salary_max": comp_max}) if comp_active else ""
     # Page size: 25/50/100/200, or "all" (single page, no LIMIT).
     per_page = request.args.get("per_page", str(PER_PAGE))
@@ -1532,6 +1578,18 @@ def index():
     # Per-lens state join for this request's lens. ALL_SEARCHES unfilters the join → one row per
     # (job, search) tuple; a concrete id scopes to that single lens.
     join = _jss_join(view_id)
+    # Catch-up backlog size for the toolbar button. Counted separately from `total` because total
+    # counts the view's own unit (groups, or employer sections) under whatever status filter is
+    # active, while catch-up always acts on individual `new` postings — the button has to name the
+    # number it will really bury. Skipped entirely in the all-lenses view, where the action is
+    # hidden anyway, so we don't pay for the query.
+    if is_all:
+        catchup_count = 0
+    else:
+        _cu_where, _cu_params = catchup_where(label, q, source, viability,
+                                              comp_active, comp_min, comp_max)
+        catchup_count = db.execute(
+            FLAT_COUNT.format(join=join, where=_cu_where), _cu_params).fetchone()[0]
     _TEXT_COLS = {"title", "company", "location"}
     if sort == "status":
         # Grouped view sorts by the header's status aggregate (alias); flat by the joined
@@ -1665,6 +1723,7 @@ def index():
         per_page=per_page,
         per_page_options=PER_PAGE_OPTIONS,
         status_filter=status_filter,
+        catchup_count=catchup_count,
         status_filters=STATUS_FILTERS,
         statuses=STATUSES,
         status_colors=STATUS_COLORS,
@@ -2269,6 +2328,79 @@ def update_jobs_status():
             append_history(db, jid, {"ts": ts, "event": "status", "from": old, "to": new_status}, sid)
     db.commit()
     return "", 204
+
+
+@app.route("/jobs/catchup", methods=["POST"])
+def catchup_jobs():
+    """"Catch up": set every `new` posting matching the posted filters to 'bulkskipped' in the
+    current lens — the "I'm hundreds of postings behind, bury the backlog" action.
+
+    Filter-scoped rather than id-scoped, and that's the whole point. The page renders one page of
+    rows, so the sibling low+new bulk-skip (which collects ids in the browser) silently stops at
+    the page boundary — fine for the handful of low-viability rows it targets, useless for a
+    300-posting backlog. Here the server re-derives the set from the same build_where that produced
+    the count on the button, so the write and the number it promised agree by construction.
+
+    No group fan-out, unlike the single-job route: here the filters ARE the selection, and grouped
+    view already shows only matching members, so burying a sibling the filter excluded would mean
+    acting on a posting the count never mentioned.
+
+    `expect` is the count the page displayed. When it no longer matches we refuse with 409 and
+    report the new one instead of burying a different set than the confirm dialog named: ingest
+    runs on cron, so a tab left open overnight can be arbitrarily stale, and "everything currently
+    new" is a point-in-time claim the user agreed to.
+    """
+    # The sentinel only ever *detects* the combined view (per the _current_view_id contract); the
+    # write target is resolved by _current_search_id. Both are needed: left to the fallback alone,
+    # a POST carrying search=__all__ would quietly catch up the DEFAULT lens instead.
+    if _current_view_id() == ALL_SEARCHES:
+        return "Pick a single search to catch up", 400
+    sid = _current_search_id()
+
+    f         = request.form
+    label     = f.get("label", "")
+    q         = f.get("q", "").strip()
+    source    = f.get("source", "")
+    viability = f.get("viability", "")
+    # Validated exactly as index() does, so an unrecognized value is ignored here the same way it
+    # is there — the set acted on always matches the set some reachable view would show.
+    if source not in SOURCE_NAMES and source != "":
+        source = ""
+    if viability not in ("high", "medium", "low", "unscored", ""):
+        viability = ""
+    _comp, comp_min, comp_max, comp_active = parse_comp(f.get("comp", ""))
+
+    where, params = catchup_where(label, q, source, viability, comp_active, comp_min, comp_max)
+    db   = get_db()
+    join = _jss_join(sid)
+    job_ids = [r["job_id"] for r in
+               db.execute(f"SELECT jobs.job_id FROM jobs {join} {where}", params).fetchall()]
+
+    expect = f.get("expect", type=int)
+    if expect is not None and expect != len(job_ids):
+        return jsonify(error="stale", count=len(job_ids)), 409
+    if not job_ids:
+        return jsonify(updated=0), 200
+
+    # Same applied_at rule as both status routes. Routed through the shared CASE rather than a
+    # plain NULL (which is all it can yield for an early status) so this third writer can't drift
+    # if that rule ever changes.
+    db.executemany(
+        f"""UPDATE job_search_state SET status = ?, applied_at = {_APPLIED_AT_CASE_SQL}
+           WHERE job_id = ? AND search_id = ?""",
+        [(CATCHUP_TO_STATUS, CATCHUP_TO_STATUS, CATCHUP_TO_STATUS, jid, sid) for jid in job_ids],
+    )
+    db.executemany("UPDATE jobs SET refreshed_at = NULL WHERE job_id = ?",
+                   [(jid,) for jid in job_ids])
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for jid in job_ids:
+        # Every selected row was CATCHUP_FROM_STATUS by construction, so `from` needs no lookup.
+        # The note is what keeps the timeline honest: this transition was neither a judgment on
+        # this job nor the scorer's, and no other field in the status machinery records that.
+        append_history(db, jid, {"ts": ts, "event": "status", "from": CATCHUP_FROM_STATUS,
+                                 "to": CATCHUP_TO_STATUS, "note": CATCHUP_HISTORY_NOTE}, sid)
+    db.commit()
+    return jsonify(updated=len(job_ids)), 200
 
 
 @app.route("/job/<job_id>/status", methods=["POST"])

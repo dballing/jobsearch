@@ -545,6 +545,18 @@
   </button>
   {% endif %}
 
+  {# "Catch up": bury the whole unreviewed backlog the current filters cover. Differs from the
+     bulk-skip button beside it in both reach and scope — that one sweeps the RENDERED PAGE for
+     low-viability rows, this one acts on every `new` posting the filters match however many pages
+     that spans, at any viability. Hidden at zero, and in the all-lenses view (no single lens to
+     write to, same as the manual add). #}
+  {% if catchup_count and not is_all_view %}
+  <button id="catchup-btn" class="btn btn-sm btn-outline-warning" data-count="{{ catchup_count }}"
+          title="Set every new job matching the current filters to bulkskipped">
+    <i class="bi bi-check2-all"></i> Catch up ({{ catchup_count }})
+  </button>
+  {% endif %}
+
   <span class="text-muted small ms-auto">
     {% if group_employer %}{{ total }} employer{{ 's' if total != 1 }}
     {% else %}{{ total }} {{ 'posting' if view == 'flat' else 'job' }}{{ 's' if total != 1 }}{% endif %}
@@ -783,6 +795,46 @@ async function bulkSkipLow() {
 }
 
 document.getElementById('bulk-skip-btn')?.addEventListener('click', bulkSkipLow);
+
+// "Catch up": bury every `new` posting matching the CURRENT FILTERS, across every page. Unlike
+// bulkSkipLow above, this posts the FILTERS rather than ids — the backlog is routinely bigger than
+// one page, so a client-side id sweep would silently stop at the page boundary while reporting
+// success. The server re-derives the set from the same filters (app.catchup_where), and `expect`
+// lets it refuse if a cron ingest moved the count while this page sat open.
+async function catchUp() {
+  const btn = document.getElementById('catchup-btn');
+  if (!btn) return;
+  const n = parseInt(btn.dataset.count, 10);
+  if (!n) return;
+  if (!confirm(`Skip all ${n} new job${n === 1 ? '' : 's'} matching the current filters?\n\n`
+             + `They'll be set to "bulkskipped" — cleared without being read. The "Caught up" `
+             + `status filter still finds them.`)) return;
+  const p    = new URLSearchParams(window.location.search);
+  const body = new URLSearchParams({expect: n});
+  // Only the axes that change WHICH rows match; paging/sort/grouping don't. `search` is forwarded
+  // so the write lands on the lens in the URL rather than leaning on the sticky cookie.
+  ['label', 'q', 'source', 'viability', 'comp', 'search'].forEach(k => {
+    if (p.get(k)) body.set(k, p.get(k));
+  });
+  btn.disabled = true;
+  try {
+    const resp = await fetch('/jobs/catchup', {method: 'POST', body});
+    if (resp.status === 409) {
+      const d = await resp.json();
+      alert(`The backlog changed since this page loaded (it's now ${d.count}). `
+          + `Nothing was changed — reloading so you can confirm the real number.`);
+      window.location.reload();
+      return;
+    }
+    if (!resp.ok) throw new Error();
+    window.location.reload();
+  } catch {
+    btn.disabled = false;
+    alert('Failed to catch up.');
+  }
+}
+
+document.getElementById('catchup-btn')?.addEventListener('click', catchUp);
 
 // ── UTC datetime / date-only → local display ──────────────────────────────
 (function() {

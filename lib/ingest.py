@@ -777,6 +777,13 @@ def bootstrap_history(conn: sqlite3.Connection) -> None:
 # matters even after the listing comes down.
 AUTO_CLOSE_STATUSES = {"new", "reviewing"}
 
+# Statuses a *description change* resurfaces as 'new' when reset_on_change is on. All three are
+# skip states nobody is pursuing, so a rewritten posting is genuinely new information about them —
+# and for 'bulkskipped' (buried by "Catch up" without ever being read) this is the only automatic
+# route back out of the pile. Deliberately excludes 'deferred' (parked on purpose: the automations
+# leave it alone) and every acted-on status, where a reset would lose real state.
+RESET_ON_CHANGE_STATUSES = ("skipped", "autoskipped", "bulkskipped")
+
 
 def is_expired(item: dict) -> bool:
     """True if the posting's validity date is in the past.
@@ -1563,7 +1570,7 @@ def ingest(conn: sqlite3.Connection, items: list[dict], label: str,
             if expired and current_status in AUTO_CLOSE_STATUSES:
                 new_status = "closed"
                 c["auto_closed"] += 1
-            elif desc_changed and current_status in ("skipped", "autoskipped") and reset_on_change:
+            elif desc_changed and current_status in RESET_ON_CHANGE_STATUSES and reset_on_change:
                 new_status = "new"
                 refreshed_at = now
                 c["reset_new"] += 1

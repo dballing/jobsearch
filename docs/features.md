@@ -48,6 +48,7 @@ The **Per page** dropdown sets how many rows are shown per page — 25 (default)
 | `new` | Freshly ingested, not yet reviewed |
 | `skipped` | Not a fit — skip for now (set manually) |
 | `autoskipped` | Automatically skipped by viability scoring (see [Viability → Auto-skip](#auto-skip)) |
+| `bulkskipped` | Cleared in bulk by [Catch up](#catch-up) — buried **without being read**, at whatever viability. Distinct from both neighbours: `skipped` means you looked and passed, and an `autoskipped` job is promoted back to `new` whenever it rescores above the auto-skip threshold, which would resurrect a whole caught-up pile |
 | `reviewing` | Opened but not decided yet |
 | `deferred` | On the radar but not being acted on — e.g. a role you'd discuss with a recruiter while interviewing elsewhere, but aren't applying to in parallel. Counts as **Active** and keeps getting (re)scored, but the automations leave it alone: it is never auto-closed on expiry, auto-skipped on a low score, or reset on a description change. Clear it manually when it's no longer relevant. |
 | `applied` | Application submitted |
@@ -175,6 +176,17 @@ The preview panel also lets you attach **files** to a job — cover letters, doc
 ### Bulk-skip low-viability jobs
 
 When any `new` jobs on the current page have a `low` viability score, a **Skip N low & new** button appears in the filter bar. Clicking it confirms and sets all matching jobs on that page to `skipped` in one action.
+
+### Catch up
+
+For when you're hundreds of postings behind: **Catch up (N)** sets every `new` job matching the **current filters** to [`bulkskipped`](#status-reference) — declaring backlog bankruptcy rather than judging each role.
+
+- **It is filter-scoped, not page-scoped.** Unlike the bulk-skip button beside it, the count and the action cover every matching posting across all pages. Narrow the set first and the action narrows with it: Status filters don't matter (catch-up always acts on `new`), but **Viability**, **Label**, **Source**, the text search, and the comp-range search all do. So `Viability: Medium` → **Catch up** buries the mediums and leaves every `high` for a human look.
+- **It only ever touches `new`.** Jobs you've moved to `reviewing`, `deferred`, or anything in the applied family are left alone, even when the active filter (e.g. **Active**) would otherwise include them.
+- **The count is checked before it writes.** If a scheduled ingest changed the backlog while the page sat open, the action is refused with the new number and nothing is changed — reload and confirm the real figure.
+- **Nothing is lost.** The pile has its own **Caught up** status filter, so pairing it with `Viability: High` mines it for anything that deserved a second look. A caught-up job whose description is later rewritten by the employer is automatically reset to `new` on the next ingest, same as a skipped one.
+- Scheduled rescores skip `bulkskipped` jobs, so a buried pile costs nothing to keep. `./rescore_viability.sh --status bulkskipped` scores it deliberately if you want to.
+- Hidden in the combined all-searches view (a filter there can span lenses, so there's no single lens to write to) and when the backlog is empty.
 
 ### Add a job manually
 

@@ -78,8 +78,11 @@ def normalize_location(location: str | None) -> str | None:
     return location
 
 
+# Mirrored from app.STATUSES (duplicated so this stays standalone — importing app would spin up
+# a Flask app). tests/test_catchup.py drift-locks it against app.STATUSES; that lock is what
+# surfaced 'deferred' having been missing here since it was added.
 VALID_STATUSES = [
-    "new", "skipped", "autoskipped", "reviewing",
+    "new", "skipped", "autoskipped", "bulkskipped", "reviewing", "deferred",
     "applied", "rejected", "ghosted", "interviewing", "offered",
     "withdrawn", "closed",
 ]
