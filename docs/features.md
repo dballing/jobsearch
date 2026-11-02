@@ -2,6 +2,14 @@
 
 ## Web UI
 
+### Switching searches (lenses)
+
+With more than one search configured, the navbar carries a lens picker. Up to **five** searches it's a row of buttons — the active one filled with that lens's own colour, the same one its rows carry in the "All searches" Search column — and above five it falls back to a dropdown, since a longer row wraps the navbar.
+
+Either way each entry is badged with how many postings are still `new` in that lens, e.g. `Europe TPM (143)`, so unreviewed work is visible from whichever lens you're in rather than only after switching to go looking for it. The **All** entry sums the others and opens the combined all-searches view: every lens at once, flat, each posting labelled with the search it belongs to (a job tracked under two searches appears once per search). Per-row edits there carry their own lens, but the page-wide actions — manual add, bulk-skip, [Catch up](#catch-up) — are hidden, since a selection there can span lenses. Switching lens drops the current filters and sort, and the choice sticks in a cookie.
+
+A single search needs no picker, so none is shown.
+
 ### Filtering
 
 - **Label** — filter to a specific search dimension (geography, role type, etc.), or show all.

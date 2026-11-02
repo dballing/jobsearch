@@ -450,6 +450,30 @@ def _lens_colors() -> dict[str, str]:
             for i, s in enumerate(current_config().searches)}
 
 
+# At or below this many configured searches the navbar shows them as a row of buttons; above it,
+# the picker falls back to the dropdown. A row stops being scannable — and starts wrapping the
+# navbar — well before the names run out of space, so this is a layout limit, not a data one.
+LENS_BUTTON_MAX = 5
+# Exposed as a Jinja global rather than passed per-render: base.html is the shared layout, so a
+# page that renders the picker must not be able to forget it and silently get the wrong shape.
+app.jinja_env.globals["lens_button_max"] = LENS_BUTTON_MAX
+
+
+def new_counts_by_lens(db: sqlite3.Connection) -> "dict[str, int]":
+    """Per-lens count of `new` (unreviewed) postings, keyed by search id and zero-filled for every
+    configured search.
+
+    Badges the lens buttons so the unreviewed work is visible without switching lens to go looking
+    for it. One grouped query rather than one per lens, since this runs on every listing render.
+    Restricted to configured searches on purpose: a renamed or removed lens can leave orphan
+    job_search_state rows behind, and a count for a lens with no button to click is just noise.
+    """
+    counted = {r["search_id"]: r["n"] for r in db.execute(
+        "SELECT search_id, COUNT(*) AS n FROM job_search_state WHERE status = 'new' "
+        "GROUP BY search_id").fetchall()}
+    return {s.id: counted.get(s.id, 0) for s in current_config().searches}
+
+
 def _current_search_id() -> str:
     """The search ("lens") the current request operates on: a validated ``search`` param (query
     string, or form body so POST actions carry it), else the default/first search. The result is
@@ -1682,6 +1706,7 @@ def index():
         jobs  = [process_job_row(r, hotlist, fx) for r in rows]
 
     total_pages          = 1 if per_page == "all" else max(1, math.ceil(total / limit))
+    lens_new_counts      = new_counts_by_lens(db)
     labels               = available_labels(db)
     sources              = available_sources(db)
     show_viability_filter = has_viability_scores(db)
@@ -1743,6 +1768,11 @@ def index():
         # Multi-search lens selector: the configured searches and the active one. A single
         # (default) search means Path A — the selector is hidden in the template.
         searches=[{"id": s.id, "name": s.name} for s in current_config().searches],
+        # The unreviewed badge on each lens button. The "All searches" total sums only the
+        # configured lenses, so it always equals the buttons beside it. (The buttons-vs-dropdown
+        # threshold is a Jinja global, not passed here.)
+        lens_new_counts=lens_new_counts,
+        lens_new_total=sum(lens_new_counts.values()),
         current_search=view_id,
         is_multi_search=current_config().is_multi_search,
         # Combined all-searches view: render the Search column + label, force flat, and have per-row
