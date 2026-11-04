@@ -35,7 +35,8 @@ from viability import (
     MANUAL_GEO_FIT_CHOICES,
     assess_location_fit, clamp_viability_for_geo, CURRENCY_SYMBOLS, currency_symbol,
     description_is_truncated, effective_description, geo_note, has_description_override,
-    manual_geo_verdict, parse_factors, RESUME_COMPETITIVENESS_DIMENSION, score_job,
+    manual_geo_verdict, parse_factors, PLAUSIBILITY_DIMENSION,
+    RESUME_COMPETITIVENESS_DIMENSION, score_job,
     scoring_hash_for_config,
 )
 
@@ -1062,7 +1063,10 @@ def _viability_factors(raw: object) -> "list[dict] | None":
     to emit the factors in ("the bottom line is always the bottom line"): the six fixed
     FACTOR_DIMENSIONS first in their canonical order, then any other model-chosen extras
     alphabetically (a stable home rather than the model's whim), and finally the mandatory
-    employer's-eye application_competitiveness axis pinned last as the bottom-line summary.
+    employer's-eye application_competitiveness axis pinned last as the bottom-line summary. The
+    one exception sits ABOVE the fixed six: a posting_plausibility veto ("we think this listing is
+    fabricated") invalidates every fit judgment below it, so it must be the first thing read, not
+    buried alphabetically among the extras.
     Returns None when there's nothing to show (unscored, reject-listed, an older score, or malformed
     JSON) so the panel simply omits the breakdown section."""
     if not raw:
@@ -1077,9 +1081,12 @@ def _viability_factors(raw: object) -> "list[dict] | None":
     fixed = {dim: i for i, dim in enumerate(FACTOR_DIMENSIONS)}
 
     def order_key(f: dict) -> tuple:
-        """Three ranked buckets, each fully deterministic: (0) fixed dims by canonical index;
-        (1) unknown model-chosen extras alphabetically; (2) application_competitiveness last."""
+        """Four ranked buckets, each fully deterministic: (-1) a posting_plausibility veto first;
+        (0) fixed dims by canonical index; (1) unknown model-chosen extras alphabetically;
+        (2) application_competitiveness last."""
         dim = f["dimension"]
+        if dim == PLAUSIBILITY_DIMENSION:
+            return (-1, 0, "")
         if dim in fixed:
             return (0, fixed[dim], "")
         if dim == RESUME_COMPETITIVENESS_DIMENSION:

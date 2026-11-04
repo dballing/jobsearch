@@ -401,6 +401,47 @@ Or chain after ingestion in cron:
 - Jobs are also flagged for re-scoring when a viability-relevant field changes independently of the prompt — a manual [salary override](#salary-override), [company override](#company-name-override), [job title override](#job-title-override), [work arrangement override](#work-arrangement-override), or [location viability override](#location-viability-override). Such a flagged job is re-scored on the next run even if its prompt hash is current and even if it is `skipped`/`closed` (so a correction that improves it can resurface it). The flag clears once the job is successfully re-scored.
 - When a linked (`skipped`/`autoskipped`) job scores strictly better than both its canonical and its own previous score, it is automatically reset to `new` for human review — unless `auto_skip` is enabled and the score is still below the threshold, in which case it updates to `autoskipped` instead. This only fires when the canonical's own score is **current** (its prompt hash matches this run's): a stale canonical score is an apples-to-oranges yardstick that would spuriously promote duplicates purely because of a prompt change, so the comparison waits until the canonical is itself re-scored.
 
+### Fabricated-posting veto
+
+Scam postings reach the feeds, and the convincing ones are not obviously bad: a real company's
+name and real "about us" blurb are pasted onto an invented role. Every individual fact then checks
+out, so the scorer rates it well — one such listing scored `high` and cost an application before
+this existed.
+
+The scorer therefore reports one more optional axis, `posting plausibility`. It is **absent on a
+genuine posting** — that absence is the default verdict, not an oversight — and when it does fire
+it is a **veto**: `−2` and an automatic `low`, named in the reason. There is no middle setting.
+
+The design is deliberately lopsided, because the naive version is **worse than the problem**. The
+model cannot look anything up, so an obscure, small, foreign, or blandly-named employer is
+indistinguishable to it from a fake one — and a false positive buries a real opportunity you never
+see, which is worse than passing along a bad posting you can judge yourself. So the prompt
+**forbids** recognition-based doubt outright. None of the following may lower a rating or even be
+mentioned as a caveat: an employer the model has never heard of; a small, local, regional, foreign,
+or non-English employer; a generic or confusing company name; a thin, templated, or
+machine-written description; a missing salary; arrival via a recruiter or aggregator; or
+compensation and remote flexibility that look unusually **good** — a strong offer is what you are
+looking for, never a warning sign.
+
+What's left is the one thing the model *can* assess from the text: whether the posting contradicts
+**itself**. Concretely, it must check whether the posting places employment in a country the
+employer's own self-description doesn't place it in — a business presenting itself as serving one
+region only, hiring a resident of another country under that country's employment terms (at-will,
+W2, 401(k), hourly US rates). That asserts a legal entity and payroll the posting's own text
+denies. Expansion counts as an explanation only if the posting *says* so; an employer that
+describes itself as multinational, or a role located where it says it operates, doesn't trip the
+check at all. Other ordinary explanations — a subsidiary, a holding company, a rebrand, clumsy
+translation — also defeat the veto.
+
+Measured before adoption: 5/5 on the known-fabricated listing (`high` → `low`), 0/10 on legitimate
+obscure Swiss/German/French employers posting in their own languages, and 0/15 rating drift on a
+broad recent sample — against an 80% same-prompt nondeterminism baseline, so the change costs
+nothing on ordinary postings.
+
+This is a coherence check, not a fraud detector. It catches a self-contradicting posting; it will
+not catch a carefully consistent fake. For a whole channel you've stopped trusting, see
+[`reject_domains`](configuration.md#viability-scoring-viability).
+
 ### Auto-skip
 
 Once you have confidence in your viability prompt, enable automatic skipping:

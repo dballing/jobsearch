@@ -43,6 +43,16 @@ FACTOR_DIMENSIONS = (
 # "Application Competitiveness".
 RESUME_COMPETITIVENESS_DIMENSION = "application_competitiveness"
 
+# The fraud-veto axis the scorer self-reports ONLY when a posting contradicts itself (see the
+# posting-plausibility note in _SYSTEM_BOILERPLATE). Deliberately NOT in FACTOR_DIMENSIONS: a
+# mandatory axis would have to be reported for every job, and an always-present "is this real?"
+# line both clutters the breakdown and invites the model to find a little suspicion everywhere.
+# As an extra axis its ABSENCE is the default verdict — a genuine posting emits no plausibility
+# factor at all — which is what makes "presume genuine" the cheap path rather than a rule the
+# model has to actively obey. Named as a constant so the prompt, the UI render order, and the
+# tests agree on the exact key.
+PLAUSIBILITY_DIMENSION = "posting_plausibility"
+
 # Header + instruction that wraps the candidate's resume when one is configured. Folded into the
 # candidate PROMPT (see compose_candidate_prompt) — deliberately NOT into _SYSTEM_BOILERPLATE — so
 # a search WITHOUT a resume sends exactly the pre-feature prompt (its scores stay current; nothing
@@ -179,7 +189,8 @@ _SYSTEM_BOILERPLATE = (
     "The rating is a holistic judgment, not an average of the scores. Some factors are VETOES: when "
     "the candidate's profile states an ABSOLUTE dealbreaker (wording like 'won't', 'will not', "
     "'not interested in', 'refuse', 'avoid entirely') and this posting has that trait, OR the "
-    "candidate cannot do the core job as described, that factor is disqualifying — rate the job "
+    "candidate cannot do the core job as described, OR the posting-plausibility note below fires, "
+    "that factor is disqualifying — rate the job "
     "'low' regardless of how positive everything else is (a strongly positive factor total does "
     "NOT rescue a vetoed job), and name the veto in the reason. Distinguish a veto from a mere soft "
     "preference ('prefer to avoid', 'ideally', 'less interested in'): a soft preference is a strong "
@@ -210,6 +221,61 @@ _SYSTEM_BOILERPLATE = (
     "excluded company with a company the candidate merely worked at in the past (the candidate's "
     "own former employer is not an exclusion). When the employer is any other company, the "
     "exclusion is irrelevant and must not lower the rating or appear in the reason.\n\n"
+    # Fraud veto, written to fail SAFE. The motivating miss: a real regional ISP's name and real
+    # company blurb on a fabricated fully-remote US role — every individual fact was fine, so the
+    # scorer rated it 'high'. The trap in fixing that is the opposite error: an obscure, foreign,
+    # or blandly-named employer is indistinguishable from a fake one to a model that cannot look
+    # anything up, and a false positive silently discards a real opportunity (worse than the miss,
+    # since the user at least SEES a bad posting). So the note grounds the judgment in the one
+    # thing the model can actually assess from the text — whether the posting contradicts ITSELF —
+    # and explicitly denies it the recognition-based reasoning it would otherwise reach for. The
+    # long "none of this is evidence" list is the load-bearing half; the veto half is easy.
+    "Posting-plausibility note: PRESUME EVERY POSTING IS GENUINE. You cannot look anything up, so "
+    "you are in no position to judge whether an employer really exists — and a wrong guess "
+    "silently discards a real opportunity, which is worse than passing along a bad posting the "
+    "candidate can see for themselves. Judge plausibility ONLY from a flat CONTRADICTION INSIDE "
+    "THIS POSTING, never from whether you recognize the employer.\n"
+    "NONE of the following is evidence of anything. None of them may lower the rating, and none "
+    "may be mentioned as a doubt or caveat: an employer you have never heard of; a small, local, "
+    "regional, foreign, or non-English employer; a generic, ambiguous, confusing, or oddly "
+    "spelled company name; an employer you cannot identify at all; a thin, short, vague, "
+    "templated, boilerplate, or machine-written description; a missing salary or missing company "
+    "detail; arrival via a recruiter, aggregator, or job board; or compensation, benefits, or "
+    "remote flexibility that look unusually GOOD — a strong offer is precisely what the candidate "
+    "is looking for and must NEVER be treated as a warning sign.\n"
+    f"Add a \"{PLAUSIBILITY_DIMENSION}\" factor ONLY when the posting contradicts itself so "
+    "plainly that no ordinary explanation survives — for example when the employer's own "
+    "described business cannot coexist with the role's stated terms (a business that describes "
+    "itself as serving one local region only, hiring staff in a country it does not operate in, "
+    "under that other country's employment law), or when the posting shows an outright fraud "
+    "hallmark (asking the applicant for money, bank or payment details, identity documents, or an "
+    "equipment purchase; routing applicants to a personal email address or a consumer chat app "
+    "instead of an employer channel). An ordinary explanation — a subsidiary, a holding company, "
+    "a rebrand, a parent hiring for a group entity, clumsy translation, or sloppy copy-paste — "
+    "DEFEATS the veto; you must be unable to construct one.\n"
+    # The one check that must be PERFORMED, not merely permitted. Measured: with the veto framed
+    # purely as "add a factor if you notice something", the scorer never engaged with the question
+    # on a posting where everything else fit (0/5 on the known-fabricated listing) — absent-by-
+    # default silently became absent-by-inattention. This names the single structural tell
+    # concretely so it's a lookup rather than a judgment call, and it's self-limiting: a genuinely
+    # multinational employer describes itself as multinational, so it can't trip. Note "expansion"
+    # was removed from the benign list above and re-admitted here only when the POSTING says so —
+    # as an open-ended excuse it swallowed exactly the case this exists to catch.
+    "One check you MUST actually perform rather than assume, because a fabricated posting is "
+    "otherwise indistinguishable from a good one: when the posting places employment in a COUNTRY "
+    "that the employer's OWN self-description does not place it in — a company presenting its "
+    "customers, market, or operations as confined to one country or region, hiring an employee "
+    "resident in a different country, under that second country's employment terms (e.g. at-will "
+    "employment, W2, 401(k), state licensure, hourly US rates) — then the posting is asserting a "
+    "legal entity and payroll presence in that second country which its own description "
+    "contradicts. Expansion into that country is an ordinary explanation ONLY if the posting "
+    "itself says so; absent that, this specific combination IS the contradiction above and the "
+    "veto fires. An employer that describes itself as multinational, global, or already operating "
+    "in the role's country does NOT trip this, and neither does a role located where the employer "
+    "says it operates.\n"
+    "When it fires it is a VETO: score it -2, rate the job 'low', and name it in the reason. "
+    "Otherwise OMIT the factor entirely — a genuine posting produces no plausibility factor at "
+    "all. There is NO middle setting: this factor is -2 or absent, never -1 and never positive.\n\n"
 )
 
 
@@ -305,7 +371,24 @@ _SYSTEM_BOILERPLATE = (
 # changes what the model sees for every non-USD (or currency-overridden) posting — a €/£ band was
 # previously mislabeled as dollars — so it's a global bump: every score re-runs once under the
 # corrected contract.
-_SCORING_INPUT_VERSION = "17"
+#
+# v18: the boilerplate gained the posting-plausibility veto (PLAUSIBILITY_DIMENSION) — an optional
+# extra axis that fires ONLY on a posting that contradicts itself, forcing 'low'. Motivated by a
+# fabricated listing that wore a real German ISP's name and blurb over an invented fully-remote US
+# role: every individual fact checked out, so it scored 'high' and cost an application. The note is
+# deliberately lopsided because the naive version is worse than the miss — a model that can't look
+# anything up cannot tell an obscure/foreign/blandly-named real employer from a fake one, and a
+# false positive buries an opportunity the user never sees — so recognition-based doubt is
+# forbidden outright and the judgment is grounded in internal contradiction alone, with one
+# concrete cross-border-employment check the scorer MUST perform (absent that mandate it simply
+# never engaged: measured 0/5 on the known-fabricated posting, 5/5 once required). Validated before
+# the bump: 5/5 veto on that posting (high→low) in the lens that had scored it high, 0/10 false
+# positives on legitimate obscure Swiss/German/French employers posting in their own languages, and
+# 15/15 agreement (zero drift) on a broad recent sample via compare_scoring — against an 80%
+# same-prompt nondeterminism baseline, so the prompt's own effect on ordinary postings is below the
+# noise floor. It's a boilerplate change (already hashed), but the bump follows the discipline and
+# re-runs every score once under the new contract.
+_SCORING_INPUT_VERSION = "18"
 
 # Cap on locations included in the scoring message — bounds token cost for the rare job
 # posted across dozens of sites, while staying generous enough to almost never truncate
