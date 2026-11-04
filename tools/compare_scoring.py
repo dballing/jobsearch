@@ -92,23 +92,49 @@ def positive_int(value: str) -> int:
     return n
 
 
-def build_sample_query(tier: str, n: int, *, since: str | None = None,
+# Per-lens columns, selected FIRST and aliased to their canonical names so they shadow the
+# dormant jobs.* columns of the same name (sqlite3.Row and dict() both take the first match) —
+# the same trick app.py and rescore_viability.py use. Without it this tool would score against
+# the frozen pre-multi-search values on `jobs` rather than what the lens actually holds.
+_JSS_COLS = (
+    "jss.viability AS viability, jss.status AS status, "
+    "jss.geo_fit_actual AS geo_fit_actual, "
+    "jss.salary_min_actual AS salary_min_actual, jss.salary_max_actual AS salary_max_actual, "
+    "jss.salary_currency_actual AS salary_currency_actual"
+)
+
+
+def _jss_join() -> str:
+    """The join that makes a query per-lens. Parameterized (not inlined like app.py's) because
+    this tool always has a real bind slot available for the search id."""
+    return "JOIN job_search_state jss ON jss.job_id = jobs.job_id AND jss.search_id = ?"
+
+
+def build_sample_query(tier: str, n: int, *, search_id: str, since: str | None = None,
                        previous_days: int | None = None) -> tuple[str, list]:
-    """Build the (SQL, params) selecting up to ``n`` recent jobs whose CURRENT stored score is
-    ``tier``, in random order. Pure (no DB) so the selection is unit-testable.
+    """Build the (SQL, params) selecting up to ``n`` recent jobs whose CURRENT stored score in
+    ``search_id`` is ``tier``, in random order. Pure (no DB) so the selection is unit-testable.
+
+    ``search_id`` is a REQUIRED keyword, deliberately: this used to read the bare `jobs.viability`
+    column, which stopped being written at the single→multi migration and is now frozen at its
+    pre-split values — so every recent job matched no tier and the tool silently reported "no jobs
+    in the window" instead of comparing anything. Scoring state lives in job_search_state, so the
+    lens has to be named; no default could be right.
 
     ``since`` (a YYYY-MM-DD lower bound on date(first_seen)) takes precedence over ``previous_days``
-    (a trailing N*24h window); with neither, there's no date bound. ORDER BY RANDOM() gives a fresh
-    sample each run — fine for a one-off validation tool (it's never snapshot-tested)."""
-    conditions = ["viability = ?"]
-    params: list = [tier]
+    (a trailing N*24h window); with neither, there's no date bound. first_seen exists on BOTH
+    tables, so it's qualified. ORDER BY RANDOM() gives a fresh sample each run — fine for a one-off
+    validation tool (it's never snapshot-tested)."""
+    conditions = ["jss.viability = ?"]
+    params: list = [search_id, tier]
     if since is not None:
-        conditions.append("date(first_seen) >= ?")
+        conditions.append("date(jobs.first_seen) >= ?")
         params.append(since)
     elif previous_days is not None:
-        conditions.append("first_seen >= datetime('now', ?)")
+        conditions.append("jobs.first_seen >= datetime('now', ?)")
         params.append(f"-{int(previous_days)} days")
-    sql = "SELECT * FROM jobs WHERE " + " AND ".join(conditions) + " ORDER BY RANDOM() LIMIT ?"
+    sql = (f"SELECT {_JSS_COLS}, jobs.* FROM jobs {_jss_join()} WHERE "
+           + " AND ".join(conditions) + " ORDER BY RANDOM() LIMIT ?")
     params.append(int(n))
     return sql, params
 
@@ -258,7 +284,11 @@ def main() -> None:
 
     config_path = Path(args.config)
     try:
-        config = load_config(config_path).default_search().config
+        # This tool compares ONE lens — the default search. Its id is needed for every query
+        # (scoring state is per-lens), and it's printed below because a multi-search config makes
+        # it genuinely non-obvious which criteria a sampled job is being judged against.
+        search_obj = load_config(config_path).default_search()
+        search_id, config = search_obj.id, search_obj.config
     except ConfigError as exc:
         sys.exit(str(exc))
 
@@ -310,6 +340,7 @@ def main() -> None:
                 print(f"  {line}")
     else:
         print(f"Comparing working-tree vs HEAD viability scoring (model {model}).")
+    print(f"Lens: {search_id} (the default search — this tool compares one lens).")
     if args.job_id:
         print(f"Comparing a single job: {args.job_id}\n")
     else:
@@ -327,16 +358,20 @@ def main() -> None:
 
     # Build the batches to compare: one explicit job (--job-id), else a random sample per tier.
     if args.job_id:
-        row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (args.job_id,)).fetchone()
+        row = conn.execute(
+            f"SELECT {_JSS_COLS}, jobs.* FROM jobs {_jss_join()} WHERE jobs.job_id = ?",
+            (search_id, args.job_id),
+        ).fetchone()
         if row is None:
             conn.close()
-            sys.exit(f"No job found with job_id {args.job_id!r}.")
+            sys.exit(f"No job found with job_id {args.job_id!r} in search {search_id!r}.")
         batches = [(f"job {args.job_id}", [row])]
     else:
         batches = [
             (f"[{tier}]",
              conn.execute(*build_sample_query(
-                 tier, args.n, since=args.since, previous_days=args.previous_days)).fetchall())
+                 tier, args.n, search_id=search_id, since=args.since,
+                 previous_days=args.previous_days)).fetchall())
             for tier in tiers_to_compare(args.tier)
         ]
 

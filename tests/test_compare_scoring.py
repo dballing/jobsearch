@@ -5,29 +5,63 @@ this suite); what's worth locking down is the sample-selection SQL builder and t
 summarizer, both pure."""
 from pathlib import Path
 
+import pytest
+
 import compare_scoring as cs
 
 
 # ── build_sample_query: per-tier recent-sample selection ───────────────────────
 def test_build_sample_query_default_no_date_bound():
-    sql, params = cs.build_sample_query("high", 10)
-    assert "viability = ?" in sql
+    sql, params = cs.build_sample_query("high", 10, search_id="s1")
+    assert "jss.viability = ?" in sql
     assert "ORDER BY RANDOM() LIMIT ?" in sql
     assert "first_seen" not in sql            # no date filter when neither bound is given
-    assert params == ["high", 10]
+    assert params == ["s1", "high", 10]       # search id binds first (the join precedes the WHERE)
 
 
 def test_build_sample_query_previous_days_window():
-    sql, params = cs.build_sample_query("medium", 5, previous_days=30)
-    assert "first_seen >= datetime('now', ?)" in sql
-    assert params == ["medium", "-30 days", 5]
+    sql, params = cs.build_sample_query("medium", 5, search_id="s1", previous_days=30)
+    assert "jobs.first_seen >= datetime('now', ?)" in sql
+    assert params == ["s1", "medium", "-30 days", 5]
 
 
 def test_build_sample_query_since_takes_precedence_over_previous_days():
-    sql, params = cs.build_sample_query("low", 8, since="2026-06-01", previous_days=30)
-    assert "date(first_seen) >= ?" in sql
+    sql, params = cs.build_sample_query("low", 8, search_id="s1", since="2026-06-01", previous_days=30)
+    assert "date(jobs.first_seen) >= ?" in sql
     assert "datetime('now'" not in sql        # since wins; the trailing-window branch is skipped
-    assert params == ["low", "2026-06-01", 8]
+    assert params == ["s1", "low", "2026-06-01", 8]
+
+
+def test_build_sample_query_reads_per_lens_state_not_the_dormant_column():
+    # Regression. This read the bare `jobs.viability` column, which stopped being written at the
+    # single→multi migration and is frozen at its pre-split values — so every recent job matched no
+    # tier and the tool printed "no jobs in the window" instead of comparing anything. The gate
+    # CLAUDE.md mandates before a prompt edit was therefore silently inert.
+    sql, params = cs.build_sample_query("high", 3, search_id="midatl_tpm")
+    assert "JOIN job_search_state jss" in sql
+    assert "jss.search_id = ?" in sql
+    assert "jss.viability = ?" in sql
+    # The bare, unqualified form must be gone — that's the bug.
+    assert "WHERE viability" not in sql and "SELECT * FROM jobs" not in sql
+    assert params[0] == "midatl_tpm"
+
+
+def test_build_sample_query_shadows_dormant_columns_with_jss_first():
+    # The jss.*-first SELECT trick: per-lens columns are aliased to their canonical names and come
+    # BEFORE jobs.*, so dict(row) resolves the lens's overrides rather than the dormant twins the
+    # scorer must not see.
+    sql, _ = cs.build_sample_query("low", 1, search_id="s1")
+    assert sql.index("jss.viability AS viability") < sql.index("jobs.*")
+    for col in ("geo_fit_actual", "salary_min_actual", "salary_max_actual",
+                "salary_currency_actual"):
+        assert f"jss.{col} AS {col}" in sql
+
+
+def test_build_sample_query_requires_an_explicit_lens():
+    # Keyword-only and required on purpose: no default could be correct, and a silent fallback is
+    # exactly how this went unnoticed before.
+    with pytest.raises(TypeError):
+        cs.build_sample_query("high", 10)
 
 
 # ── tiers_to_compare: --tier restricts to one band, else all three ─────────────
