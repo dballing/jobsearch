@@ -149,6 +149,96 @@ def test_filter_runs_by_schedule_drops_non_schedule_runs():
     assert [r["id"] for r in ingest.filter_runs_by_schedule(runs, "sched-us")] == ["us1"]
 
 
+# ── schedule_names + multi-schedule scope ───────────────────────────────────
+# One search can outgrow a single Apify schedule (Apify caps how many tasks a schedule starts),
+# so a task entry may list SEVERAL schedules. The list form is load-bearing, not sugar: see
+# test_second_task_entry_for_one_task_would_starve_itself below for what the obvious alternative
+# (a second [[tasks]] entry) actually does.
+
+def test_schedule_names_accepts_a_bare_string():
+    # Back-compat: every existing config writes a plain string, and must keep working untouched.
+    assert ingest.schedule_names({"name": "t", "schedule_name": "sched-us"}) == ["sched-us"]
+
+
+def test_schedule_names_accepts_a_list():
+    assert ingest.schedule_names(
+        {"name": "t", "schedule_name": ["sched-us", "sched-us-2"]}) == ["sched-us", "sched-us-2"]
+
+
+def test_schedule_names_unscoped_is_empty():
+    assert ingest.schedule_names({"name": "t"}) == []
+    assert ingest.schedule_names({"name": "t", "schedule_name": ""}) == []
+    assert ingest.schedule_names({"name": "t", "schedule_name": []}) == []
+
+
+def test_schedule_names_trims_drops_blanks_and_dedups_in_order():
+    # A half-edited entry must not double-resolve or reorder; order is preserved for the log line.
+    assert ingest.schedule_names({"schedule_name": ["  b ", "a", "b", "", "   "]}) == ["b", "a"]
+
+
+def test_schedule_names_tolerates_a_misconfigured_scalar():
+    # Consistent with the other task keys: degrade to "unscoped" rather than raise mid-run.
+    assert ingest.schedule_names({"schedule_name": 42}) == []
+    assert ingest.schedule_names({"schedule_name": {"a": 1}}) == []
+
+
+def test_filter_runs_by_schedule_matches_any_of_several():
+    # The point of the list: one search, two sibling schedules, both ingested by ONE task entry.
+    runs = _sched_runs(("us1", "sched-us"), ("tx1", "sched-us-2"),
+                       ("eu1", "sched-eu"), ("us2", "sched-us"))
+    kept = ingest.filter_runs_by_schedule(runs, ["sched-us", "sched-us-2"])
+    assert [r["id"] for r in kept] == ["us1", "tx1", "us2"]
+    # The sibling search scoping to only the Europe schedule is unaffected.
+    assert [r["id"] for r in ingest.filter_runs_by_schedule(runs, ["sched-eu"])] == ["eu1"]
+
+
+def test_filter_runs_by_schedule_empty_list_is_passthrough():
+    # An empty list means "no scope configured", same as None — not "match nothing", which would
+    # silently drop every run of an unscoped task.
+    runs = _sched_runs(("r1", "sched-us"), ("r2", None))
+    assert ingest.filter_runs_by_schedule(runs, []) == runs
+
+
+def test_filter_runs_by_schedule_order_follows_the_runs_not_the_scope():
+    # Chronological run order must survive the filter — ingest relies on it downstream.
+    runs = _sched_runs(("a", "s2"), ("b", "s1"), ("c", "s2"))
+    assert [r["id"] for r in ingest.filter_runs_by_schedule(runs, ["s1", "s2"])] == ["a", "b", "c"]
+
+
+def test_second_task_entry_for_one_task_would_starve_itself(jobs_db):
+    """Why schedule_name takes a LIST instead of users adding a second [[tasks]] entry.
+
+    Two entries for the same task in the same search share one history scope: state_key has no
+    schedule component, and runs_to_process filters against the WHOLE search's ingest_history. So
+    the first entry marks the second's runs seen (mark_run_seen, as it does for any foreign
+    schedule) and the second never sees them again — permanently, every cycle, with no error.
+    This test pins that mechanism so nobody "simplifies" the list form away.
+    """
+    skey = ingest.state_key("midatl_tpm", "derek-career-site-tpm")
+    all_runs = _sched_runs(("usa1", "sched-usa"), ("tx1", "sched-usa-2"))
+
+    # Entry 1 (scoped to sched-usa) keeps its own run and marks the Texas one seen.
+    pending = ingest.runs_to_process(jobs_db, "midatl_tpm", all_runs)
+    assert [r["id"] for r in pending] == ["usa1", "tx1"]
+    kept = ingest.filter_runs_by_schedule(pending, "sched-usa")
+    assert [r["id"] for r in kept] == ["usa1"]
+    kept_ids = {r["id"] for r in kept}
+    for run in pending:
+        # Both land in the SAME per-search history: the kept run because it's ingested (record_state
+        # writes it there), the foreign one because mark_run_seen records it to avoid re-probing.
+        # That shared scope is the whole problem — history can't tell the two entries apart.
+        ingest.mark_run_seen(jobs_db, skey, run)
+    assert kept_ids == {"usa1"}
+
+    # Entry 2 (scoped to sched-usa-2) now gets NOTHING: tx1 is already in the search's history,
+    # filtered out before its schedule is ever consulted. That's the silent starvation.
+    assert ingest.runs_to_process(jobs_db, "midatl_tpm", all_runs) == []
+
+    # The list form avoids it entirely — one entry, both schedules, from the same pending set.
+    both = ingest.filter_runs_by_schedule(all_runs, ["sched-usa", "sched-usa-2"])
+    assert [r["id"] for r in both] == ["usa1", "tx1"]
+
+
 # ── resolve_schedule_id: config's schedule_name (or id) → opaque id ──────────
 
 _SCHEDULES = [

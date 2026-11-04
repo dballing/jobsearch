@@ -17,6 +17,7 @@ import re
 import sqlite3
 import sys
 from collections import Counter
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -634,7 +635,8 @@ def run_schedule_id(run: dict) -> str | None:
     return (run.get("meta") or {}).get("scheduleId")
 
 
-def filter_runs_by_schedule(runs: list[dict], schedule_id: str | None) -> list[dict]:
+def filter_runs_by_schedule(runs: list[dict],
+                            schedule_ids: "str | Iterable[str] | None") -> list[dict]:
     """Keep only the runs triggered by ``schedule_id`` — the mechanism that lets two searches
     share ONE Apify task definition yet each ingest only its own schedule's runs.
 
@@ -646,15 +648,49 @@ def filter_runs_by_schedule(runs: list[dict], schedule_id: str | None) -> list[d
     (its ``meta`` carries only ``origin``), so the caller enriches each run from its detail
     (fetch_run_schedule_id) before calling this — a pure predicate over whatever meta is present.
 
-    ``schedule_id`` here is the resolved opaque id (the caller translates the task's configured
-    ``schedule_name`` to it via resolve_schedule_id). ``schedule_id=None`` (a task with no
-    ``schedule_name`` configured — the common single-schedule case) is a no-op: every run passes,
-    preserving today's behavior. When a schedule *is* configured, a run without a matching
-    ``meta.scheduleId`` (a different schedule, or a manual/API run with no schedule at all) is
-    dropped — a schedule-scoped task deliberately ignores everything but its own schedule's runs."""
-    if not schedule_id:
+    ``schedule_ids`` here is the resolved opaque id, or a collection of them (the caller
+    translates the task's configured ``schedule_name`` via resolve_schedule_id). A bare string is
+    accepted for the single-schedule case. Empty/None (a task with no ``schedule_name``) is a
+    no-op: every run passes, preserving today's behavior. When a scope *is* configured, a run
+    whose ``meta.scheduleId`` isn't in it (another schedule, or a manual/API run with no schedule
+    at all) is dropped — a scoped task deliberately ignores everything but its own schedules' runs.
+
+    Several ids matter when ONE search outgrows a single Apify schedule: Apify caps the tasks a
+    schedule can start, so a search needing more invocations splits them across sibling schedules
+    and lists all of them on the one task entry (see schedule_names for why a second entry is not
+    an option)."""
+    if not schedule_ids:
         return runs
-    return [run for run in runs if run_schedule_id(run) == schedule_id]
+    wanted = {schedule_ids} if isinstance(schedule_ids, str) else set(schedule_ids)
+    return [run for run in runs if run_schedule_id(run) in wanted]
+
+
+def schedule_names(task: dict) -> list[str]:
+    """A task's configured schedule scope, normalized to a list of names (empty = unscoped).
+
+    ``schedule_name`` accepts a bare string OR a list, and the list form is not just sugar — it's
+    the only way one search can scope a task to SEVERAL schedules. Declaring a second ``[[tasks]]``
+    entry for the same task with the other schedule looks equivalent and silently is not: the
+    run bookmark (state_key) has no schedule component and runs_to_process filters against the
+    WHOLE search's ingest_history, so whichever entry ran first would mark the other's runs seen
+    (mark_run_seen) and starve it permanently, every cycle, with no error. Keeping ONE entry per
+    (search, task) is what makes the scope expressible without touching that bookmark model —
+    which is also why mark_run_seen's cross-lens safety argument still holds: the sibling SEARCH
+    that owns a foreign schedule has its own history scope.
+
+    Blanks are dropped and order-preserving dedup is applied, so a duplicated or half-edited
+    entry can't double-resolve. A non-str/list value (misconfigured) yields no scope rather than
+    raising — consistent with how the other task keys degrade."""
+    raw = task.get("schedule_name")
+    if not raw:
+        return []
+    items = [raw] if isinstance(raw, str) else raw if isinstance(raw, list) else []
+    out: list[str] = []
+    for item in items:
+        name = str(item).strip()
+        if name and name not in out:
+            out.append(name)
+    return out
 
 
 def _scalar(val: object) -> object:
@@ -1992,7 +2028,7 @@ def main() -> None:
     # schedule-scoped task doesn't share runs (each lens ingests only its own schedule's), so it
     # stays a divisor of 1.
     _unscoped_task_lenses: Counter = Counter(
-        t["name"] for _, _, t in task_specs if not t.get("schedule_name"))
+        t["name"] for _, _, t in task_specs if not schedule_names(t))
 
     # If any task scopes to a schedule, resolve the configured schedule_name once to the opaque
     # id Apify stamps on runs (meta.scheduleId). The config field is the console-friendly NAME
@@ -2000,20 +2036,22 @@ def main() -> None:
     # schedules list can't be fetched, fall back to treating the value as a literal id, so a
     # config that happens to hold an opaque id still filters correctly.
     schedule_name_to_id: dict[str, str] = {}   # configured schedule_name → resolved opaque id
-    if any(t.get("schedule_name") for _, _, t in task_specs):
+    if any(schedule_names(t) for _, _, t in task_specs):
         try:
             schedules = fetch_schedules(api_token)
+            # Flattened across tasks AND across each task's list, so a name shared by two entries
+            # (or listed twice) resolves once.
             for _, _, t in task_specs:
-                sname = t.get("schedule_name")
-                if not sname or sname in schedule_name_to_id:
-                    continue
-                resolved = resolve_schedule_id(sname, schedules)
-                if resolved is None:
-                    known = ", ".join(sorted(s.get("name", "?") for s in schedules)) or "(none)"
-                    print(f"WARNING: schedule_name {sname!r} matches no Apify schedule name or id "
-                          f"(known schedules: {known}); its runs won't be filtered to it.",
-                          file=sys.stderr)
-                schedule_name_to_id[sname] = resolved or sname
+                for sname in schedule_names(t):
+                    if sname in schedule_name_to_id:
+                        continue
+                    resolved = resolve_schedule_id(sname, schedules)
+                    if resolved is None:
+                        known = ", ".join(sorted(s.get("name", "?") for s in schedules)) or "(none)"
+                        print(f"WARNING: schedule_name {sname!r} matches no Apify schedule name or "
+                              f"id (known schedules: {known}); its runs won't be filtered to it.",
+                              file=sys.stderr)
+                    schedule_name_to_id[sname] = resolved or sname
         except requests.RequestException as exc:
             print(f"WARNING: could not list Apify schedules ({exc}); treating schedule_name as a "
                   "literal id.", file=sys.stderr)
@@ -2026,12 +2064,12 @@ def main() -> None:
         exclude_ats_dups: bool      = task.get("exclude_ats_duplicates", False)
         reset_on_change:  bool      = task.get("reset_on_change", reset_on_change_global)
         fuzzy_dedup:      bool      = task.get("fuzzy_dedup", fuzzy_dedup_global)
-        schedule_name:    str | None = task.get("schedule_name")
+        sched_names:      list[str] = schedule_names(task)
         # Run-tracking key: bare for the default search (preserves single-search history labels),
         # namespaced <search_id>:<task> otherwise so two searches can share an Apify task name.
         skey = state_key(search_id, task_name)
         label_desc = f"label_from_input={label_from_input!r}" if label_from_input else f"label: {default_label}"
-        sched_desc = f", schedule: {schedule_name}" if schedule_name else ""
+        sched_desc = f", schedule: {', '.join(sched_names)}" if sched_names else ""
         # Name the owning search: with a shared Apify task, otherwise-identical lines are ambiguous.
         print(f"[{search_name}] Fetching runs for '{task_name}' "
               f"({label_desc}, actor: {actor_type}{sched_desc}) ...")
@@ -2046,8 +2084,10 @@ def main() -> None:
             # so the other schedule's runs aren't ingested here. scheduleId is only on the run
             # DETAIL, not the LIST, so enrich each pending run once (a per-run fetch) — done AFTER
             # runs_to_process so only unseen runs are probed, never the whole backlog every cycle.
-            if schedule_name and pending:
-                resolved_sched = schedule_name_to_id.get(schedule_name, schedule_name)
+            if sched_names and pending:
+                # Order-preserving so the log line reads in config order; the filter itself is a
+                # set-membership test, so duplicates after name→id resolution are harmless.
+                resolved_sched = [schedule_name_to_id.get(n, n) for n in sched_names]
                 # Probing schedule scope costs one run-detail fetch each. A large batch means a
                 # fresh search facing the whole backlog — slow, and usually not what's wanted.
                 # Flag it (and point at --seed) rather than silently grinding for minutes.
@@ -2061,9 +2101,10 @@ def main() -> None:
                 kept = filter_runs_by_schedule(pending, resolved_sched)
                 kept_ids = {r["id"] for r in kept}
                 skipped = [r for r in pending if r["id"] not in kept_ids]
-                # Show the resolved opaque id here (it's the same for every kept run) so the
-                # per-run lines below don't repeat it, and a name→id misresolve is obvious.
-                print(f"  Scoped to schedule {schedule_name} (id {resolved_sched}): "
+                # Show the resolved opaque id(s) once here rather than on every per-run line
+                # below, so a name→id misresolve is obvious without scrolling.
+                print(f"  Scoped to schedule {', '.join(sched_names)} "
+                      f"(id {', '.join(resolved_sched)}): "
                       f"{len(kept)} of {len(pending)} new run(s) match.")
                 # Mark the other schedules' runs seen (per-search) so we don't re-probe them each
                 # cycle; the sibling search that owns them still ingests them under its own scope.
@@ -2073,7 +2114,7 @@ def main() -> None:
                 # Nothing matched → surface which schedule ids ARE present, to catch a misconfig.
                 if skipped and not kept:
                     avail = ", ".join(f"{sid} ({n})" for sid, n in schedule_id_counts(pending).most_common())
-                    print(f"  NOTE: no new run matched schedule id {resolved_sched}. "
+                    print(f"  NOTE: no new run matched schedule id {', '.join(resolved_sched)}. "
                           f"Schedule ids present on these runs: {avail}", file=sys.stderr)
                 pending = kept
 

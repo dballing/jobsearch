@@ -175,6 +175,11 @@ label = "dc"             # short key stored in the database; shown in the UI fil
 # reset_on_change = true         # optional: overrides global default for this task
 # fuzzy_dedup = true             # optional: overrides global default for this task
 # schedule_name = "my-schedule"  # optional: ingest only runs this Apify schedule triggered
+#                                # a LIST works too, for one search spread across sibling
+#                                # schedules when one hits Apify's per-schedule task cap:
+#                                #   schedule_name = ["sched-usa", "sched-usa-2"]
+#                                # never add a 2nd [[tasks]] entry for the same task to do
+#                                # this — the two share one history scope and one starves.
 #                                #   (see "one task, two schedules" note below)
 
 [[tasks]]

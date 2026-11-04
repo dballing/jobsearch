@@ -96,7 +96,7 @@ Multiple tasks can share the same `label` — they contribute to the same filter
 | `exclude_ats_duplicates` | `false` | Skip LinkedIn results the actor has flagged as duplicates of career-site postings. Useful when running parallel LinkedIn + career-site tasks for the same geography. |
 | `reset_on_change` | *(global value)* | Per-task override of the global `reset_on_change` setting. |
 | `fuzzy_dedup` | *(global value)* | Per-task override of the global `fuzzy_dedup` setting. |
-| `schedule_name` | *(unset)* | Ingest only the runs that this Apify **schedule** triggered. Lets two searches share one Apify task, split by schedule. The schedule's console **name** (an opaque schedule id also works). See [One Apify task, two schedules](#one-apify-task-two-schedules) below. |
+| `schedule_name` | *(unset)* | Ingest only the runs that this Apify **schedule** triggered. Lets two searches share one Apify task, split by schedule. The schedule's console **name** (an opaque schedule id also works). Also accepts a **list** of names, for one search whose task is started by several sibling schedules — see [Outgrowing one schedule](#outgrowing-one-schedule). See [One Apify task, two schedules](#one-apify-task-two-schedules) below. |
 
 ### One Apify task, two schedules
 
@@ -123,6 +123,43 @@ A run whose schedule doesn't match is skipped and recorded as seen for *this* se
 **Adding a scoped search to a task with history — seed it first.** Resolving a run's schedule costs one API call per run (`scheduleId` is on the run *detail*, not the run *list*). A brand-new search has no ingest history, so it would scan the task's *entire* run backlog one run at a time — slow, and usually pointless (you added the lens to track its schedule going forward, not to dredge a mostly-foreign back-catalog). Run `ingest.py --seed <search_id>` once: it marks the search's current runs all-seen (list-only, no per-run fetch — instant) so the search starts from *now* and only processes runs created afterward. A scoped task also prints a `--seed` hint if a normal ingest is about to probe a large batch.
 
 **Troubleshooting a `0 of N run(s)` dry run:** if scoping matches nothing, ingest prints the schedule ids actually present on that task's runs (`NOTE: … Schedule ids present: <id> (count), …`), and — if the name itself wasn't found among your account's schedules — a `WARNING` listing the known schedule names. Cross-check the spelling against the console.
+
+### Outgrowing one schedule
+
+Apify caps how many tasks a single schedule can start (10 on current plans). A search that needs
+more invocations than that — say five career-site entries and five LinkedIn entries, and now a
+sixth region for each — has to split them across **sibling schedules**. Give `schedule_name` a
+**list**, and the one task entry ingests the runs of all of them:
+
+```toml
+# searches/midatl_tpm.toml
+[[tasks]]
+name          = "derek-career-site-tpm"
+schedule_name = ["job-search-schedule-tpm-usa", "job-search-schedule-tpm-usa-2"]
+label_from_input = "_jobsearch_label"
+actor         = "careersite"
+```
+
+A bare string still works and means exactly what it always did, so no existing config changes.
+
+**Do not instead add a second `[[tasks]]` entry for the same task with the other schedule.** It
+looks equivalent and silently isn't. The run bookmark (`state_key`) has no schedule component, and
+run selection filters against the **whole search's** ingest history — so whichever entry runs
+first marks the other's runs as seen (the same `mark_run_seen` that stops foreign runs being
+re-probed) and the second entry never sees them again. Not once: permanently, every cycle, with no
+error and no log line. You would simply never get those postings. The cross-lens safety argument
+for `mark_run_seen` depends on the competing entry being in a **different search**, which is
+exactly what isn't true here.
+
+The list form sidesteps it by keeping **one entry per (search, task)**, so there is no second
+entry to race with and the bookmark model is untouched. Matching is set membership on the resolved
+ids; duplicates and blanks in the list are dropped, and ordering only affects the log line.
+
+Everything else is unchanged: each distinct name is resolved to its opaque id **once per ingest
+run**, cached and shared across every task that mentions it (so listing two schedules costs one
+extra lookup, not one per task or per Apify run); a run matching none of them is marked seen for
+this search only; and an unset — or empty — `schedule_name` still means "ingest every run of this
+task".
 
 ### Generic tasks with per-schedule labels
 
