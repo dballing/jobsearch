@@ -74,8 +74,8 @@ from ingest import (adopt_legacy, append_history, backfill_description_truncated
 from runlock import acquire_run_lock
 from viability import (
     REJECT_DENYABLE_STATUSES, _job_locations, _work_arrangement, assess_location_fit,
-    build_reject_set, clamp_viability_for_geo, description_is_truncated, geo_note,
-    is_rejected_company, manual_geo_verdict, reject_reason, score_job, scoring_hash_for_config,
+    build_reject_domain_set, build_reject_set, clamp_viability_for_geo, description_is_truncated,
+    geo_note, manual_geo_verdict, reject_verdict, score_job, scoring_hash_for_config,
 )
 
 # Numeric ranking of ratings. Used two ways: to compare a score against the auto-skip
@@ -421,6 +421,7 @@ def build_selection(
     since: str | None = None,
     previous_days: int | None = None,
     reject_companies: "frozenset[str] | None" = None,
+    reject_domains: "frozenset[str] | None" = None,
 ) -> tuple[str, list]:
     """Build the (WHERE clause, params) selecting which jobs to (re)score this run.
 
@@ -497,26 +498,42 @@ def build_selection(
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
-    # Reject-list OR (default run only). The reject-list forces listed employers' pre-decision
-    # jobs to low/autoskipped without an AI call — but a job already scored under an old config is
+    # Reject-list OR (default run only). The reject-lists force the pre-decision jobs of a listed
+    # employer OR a listed posting-domain to low/autoskipped without an AI call — but a job already scored under an old config is
     # non-stale, so the staleness gate above would skip it, and adding a company to the list would
     # never take effect on its existing jobs. OR-ing this in pulls such jobs into the run so the
     # in-loop deny check (see main) can autoskip them promptly. Restricted to the plain scheduled
     # run: an explicit narrowing (--all/--early-stage/--autoskipped/--status/--current-viability/
     # date window) is a deliberate, bounded selection we must not silently widen — and each of
     # those already reaches the listed jobs it cares about (autoskipped re-deny via --autoskipped,
-    # etc.). lower(trim(company)) mirrors is_rejected_company; the in-loop check is authoritative,
-    # so this only needs to be a superset of the true matches.
+    # etc.). The in-loop check (reject_verdict) is authoritative, so each term below only needs to
+    # be a superset of the true matches — see the domain term for why that license matters.
     default_mode = not (all_statuses or early_stage or autoskipped or status is not None
                         or current_viability is not None or since is not None
                         or previous_days is not None)
-    if reject_companies and default_mode:
-        placeholders = ", ".join("?" * len(reject_companies))
+    if (reject_companies or reject_domains) and default_mode:
+        deny_terms: list[str] = []
+        deny_params: list = []
+        if reject_companies:
+            placeholders = ", ".join("?" * len(reject_companies))
+            deny_terms.append(f"lower(trim(jobs.company)) IN ({placeholders})")
+            deny_params.extend(sorted(reject_companies))
+        if reject_domains:
+            # A deliberately LOOSE substring pre-filter. Host-suffix matching at a label boundary
+            # isn't expressible in SQLite's LIKE, and it doesn't need to be: per the note above,
+            # each term only has to be a SUPERSET of the true matches because the in-loop
+            # reject_verdict is authoritative. So this over-matches (a "notjoin.com" host, or a
+            # path segment that spells the host) and the loop prunes those for free. A stray LIKE
+            # wildcard in a malformed entry only widens the superset, so it stays safe too.
+            for host in sorted(reject_domains):
+                deny_terms.append("(lower(COALESCE(jobs.job_url, '')) LIKE ? "
+                                  "OR lower(COALESCE(jobs.apply_url, '')) LIKE ?)")
+                deny_params.extend([f"%{host}%", f"%{host}%"])
         reject_clause = ("jss.status IN ('new', 'reviewing', 'deferred') "
-                         f"AND lower(trim(jobs.company)) IN ({placeholders})")
+                         f"AND ({' OR '.join(deny_terms)})")
         base = where[len("WHERE "):] if where else "1"
         where = f"WHERE ({base}) OR ({reject_clause})"
-        params.extend(sorted(reject_companies))
+        params.extend(deny_params)
     return where, params
 
 
@@ -717,11 +734,15 @@ def main() -> None:
             "Must be 'low' or 'medium'."
         )
     auto_skip_threshold = VIABILITY_RANK[auto_skip_conf_raw]
-    # Employers the candidate will never work for: their pre-decision jobs are forced to
-    # low/autoskipped WITHOUT an AI call (a hard human decision — see the in-loop deny check).
+    # Employers the candidate will never work for, and posting domains they no longer trust:
+    # either one's pre-decision jobs are forced to low/autoskipped WITHOUT an AI call (a hard human
+    # decision, not a judgment call — see the in-loop deny check).
     reject_set = build_reject_set(config)
+    domain_set = build_reject_domain_set(config)
     if reject_set:
         print(f"Company reject-list: {len(reject_set)} employer(s) will be auto-skipped without scoring.")
+    if domain_set:
+        print(f"Domain reject-list: {len(domain_set)} domain(s) will be auto-skipped without scoring.")
     db_path = config.get("db_path", "jobs.db")
 
     # The current scoring hash — centralized so the batch rescore, the on-demand single-job
@@ -774,6 +795,7 @@ def main() -> None:
         since=args.since,
         previous_days=args.previous_days,
         reject_companies=reject_set,
+        reject_domains=domain_set,
     )
 
     count = conn.execute(f"SELECT COUNT(*) FROM jobs {jss_join} {where}", params).fetchone()[0]
@@ -849,19 +871,20 @@ def main() -> None:
             # \r returns to start of line; \033[K erases to end of line.
             print(f"\r\033[K  [{i}/{count}] Scoring: {label}", end="", flush=True)
 
-        # Company reject-list: a listed employer's job in a pre-decision (or already-autoskipped)
-        # status is a hard human "never" — force it to low/autoskipped WITHOUT an AI call. Runs
-        # before any scoring so no tokens are spent, and before the geo sub-call so it short-
-        # circuits that too. Statuses you've acted on (applied/interviewing/…) aren't in
+        # Reject-lists (employer, or posting domain): a listed job in a pre-decision (or
+        # already-autoskipped) status is a hard human "never" — force it to low/autoskipped WITHOUT
+        # an AI call. Runs before any scoring so no tokens are spent, and before the geo sub-call so
+        # it short-circuits that too. Statuses you've acted on (applied/interviewing/…) aren't in
         # REJECT_DENYABLE_STATUSES, so they fall through to a normal score (your decision stands).
-        # In --autoskipped mode this re-denies a still-listed company for free instead of paying to
-        # re-score it and possibly promoting it back. Un-listing a company simply stops this from
-        # firing; run --autoskipped afterward to give those jobs a real score.
+        # In --autoskipped mode this re-denies a still-listed match for free instead of paying to
+        # re-score it and possibly promoting it back. Un-listing simply stops this from firing; run
+        # --autoskipped afterward to give those jobs a real score.
         current_status = row["status"]
-        if (reject_set and current_status in REJECT_DENYABLE_STATUSES
-                and is_rejected_company(company, reject_set)):
+        verdict = (reject_verdict(dict(row), reject_set, domain_set)
+                   if current_status in REJECT_DENYABLE_STATUSES else None)
+        if verdict:
+            reason, deny_note = verdict
             rating = "low"
-            reason = reject_reason(company)
             old_rating = row["viability"]
             ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             # No AI call here, so there's no factor breakdown — NULL it so a job newly caught by
@@ -886,7 +909,7 @@ def main() -> None:
                              "WHERE job_id = ? AND search_id = ?", (row["job_id"], search_id))
                 append_history(conn, row["job_id"], {
                     "ts": ts, "event": "status", "from": current_status, "to": "autoskipped",
-                    "note": "company on reject-list",
+                    "note": deny_note,
                 }, search_id)
             rejected += 1
             note = f"  Reject-listed: {label} → autoskipped (low)"

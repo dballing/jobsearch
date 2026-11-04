@@ -13,6 +13,7 @@ prompt and therefore needs re-running.
 import hashlib
 import json
 import re
+from urllib.parse import urlsplit
 
 from ai_config import (DEFAULT_EFFORT, DEFAULT_MODEL, effective_effort, is_reasoning_model,
                        resolve_ai_settings, resolve_effort, resolve_geo_effort, resolve_geo_model)
@@ -407,6 +408,127 @@ def reject_reason(company: object) -> str:
     UI verdict is self-explanatory (vs. a bare 'low' with no rationale)."""
     name = (str(company).strip() if company else "") or "this employer"
     return f"Autoskipped: {name} is on your company reject-list."
+
+
+# ── Domain reject-list ────────────────────────────────────────────────────────────────────────
+# The company list's sibling, and deliberately a SEPARATE list because the two judgments differ
+# in kind: reject_companies says "never this employer"; reject_domains says "never postings
+# arriving via this host" — an ATS or board whose postings can't be trusted (weak identity
+# verification, so a fabricated listing can wear a real company's name). A domain entry therefore
+# survives the employer being unrecognizable or outright fake, which is exactly the case the
+# company list cannot express: you can't blocklist an employer you've never heard of.
+
+
+def build_reject_domain_set(config: dict) -> "frozenset[str]":
+    """The set of reject-listed hostnames (bare, lowercased) from ``[viability].reject_domains`` —
+    posting CHANNELS whose jobs are forced to low/autoskipped WITHOUT an AI call.
+
+    Entries are normalized through the same parser as the job's own URL (``_host_from_url``), so a
+    bare host ("join.com"), a pasted URL ("https://join.com/companies/x") and a leading-dot form
+    (".join.com") all collapse to the same entry — the config shouldn't care which the user had on
+    their clipboard. Matching is host-suffix at a LABEL boundary (see ``matched_reject_domain``).
+
+    Empty/absent → empty set (feature off, indistinguishable from a config with no [viability]).
+    Like ``reject_companies`` this is deliberately NOT folded into ``scoring_hash_for_config``:
+    hashing it would mark the whole DB stale and force a full-DB AI re-score just to add one host.
+    Listed jobs are instead denied cheaply as they flow through selection, and un-listing a host
+    takes effect on the next ``rescore_viability.sh --autoskipped``, which re-scores the autoskipped
+    set and promotes anything that now clears the bar."""
+    vcfg = config.get("viability", {}) or {}
+    raw = vcfg.get("reject_domains") or []
+    if not isinstance(raw, list):
+        return frozenset()
+    return frozenset(h for h in (_host_from_url(e) for e in raw) if h)
+
+
+def _host_from_url(url: object) -> "str | None":
+    """The bare lowercase hostname of ``url``, or None when there isn't one.
+
+    Used for BOTH sides of the domain match — the config entry and the job's URL — so the two are
+    normalized identically and a pasted URL in the config behaves exactly like the bare host.
+    Tolerates what both sides really contain: a missing scheme, userinfo, a port, a trailing root
+    dot, mixed case. ``urlsplit`` alone isn't enough, because without a scheme it reads the whole
+    string as a path and reports no host at all — so we prepend "//" when there's nothing for it
+    to anchor on, which is the common case for a config entry."""
+    if not url:
+        return None
+    # lstrip('.') accepts the ".example.com" cookie-style form some people write out of habit.
+    text = str(url).strip().lower().lstrip(".")
+    if not text:
+        return None
+    if "//" not in text:
+        text = f"//{text}"
+    try:
+        # .hostname (not .netloc) strips userinfo and the port for us.
+        host = urlsplit(text).hostname
+    except ValueError:
+        # Malformed IPv6 brackets or a non-numeric port raise rather than return — a bad entry
+        # must not take down a whole scoring run, so treat it as "no host" and move on.
+        return None
+    # "join.com." and "join.com" are the same host; a bare root dot leaves nothing.
+    return (host or "").rstrip(".") or None
+
+
+def matched_reject_domain(url: object, domain_set: "frozenset[str]") -> "str | None":
+    """The reject-listed host ``url`` belongs to, or None.
+
+    Matches the host itself or any SUBDOMAIN of it, anchored at a label boundary: entry "join.com"
+    catches "join.com" and "www.join.com" but never "notjoin.com". That's the domain-level analogue
+    of the company list's whole-field rule, and exists for the same reason — a reject entry must
+    never bleed onto an unrelated host that merely shares a tail of characters.
+
+    Returns the matched ENTRY rather than the job's host, so the stored reason names what the user
+    actually listed instead of whichever subdomain this one posting happened to use. The walk goes
+    most-specific-suffix first so an overlapping pair of entries ("join.com" + "apply.join.com")
+    reports the more specific one DETERMINISTICALLY — iterating ``domain_set`` instead would pick
+    whichever came out of the set's hash order, which varies per process and would make a stored
+    reason unreproducible."""
+    if not domain_set:
+        return None
+    host = _host_from_url(url)
+    if not host:
+        return None
+    labels = host.split(".")
+    for i in range(len(labels)):
+        candidate = ".".join(labels[i:])
+        if candidate in domain_set:
+            return candidate
+    return None
+
+
+def reject_domain_reason(domain: object) -> str:
+    """The stored viability_reason for a job denied by the domain reject-list — names the host so
+    the UI verdict explains itself (mirrors ``reject_reason`` for employers)."""
+    host = (str(domain).strip() if domain else "") or "this domain"
+    return f"Autoskipped: postings from {host} are on your domain reject-list."
+
+
+# The URL fields a domain entry is matched against. job_url is where the posting lives; apply_url
+# is where it hands you off. Both are checked because a posting can arrive on a feed you trust
+# while sending the application somewhere you don't — today they're identical on every careersite
+# row and apply_url is None for LinkedIn (the feed's external_apply_url was removed in June 2026),
+# so checking both costs nothing and closes the obvious hole before it opens.
+_REJECT_URL_FIELDS = ("job_url", "apply_url")
+
+
+def reject_verdict(job: dict, reject_set: "frozenset[str]",
+                   domain_set: "frozenset[str]") -> "tuple[str, str] | None":
+    """``(viability_reason, history_note)`` when a reject-list denies this job without an AI call,
+    else None. The ONE decision point shared by the batch rescorer and the web UI's single-job
+    rescore, so the two can't drift apart on what counts as denied.
+
+    The company list is checked first and wins when both fire: "I will never work for this
+    employer" is the more specific statement, and the one the user expects to read in the reason.
+
+    Says nothing about STATUS — the caller gates on ``REJECT_DENYABLE_STATUSES``, because a job you
+    already applied to keeps your human decision regardless of a later reject-list edit."""
+    if reject_set and is_rejected_company(job.get("company"), reject_set):
+        return reject_reason(job.get("company")), "company on reject-list"
+    if domain_set:
+        for field in _REJECT_URL_FIELDS:
+            if entry := matched_reject_domain(job.get(field), domain_set):
+                return reject_domain_reason(entry), "domain on reject-list"
+    return None
 
 
 def _job_locations(job: dict) -> list[str]:

@@ -49,6 +49,18 @@ uploads_dir = "uploads"
 #     "Initech",
 #     "Globex",
 # ]
+# Domain reject-list: posting CHANNELS you no longer trust — an ATS or job board whose listings
+# have burned you (weak identity verification, so a fabricated posting can wear a real company's
+# name). Same machinery as reject_companies above (forced low/autoskipped, no AI call, pre-decision
+# statuses only, not folded into the re-score hash), but it answers a different question: the
+# company list can't blocklist an employer you've never heard of, and a fake posting's "employer"
+# is exactly that. Matching is host-suffix at a LABEL boundary, checked against both the posting
+# URL and the apply URL: "join.com" catches join.com and www.join.com but NEVER notjoin.com. Write
+# a bare host — a pasted URL or a leading dot is normalized to the same thing. Remember this is
+# per-search, so a domain that's noise in one lens can stay live in another.
+# reject_domains = [
+#     "join.com",
+# ]
 # prompt  = """
 # Describe yourself as a candidate. Be specific: background, skills, years of
 # experience, preferred role types, company stage, and any deal-breakers.

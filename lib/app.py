@@ -2852,16 +2852,18 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
     ).fetchone()
     if not row:
         return False, "job not found"
-    # Company reject-list: a listed employer in a pre-decision (or already-autoskipped) status is
-    # forced to low/autoskipped WITHOUT an AI call, mirroring the batch rescorer's deny check so
-    # the "rescore this job" button honors the same guardrail. Statuses you've acted on aren't in
+    # Reject-lists (employer, or posting domain): a listed job in a pre-decision (or already-
+    # autoskipped) status is forced to low/autoskipped WITHOUT an AI call, via the SAME
+    # reject_verdict the batch rescorer uses, so the "rescore this job" button can't drift from the
+    # scheduled run on what counts as denied. Statuses you've acted on aren't in
     # REJECT_DENYABLE_STATUSES, so those still get a real score.
-    from viability import build_reject_set, is_rejected_company, reject_reason, REJECT_DENYABLE_STATUSES
-    reject_set = build_reject_set(cfg)
-    if (reject_set and row["status"] in REJECT_DENYABLE_STATUSES
-            and is_rejected_company(row["company"], reject_set)):
+    from viability import (build_reject_domain_set, build_reject_set, reject_verdict,
+                           REJECT_DENYABLE_STATUSES)
+    verdict = (reject_verdict(dict(row), build_reject_set(cfg), build_reject_domain_set(cfg))
+               if row["status"] in REJECT_DENYABLE_STATUSES else None)
+    if verdict:
+        reason, deny_note = verdict
         rating = "low"
-        reason = reject_reason(row["company"])
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         # No AI call on the reject path → no factor breakdown; NULL it so a job newly caught by the
         # reject-list doesn't keep a stale breakdown from an earlier real score (mirrors rescore).
@@ -2880,7 +2882,7 @@ def _score_one_job(db: sqlite3.Connection, job_id: str) -> tuple[bool, str]:
             db.execute("UPDATE job_search_state SET status = 'autoskipped' "
                        "WHERE job_id = ? AND search_id = ?", (job_id, sid))
             append_history(db, job_id, {"ts": ts, "event": "status", "from": row["status"],
-                                        "to": "autoskipped", "note": "company on reject-list"}, sid)
+                                        "to": "autoskipped", "note": deny_note}, sid)
         db.commit()
         return True, f"{rating} (reject-listed)"
     try:
