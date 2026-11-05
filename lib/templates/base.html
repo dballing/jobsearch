@@ -66,8 +66,13 @@
         {# Only the listing route passes `searches`, and it pays for the per-lens counts alongside
            (app.new_counts_by_lens). Defaulted rather than assumed so a future page that renders
            the picker without them degrades to unbadged entries instead of a 500. #}
-        {% set counts = lens_new_counts | default({}, true) %}
-        {% set total  = lens_new_total  | default(0,  true) %}
+        {# Deliberately verbose names: a top-level {% set %} here is EXPORTED into the render
+           context, so it shadows a same-named variable for every block rendered after this
+           point — including jobs.html's {% block content %}. A plain `total` here silently
+           replaced the listing's own `total` (the row count) with the new-posting tally, so
+           the page read "2 jobs" over 81 rows. Don't reuse a page-level name. #}
+        {% set lens_new_badges = lens_new_counts | default({}, true) %}
+        {% set lens_new_all    = lens_new_total  | default(0,  true) %}
         {% if searches|length <= lens_button_max %}
         {# Few enough lenses to show them all at once. Each button is badged with how many postings
            are still `new` in that lens, so the unreviewed work is visible from any lens instead of
@@ -80,13 +85,13 @@
           <a href="{{ url_for('index', search=s.id) }}" class="btn btn-outline-light"
              {% if s.id == current_search %}aria-current="page"
              style="background-color:{{ search_colors.get(s.id, '#6c757d') }};border-color:{{ search_colors.get(s.id, '#6c757d') }};color:#fff"{% endif %}
-             title="{{ s.name }} — {{ counts.get(s.id, 0) }} new">{{ s.name }} ({{ counts.get(s.id, 0) }})</a>
+             title="{{ s.name }} — {{ lens_new_badges.get(s.id, 0) }} new">{{ s.name }} ({{ lens_new_badges.get(s.id, 0) }})</a>
           {% endfor %}
           {% if all_searches_id %}
           <a href="{{ url_for('index', search=all_searches_id) }}" class="btn btn-outline-light"
              {% if current_search == all_searches_id %}aria-current="page"
              style="background-color:#6c757d;border-color:#6c757d;color:#fff"{% endif %}
-             title="Every lens at once, each posting labelled with its search">All ({{ total }})</a>
+             title="Every lens at once, each posting labelled with its search">All ({{ lens_new_all }})</a>
           {% endif %}
         </div>
         {% else %}
@@ -94,12 +99,12 @@
                 style="width:auto" title="Job search"
                 onchange="location.href='/?search=' + encodeURIComponent(this.value)">
           {% for s in searches %}
-          <option value="{{ s.id }}" {% if s.id == current_search %}selected{% endif %}>{{ s.name }} ({{ counts.get(s.id, 0) }})</option>
+          <option value="{{ s.id }}" {% if s.id == current_search %}selected{% endif %}>{{ s.name }} ({{ lens_new_badges.get(s.id, 0) }})</option>
           {% endfor %}
           {# Combined, read-only view of every lens at once — each posting labelled with its search
              (a job tracked under two searches appears once per search). #}
           {% if all_searches_id %}
-          <option value="{{ all_searches_id }}" {% if current_search == all_searches_id %}selected{% endif %}>All searches ({{ total }})</option>
+          <option value="{{ all_searches_id }}" {% if current_search == all_searches_id %}selected{% endif %}>All searches ({{ lens_new_all }})</option>
           {% endif %}
         </select>
         {% endif %}
